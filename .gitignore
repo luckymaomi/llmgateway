@@ -10,9 +10,10 @@
 Thumbs.db
 # Logs
 *.log
+.build/
 
-# Local reference repositories
-ref/
+# Local reference repositories. The nested module boundary keeps root Go tooling out.
+ref/repos/
 
 # One-time project inception source
 /skill.md

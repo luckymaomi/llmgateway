@@ -1,0 +1,77 @@
+name: Verify
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18.4-alpine
+        env:
+          POSTGRES_DB: llmgateway
+          POSTGRES_USER: llmgateway
+          POSTGRES_PASSWORD: llmgateway_ci
+        ports:
+          - 15432:5432
+        options: >-
+          --health-cmd "pg_isready -U llmgateway -d llmgateway"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+      valkey:
+        image: valkey/valkey:9.1.0-alpine
+        ports:
+          - 16380:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.5"
+          cache: true
+      - uses: pnpm/action-setup@v4
+        with:
+          version: "10.33.0"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.19.0"
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Install browser
+        run: pnpm --dir web exec playwright install --with-deps chromium
+      - name: Verify
+        shell: pwsh
+        env:
+          LLMGATEWAY_POSTGRES_PASSWORD: llmgateway_ci
+          LLMGATEWAY_DATABASE_URL: postgres://llmgateway:llmgateway_ci@127.0.0.1:15432/llmgateway?sslmode=disable
+          LLMGATEWAY_VALKEY_PASSWORD: ""
+        run: ./scripts/verify.ps1 -SkipBuildMatrix
+      - name: Race detector
+        run: go test -race ./internal/...
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.5"
+          cache: true
+      - uses: pnpm/action-setup@v4
+        with:
+          version: "10.33.0"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.19.0"
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Verify code and builds
+        shell: pwsh
+        run: ./scripts/verify.ps1 -SkipIntegration -SkipBrowser

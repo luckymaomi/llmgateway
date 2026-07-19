@@ -83,7 +83,7 @@
 - 基线提交已推送；本计划创建后保持为待 owner 审阅的工作区改动。
 - 不读取或迁移 Kitty 的真实 `.env`、API Key、日志、请求正文或个人数据。
 - 不把参考仓库源码、许可证不兼容代码或生成产物复制进主干。
-- 不启动浏览器、截图或运行浏览器自动化；视觉审美由 owner 验收。
+- 浏览器自动化只处理可验证的结构与业务交互；颜色、间距、品牌感和整体审美仍由 owner 验收。
 
 ## 失败证据
 
@@ -140,7 +140,7 @@ LLMGateway 以一个 Go 服务承载公共数据面、管理 API 和嵌入式 Re
 - 不宣称完整复刻 OpenAI 所有参数。支持矩阵外的字段返回稳定、可解释的 `unsupported_capability`，不静默丢弃。
 - 不建立微服务、Kafka、服务网格、Kubernetes operator 或插件市场；没有事实需求前保持模块化单体。
 - 不保留旧 API、旧 env、旧 schema、旧别名或过渡 migration。
-- 不运行浏览器自动化或由 Agent 宣布视觉审美合格。
+- 不用截图替代业务交互验收，也不由 Agent 宣布视觉审美合格。
 
 ## 设计
 
@@ -290,6 +290,8 @@ cmd/gateway
 
 每个切片独立达到实现、错误、并发、中断、恢复、安全、可观测性、测试、文档和目标环境验证闭环。数字只表示执行顺序，切片名称表达业务结果。
 
+当前执行状态：切片 1 进行中；后续切片尚未开始。只有完成对应实现、验证和文档闭环后才勾选。
+
 - [ ] **切片 1：可运行、可验证、可恢复的服务底座**
   - Go module、目录依赖守卫、类型化配置、结构化日志、request ID、OpenTelemetry、Prometheus、健康/就绪、优雅停机。
   - PostgreSQL migration/sqlc、Valkey 接线、事务与租约基础、React/Vite 工作区、Go embed、统一错误壳。
@@ -424,7 +426,7 @@ cmd/gateway
 ### 定向检查
 
 - Go：`gofmt`、`go vet`、单包单元/集成测试、sqlc/goose 生成与 migration round-trip。
-- Frontend：格式、lint、TypeScript、Vitest/Testing Library、生产构建；不启动浏览器。
+- Frontend：格式、lint、TypeScript、Vitest/Testing Library、生产构建，以及 Playwright 真实浏览器核心路径与桌面/移动结构验收。
 - Protocol：OpenAI wire fixtures、SSE/event parser、Function Calling、reasoning、usage、error schema。
 - Provider：每个 adapter 的 request/response/stream/error/usage fixture 与 capability matrix。
 - 数据：事务、状态机、唯一约束、账本不变量、配置发布、恢复 worker 和密钥轮换。
@@ -505,4 +507,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify.ps1
 ### 外部操作状态
 
 - 架构与环境基线已 commit 并 push。
-- 本 `plan.md` 仅供 owner 审阅，尚未 commit、push、部署或执行。
+- 计划提交 `5fa5278` 已推送 `origin/master`；owner 已授权从零到一连续执行、验证、提交和推送。
