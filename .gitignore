@@ -1,0 +1,15 @@
+# Local secrets
+.env
+.env.*
+!.env.example
+
+# Editor and operating system
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+# Logs
+*.log
+
+# One-time project inception source
+/skill.md
