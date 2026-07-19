@@ -52,14 +52,27 @@
 
 ### 已确认的仓库与运行事实
 
-- 当前分支为 `master`，基线提交 `f17ce79` 已推送到 `origin/master`。
-- 仓库目前只有产品/架构/开发文档、参考仓库和开发基础设施；没有 `go.mod`、Go 源码、前端工程、数据库 schema、公共 API、管理端或业务测试。
-- 根目录不存在旧生产实现、旧 API、旧 schema 或必须保留的正式生产数据；首次生产发布前，不兼容变化直接重建当前基线。
-- `architecture.md` 已确认 Go 1.26.5+、模块化单体、`net/http` + `chi`、PostgreSQL 18、`pgx` + `sqlc` + `goose`、Valkey 9、React 19 + TypeScript + Vite 8、TanStack 与 OpenTelemetry/Prometheus 方向。
-- 本机已验证 Go 1.26.5、Node 22.19.0、pnpm 10.33.0、Docker 29.6.1 和 Docker Compose 5.3.0。
-- `postgres:18.4-alpine` 与 `valkey/valkey:9.1.0-alpine` 当前运行健康，分别绑定 `127.0.0.1:15432` 与 `127.0.0.1:16380`。
-- 停止并重建容器后 PostgreSQL 与 Valkey 探针可以恢复；临时探针已经清理。
+- 当前分支为 `master`，`HEAD` 与 `origin/master` 均为 `b42652b`；该提交是约四万行的生产基础快照，不是完成态。
+- 工作区有尚未提交的 `internal/requestflow` quota/coordination adapter 与租约取消传播改动。它们没有生产装配点，且尚未闭合 admission、发送边界和终态恢复，不能作为已完成事实提交。
+- 仓库已有 Go module、React/Vite workspace、单一 baseline migration、sqlc queries、PostgreSQL/Valkey 连接、控制面与公共协议/Provider/调度/账本的基础实现。
+- 当前仍没有必须保留的正式生产数据；Key 模型授权、Responses 和发布快照等合同需要调整时直接重建当前 baseline，不维护双 schema 或兼容路径。
+- `go test ./...` 与 `go vet ./...` 于本轮审计通过；这些结果只证明当前包级实现可编译并通过现有测试，不证明生产入口成立。
+- 本轮真实启动 `scripts/test-core.ps1` 后，migration、进程启动和 readiness 成功，但第一个旧路径 `POST /api/setup/bootstrap` 返回 404，脚本失败并完成临时数据库/Valkey 清理。
+- 本地 PostgreSQL 18 与 Valkey 9 可供隔离集成测试使用；环境版本、前端完整检查、migration round-trip、目标构建矩阵和真实浏览器结果仍需由本任务重新复核，不能沿用交接描述冒充本轮证据。
 - `ref/repos` 中的 LiteLLM、New API、Portkey Gateway、Sub2API、Uni API 仅用于机制研究并被 Git 忽略，不是代码来源。
+
+### 基础实现、运行接线与验证状态
+
+| 领域 | 已有基础实现 | 当前运行接线 | 当前证据与缺口 |
+| --- | --- | --- | --- |
+| 服务底座 | 类型化启动配置、结构化日志、health/readiness、Prometheus、优雅停机、PG/Valkey 连接 | `cmd/gateway -> app -> httpserver` 可启动 | 没有前端 embed；唯一验证入口和 CI 存在漂移；备份/恢复与强杀恢复未闭环 |
+| 身份与访问 | bootstrap、邀请注册、审核、会话、CSRF、网关 Key 摘要/一次展示 | 控制面 `/api/control/*` 已挂载 | 只有 user-model 授权，没有 key-model 持久 owner；公开模型与 Chat 不能满足 Key 级权限合同 |
+| Provider 与配置 | Provider/model/credential schema、AEAD、SSRF、配置 revision/outbox/projector、四类 adapter | registry/configuration 控制面部分挂载 | Provider 新建/更新、credential 原子绑定仍返回 501；数据面不读取已发布快照，未发布表变更会直接生效 |
+| Quota 与账本 | PG entitlement、append-only ledger、reservation/settlement/release/compensation 及并发测试 | `QuotaAPI`、`QuotaAdapter` 均未装配 | 前后端 DTO 与 Idempotency-Key 合同不一致；entitlement 限制没有进入 requestflow coordination |
+| Admission 与协调 | 单实例公平队列核心、Valkey 多维 rate/lease 原子脚本与测试 | 公平队列无生产消费者；新增 coordination adapter 未装配 | requestflow 当前先 reservation、后 coordination，违反排队断连不建 reservation 的合同；跨域/entitlement 维度未闭合 |
+| 公共协议与请求流 | Models、Chat、Responses parser/presenter/stream、requestflow、retry/circuit/routing 基础 | `/v1` 未挂载，真实进程统一返回 404 | 发送边界、流中断、状态推进、凭据健康、幂等 replay 与恢复有缺口；不能直接开放 Chat |
+| Responses | schema/query 与 HTTP handler/流状态机基础 | 无 `ResponseStore`，无 app 接线 | 外部 ID 与表主键不一致、没有输入加密/owner 合同、取消仅进程内，缺少专项测试 |
+| 管理端 | React 页面、typed client、Vitest 与 mock Playwright | Go 不提供生产静态资源 | overview/运营/Playground/settings 等页面对应真实 API 仍为 501；没有真实 Go+PG+Valkey 浏览器证据 |
 
 ### 已核验的外部合同
 
@@ -80,24 +93,30 @@
 
 ### 工作区保护边界
 
-- 基线提交已推送；本计划创建后保持为待 owner 审阅的工作区改动。
+- `b42652b` 已推送；当前 requestflow 改动按 owner 已有工作保护，只在完成语义审查后继续收敛，不回滚或掩盖。
 - 不读取或迁移 Kitty 的真实 `.env`、API Key、日志、请求正文或个人数据。
 - 不把参考仓库源码、许可证不兼容代码或生成产物复制进主干。
 - 浏览器自动化只处理可验证的结构与业务交互；颜色、间距、品牌感和整体审美仍由 owner 验收。
 
 ## 失败证据
 
-当前系统尚未实现，以下结果是计划执行前的可观察失败事实：
+当前基础代码大量存在，但以下运行结果仍可正向复现未完成事实：
 
-- 根目录没有 `go.mod`，无法构建或运行网关二进制。
-- 没有数据库 migration，PostgreSQL 中不存在用户、Provider、凭据、请求、账本和审计事实。
-- `GET /v1/models`、`POST /v1/chat/completions` 和 `POST /v1/responses` 均不存在。
-- 没有管理员初始化、邀请注册、登录、网关 Key、模型授权、额度或套餐入口。
-- 没有 Provider 配置发布、凭据加密、调度、限流、公平排队、重试、冷却、熔断或 usage 结算。
-- 没有 Web 管理端、用户 Playground、请求日志、健康看板或告警。
-- 现有 `scripts/verify-environment.ps1` 只能验证开发环境，不能验证任何产品行为。
+- 真实 gateway 只挂载 health、metrics 与 `/api/control`；`GET /v1/models`、Chat 和 Responses 在生产路由均返回 404。
+- `scripts/test-core.ps1` 仍调用已删除的旧控制面合同；本轮在首次 bootstrap 请求收到 404，证明唯一完整验证入口不能通过。
+- Provider 新建/更新、带模型绑定的 credential/Key，以及 credential 更新/停用/测试仍返回 typed 501，真实管理路径不能完成数据面前置配置。
+- `QuotaAPI` 没有挂入主控制 API；前端 entitlement 请求也不满足后端 wire 与幂等合同。
+- 公平 admission 无生产消费者；现有 requestflow 在排队/协调前创建请求与 reservation，排队断连或容量拒绝会留下本不应接受的持久事实。
+- 逻辑 request 只创建为 `queued`，生产代码没有写 `dispatching/streaming/canceled/uncertain`；settlement 失败也没有 recovery worker，强杀后无法据状态判断发送和结算边界。
+- 相同逻辑 request 的执行者会复用 request ID 作为 Valkey lease member，没有持久 claim generation/fencing；两个恢复实例可能共享一个槽位并重复发送。
+- 上游发送结果未知时当前代码用输入加最大输出估算执行 compensation 并终态扣费，而不是 hold reservation 等待恢复；该行为违反 unknown side effect 不猜测结算的不变量。
+- requestflow 从可变 registry 表读模型/凭据，只记录 active revision ID；配置 outbox 投影从未被数据面消费，发布/回滚不拥有实际生效边界。
+- Responses 没有 PostgreSQL store；retrieve/delete/input-items/cancel 没有 owner、权限、重启恢复和真实入口证据。
+- Go 二进制不嵌入 React 产物；Playwright 固定启动 mock server，不能证明任何页面连接真实后端。
+- 生产 logger 尚未装配已存在的 redacting handler；当前只有脱敏单元测试，不能证明运行日志不会泄露敏感字段。
+- overview、请求/审计/正文、operation、Playground、settings、backup 与 Provider/credential 测试仍是明确 501；未实现能力虽未伪造成功，但最终范围尚未闭环。
 
-计划完成前，上述任一公共路径仍不存在、返回占位成功、只在内存成立或无法恢复，都属于失败，不允许用文档、mock 或 UI 假数据掩盖。
+计划完成前，上述任一公共路径仍为 404/501、绕过发布或权限 owner、只在内存成立、留下永久非终态或只能靠 mock 通过，都属于失败。
 
 ## 最终目标
 
@@ -290,7 +309,15 @@ cmd/gateway
 
 每个切片独立达到实现、错误、并发、中断、恢复、安全、可观测性、测试、文档和目标环境验证闭环。数字只表示执行顺序，切片名称表达业务结果。
 
-当前执行状态：切片 1 进行中；后续切片尚未开始。只有完成对应实现、验证和文档闭环后才勾选。
+当前执行状态：`b42652b` 同时铺设了切片 1-6 的横向基础，切片 7 只有部分 UI/schema 壳；没有任何切片达到生产级纵向闭环，因此全部保持未勾选。当前先收敛“可发布目录与受控 Key”，只在 Key 级授权、published snapshot 和真实进程接线成立后开放 `/v1/models`；Chat 必须等待 admission、发送边界、结算和 recovery owner 闭合。
+
+当前实现顺序：
+
+1. 重建 Key-Model 授权、Provider 资源域去重、credential 原子绑定和已发布 catalog snapshot 合同。
+2. 挂载 quota 控制面并对齐前端 wire/幂等合同，以真实 Go + PostgreSQL + Valkey 完成 setup、目录、授权、entitlement、Key 与 `/v1/models`。
+3. 在 reservation 前接入公平 admission；为逻辑 request 增加状态转换、持久 execution claim/fencing、uncertain hold 与恢复 worker。
+4. 证明非流 Chat 的成功、拒绝、取消、未知发送、重试和结算后，再闭合流式、Responses、固定代理与多实例恢复。
+5. 最后接入真实 Playground/运营页面、前端 embed、真实浏览器、真实 Provider、备份恢复和发布物。
 
 - [ ] **切片 1：可运行、可验证、可恢复的服务底座**
   - Go module、目录依赖守卫、类型化配置、结构化日志、request ID、OpenTelemetry、Prometheus、健康/就绪、优雅停机。
@@ -338,47 +365,65 @@ cmd/gateway
 
 ### 全局合同与工程入口
 
-- [ ] 创建 Go module、前端 workspace、版本锁文件和目录依赖守卫。
-- [ ] 实现类型化配置 schema、启动校验、开发/测试/生产 profile 和敏感值来源。
-- [ ] 建立 migration、sqlc、生成命令、生成漂移检查和首次生产前 schema 重建命令。
-- [ ] 建立统一 `scripts/verify.ps1`，覆盖格式、lint/vet、单元、集成、race、前端类型/测试/构建、migration、Compose、生成漂移、依赖/许可证、secret 和文档链接。
-- [ ] 建立 CI：Linux 主测试/race，Windows 关键测试，目标 OS/arch 构建矩阵和发布物校验。
-- [ ] 建立本地 fixture Provider、可编程故障代理和确定性时钟/随机/ID 测试设施。
+- [x] 创建 Go module、React/Vite workspace 与 Go/pnpm 锁定解析结果。
+- [ ] 建立并验证目录依赖守卫，证明领域 owner 不反向依赖 HTTP/UI/具体存储。
+- [x] 建立类型化启动配置 owner、development/test/production profile 和敏感值来源骨架。
+- [ ] 完整校验 HTTP/PG/Valkey 时长、容量、数据库编号、迁移开关和日志级别；非法值必须失败而非静默回退。
+- [x] 建立 baseline migration、sqlc 源与确定性生成命令。
+- [ ] 收敛当前 schema 后补独立显式的开发/测试重建命令，并让生成漂移进入可靠完整验证。
+- [ ] 修复 `scripts/verify.ps1`、`scripts/test-core.ps1` 与 CI 漂移，补齐 race、license/dependency/vulnerability、secret、SBOM、链接和真实浏览器层。
+- [x] 建立 Provider wire fixture、可注入 clock/random 的纯领域测试基础。
+- [ ] 建立可编程网络故障 fixture、持久 ID/fencing 测试设施与真实进程故障注入入口。
 
 ### 数据、身份与安全
 
-- [ ] 设计并实现身份、Provider、凭据、配置、请求、attempt、账本、entitlement、审计和内容留存 schema。
-- [ ] 实现管理员 bootstrap、密码哈希、会话、CSRF、邀请、审核、角色权限与登录限流。
-- [ ] 实现网关 Key 前缀/摘要/pepper、创建一次展示、撤销、过期、模型授权和审计。
-- [ ] 实现上游凭据 AEAD 信封加密、主密钥版本、轮换、失败恢复和内存最短解密边界。
-- [ ] 实现 SSRF/重定向/DNS 重绑定防护、资源大小/时长/并发上限和日志脱敏。
+- [x] 建立身份、Provider、凭据、配置、request/attempt、账本、entitlement、审计、正文和 response 的 baseline schema。
+- [ ] 重建 Key-Model、published catalog、request execution/fencing、uncertain reservation 与 Responses 输入/owner/ID 状态合同，并同步 sqlc 和全部消费者。
+- [x] 实现管理员 bootstrap、Argon2id、会话、CSRF、邀请、审核、角色权限与登录限流的领域和存储基础。
+- [x] 实现网关 Key 前缀/摘要/pepper、创建一次展示、撤销和过期基础。
+- [ ] 实现 Key 级模型授权、调用审计及停用中的请求分界。
+- [ ] 让 identity/registry/configuration/quota 的持久 mutation 与 audit 同事务；API 失败不得留下已提交但调用方不可恢复的事实或丢失一次性 Key。
+- [x] 实现上游凭据版本化 AEAD 加密/解密基础。
+- [ ] 实现主密钥轮换、失败恢复、旧版本清理和最短明文生命周期验收。
+- [x] 实现 URL/redirect/DNS 解析策略、基础请求大小限制和结构化日志脱敏测试。
+- [ ] 闭合固定代理、响应/流时长/并发上限与受控网络例外。
 - [ ] 实现内容审计的独立加密存储、权限、访问审计、保留期、删除和导出。
 
 ### 配置、Provider 与协议
 
-- [ ] 实现 Provider/模型/capability/resource-domain/fixed-proxy registry 与来源核验时间。
-- [ ] 实现配置草稿完整校验、不可变发布、单一 active revision、数据面快照、回滚与审计。
-- [ ] 实现 canonical message/content/tool/reasoning/usage/error 类型和不可表达能力错误。
-- [ ] 实现 Models、Chat Completions、Responses 公共协议 parser/presenter 与 OpenAPI 文档。
-- [ ] 实现通用 OpenAI-compatible、Zhipu、DeepSeek、Agnes adapter 和确定性 wire fixture。
+- [x] 实现 Provider/model/capability/credential/resource-domain registry、固定代理字段与来源核验字段基础。
+- [ ] 删除 Provider 级资源域的错误 UI/DTO 事实；完成 Provider create/update、credential 原子模型绑定、更新/停用与连接测试。
+- [x] 实现配置 revision、校验、单一 active version、事务 outbox、Valkey projector 与发布审计基础。
+- [ ] 增加 revision 创建运行入口，让数据面只消费 published catalog/policy snapshot，并证明发布、并发冲突和回滚生效。
+- [x] 实现 canonical message/content/tool/reasoning/usage/error 与不可表达能力错误基础。
+- [x] 实现 Models、Chat Completions、Responses parser/presenter 和 SSE 状态基础。
+- [ ] 完成公共 OpenAPI、Responses 持久状态、边界字段与标准客户端合同测试。
+- [x] 实现通用 OpenAI-compatible、Zhipu、DeepSeek、Agnes adapter 和确定性 wire fixture 基础。
 - [ ] 为每个 Provider 建立连接测试、真实生成测试、能力矩阵、错误分类和 usage 来源测试。
 
 ### Admission、调度、韧性与账本
 
-- [ ] 实现按资源域隔离的有界公平 admission、排队超时、取消和用户/Key/模型优先级。
-- [ ] 实现 Valkey 多维 token bucket、带 TTL 并发租约、原子脚本、续租、释放和丢失清理。
-- [ ] 实现 credential eligibility、评分、探索、粘性、逃逸、健康、冷却与可解释路由记录。
-- [ ] 实现 retry budget、Retry-After、退避、熔断、半开和流提交/uncertain 边界。
-- [ ] 实现 append-only ledger、reservation、authoritative/estimated usage、settlement、release、compensation 和人工 adjustment。
-- [ ] 实现 Token Plan、Coding Plan、期限、模型/资源域范围、额度、并发/RPM/TPM 与过期处理。
+- [x] 实现单实例有界公平队列的 FIFO、用户轮转、排队超时、取消与并发单测基础。
+- [ ] 将 admission 接在 reservation 前，并补资源域、Key/模型优先级、真实等待/断连与多实例持久 ticket。
+- [x] 实现 Valkey 多维 token bucket、带 TTL 并发租约、原子 acquire/renew/release/cleanup 与集成测试基础。
+- [ ] 增加 entitlement/resource-domain 维度和持久 execution claim/fencing；禁止同一 request 的并发执行者共享 lease 后重复发送。
+- [x] 实现 credential eligibility、评分/探索、retry budget、Retry-After、退避、熔断/半开纯领域基础。
+- [ ] 接入会话粘性、逃逸、持久健康/冷却、候选解释与准确的 send/client boundary。
+- [x] 实现 PG append-only ledger、reservation、settlement、release、compensation、grant 与并发预留基础。
+- [ ] 将 canceled/uncertain 写入真实 request 状态；unknown side effect 必须 hold reservation 等待恢复，不用最大输出估算终态扣费。
+- [ ] 实现 recovery worker、幂等 completed/in-progress replay、失败结算重试和孤儿 reservation/lease 清理。
+- [x] 实现 Token/Coding entitlement、期限、模型/资源域、额度、并发/RPM/TPM 持久字段与控制面 handler 基础。
+- [ ] 将 entitlement 限制接入 admission/coordination，并对齐控制面前后端合同。
 - [ ] 实现免费池耗尽明确错误，并以测试证明所有失败路径均不进入专业池。
 
 ### 管理端与运营
 
-- [ ] 实现管理端设计 tokens、响应式应用壳、权限路由、typed API client 和统一异步状态组件。
-- [ ] 实现总览、Provider/模型、凭据、用户/Key、账本、请求/审计、设置和语言模型 Playground 页面。
+- [x] 实现管理端 design tokens、响应式应用壳、权限路由、typed client 和异步状态组件基础。
+- [x] 建立总览、Provider/model、credential、user/Key、ledger、request/audit、settings 和 Playground 页面结构。
+- [ ] 将所有页面接入真实 owner，删除错误 DTO 与生产路径 mock 依赖，逐项消除 typed 501。
 - [ ] 实现 request/attempt/ledger/audit 查询、筛选、分页、导出和受控正文访问。
-- [ ] 实现 metrics、trace、structured logs、health/readiness、告警接口和运行状态页数据。
+- [x] 实现基础 HTTP metrics、结构化日志与 health/readiness。
+- [ ] 实现 trace、领域 metrics、告警接口、总览与运行状态页真实数据。
 
 ### 交付与真实验收
 
@@ -400,8 +445,9 @@ cmd/gateway
 | 重复管理员操作 | 乐观版本 + audit | conflict/already-applied | 对应 owner | 幂等键或版本条件 | 双击/并发更新测试 |
 | 客户端排队时断连 | 尚未 admission，不建 reservation | canceled-before-admission | Admission | 删除 ticket，无上游副作用 | 断连与队列清理测试 |
 | admission 后断连 | request/reservation 已持久化 | canceled/dispatching/uncertain | Request workflow | 按发送边界取消、结算或冻结 | 可控 barrier 测试 |
+| 重复恢复同一 request | PG claim generation + execution lease | fenced/recovering | Request recovery | 每代唯一 execution ID；旧执行者失去 fencing 后不能发送、续租或提交 | 双实例 claim/lease barrier |
 | 上游连接前失败 | attempt 未提交请求体 | provider_temporary | Resilience | 可换合格凭据，有总预算 | 故障代理测试 |
-| 请求体发送后无回执 | attempt send state 不确定 | uncertain | Request recovery | 无可靠幂等键不重放 | 半关闭连接测试 |
+| 请求体发送后无回执 | attempt send state 不确定，reservation 保持 hold | uncertain | Request recovery | 无可靠幂等键不重放、不按最大输出猜测终态扣费 | 半关闭连接测试 |
 | 上游 429 | attempt 保存 Retry-After/错误 | cooling/rate_limited | Resilience | 有界等待或换同域凭据 | 429 fixture + fake clock |
 | 上游 5xx/超时 | error kind + send state | temporary/uncertain | Resilience | 仅满足安全边界时重试 | 状态矩阵测试 |
 | 流首字节前失败 | 未向客户端 commit | provider_temporary | Resilience | 预算内可重试 | delayed-header fixture |
@@ -483,28 +529,33 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify.ps1
 
 ### 完成事实
 
-- 当前仅完成计划编写前的架构、环境和规则基线；本计划内所有生产级切片尚未开始实施。
+- `b42652b` 已建立跨多个切片的基础快照；本轮完成了源码、schema、入口、脚本、测试与文档的重新审计，并把本计划从空仓库叙述更新为当前事实。
+- 本轮尚未完成任何生产级切片；当前正在收敛“可发布目录与受控 Key”，不能把包级基础写成运行能力。
 
 ### 已执行命令与结果
 
-- `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-environment.ps1`：通过。
-- `docker compose config --quiet`：通过。
-- PostgreSQL/Valkey stop/start 持久化探针：通过，探针已清理。
-- 基线提交 `f17ce79`：已推送 `origin/master`。
+- `git status --short --branch`、`git log --oneline --decorate --all`、`git diff --check`：完成；分支与远端均在 `b42652b`，存在受保护的 requestflow 在途改动。
+- `go test ./...`：通过。
+- `go vet ./...`：通过。
+- `go test ./internal/requestflow ./internal/coordination ./internal/quota`：通过；只作为定向包证据。
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-core.ps1`：失败；migration、gateway readiness 通过，旧 `POST /api/setup/bootstrap` 返回 404，临时资源已清理。
 
 ### 未验证项
 
-- 所有产品代码、schema、API、管理端、Provider、调度、账本和生产部署均尚未实现，因此尚无产品验收结果。
+- 本轮尚未运行前端 format/lint/typecheck/Vitest/build/Playwright、migration round-trip、完整 `verify.ps1`、race、CI、目标构建矩阵或 secret/license/vulnerability 检查。
+- 尚无 `/v1` 真实进程、quota 控制面、published snapshot、Responses store、前端 embed 或真实后端浏览器验收结果。
 - Provider 当前模型、额度、错误和完整文本 wire 必须在对应切片开始时重新核验。
+- owner 提供的隔离 Provider 凭据尚未写入任何文件或调用；真实生成会消耗额度，必须在确定性合同和脱敏链先闭合后执行。
 - ARM/macOS 真实运行环境目前未验证。
 
 ### 剩余风险
 
 - Provider 合同和免费额度变化快，必须依靠 capability/source/verified-at 数据与隔离真实验收，而不是静态 preset 永久正确。
-- 流式提交、unknown side effect、跨实例公平和账本原子性是最高风险边界，不能拆成后补的“优化”。
+- 当前最高风险是 published configuration 不生效、Key 权限缺 owner、admission/reservation 顺序错误、execution 无 fencing、unknown side effect 被错误终态扣费，以及 request/settlement 无恢复状态机；这些必须在开放 Chat 前修复。
+- 流式提交、跨实例公平、租约丢失和账本原子性不能拆成后补的“优化”。
 - 请求内容留存满足滥用调查但显著提高敏感数据责任，权限、加密、审计、保留与删除必须同一切片闭环。
 
 ### 外部操作状态
 
-- 架构与环境基线已 commit 并 push。
-- 计划提交 `5fa5278` 已推送 `origin/master`；owner 已授权从零到一连续执行、验证、提交和推送。
+- 架构、计划与基础快照提交 `f17ce79`、`5fa5278`、`b42652b` 已推送 `origin/master`。
+- 本轮计划修订与 requestflow 在途改动尚未 commit/push；owner 已授权按职责完整模块持续验证、提交并推送 `master`。
