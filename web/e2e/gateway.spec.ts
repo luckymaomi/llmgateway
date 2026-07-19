@@ -1,9 +1,42 @@
-import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { expect, test, type APIRequestContext, type Page, type Response } from '@playwright/test'
 
 const fixtureBaseUrl = 'http://127.0.0.1:4174'
+interface BrowserObservation {
+  problems: string[]
+  allowedProblems: Map<string, number>
+}
 
-test.beforeEach(async ({ request }) => {
+const browserObservations = new WeakMap<Page, BrowserObservation>()
+
+test.beforeEach(async ({ page, request }) => {
+  const observation: BrowserObservation = { problems: [], allowedProblems: new Map() }
+  browserObservations.set(page, observation)
+  page.on('console', (message) => {
+    if (message.type() !== 'error') return
+    if (message.text().startsWith('Failed to load resource:')) return
+    observation.problems.push(`console: ${message.text()}`)
+  })
+  page.on('pageerror', (error) => observation.problems.push(`pageerror: ${error.message}`))
+  page.on('response', (response) => {
+    if (response.status() < 400) return
+    const url = new URL(response.url())
+    if (response.status() === 401 && url.pathname === '/api/control/session') return
+    observation.problems.push(formatResponseProblem(response))
+  })
   await resetApi(request, { authenticated: true })
+})
+
+test.afterEach(({ page }) => {
+  const observation = browserObservations.get(page)
+  if (!observation) throw new Error('browser observation was not initialized')
+  const remainingAllowances = new Map(observation.allowedProblems)
+  const unexpectedProblems = observation.problems.filter((problem) => {
+    const remaining = remainingAllowances.get(problem) ?? 0
+    if (remaining === 0) return true
+    remainingAllowances.set(problem, remaining - 1)
+    return false
+  })
+  expect(unexpectedProblems, 'browser console, page, and HTTP errors').toEqual([])
 })
 
 test('completes setup and login, then follows capability navigation', async ({ page, request }) => {
@@ -99,24 +132,35 @@ test('streams Playground facts, presents an API problem, and cancels an active r
 }) => {
   await page.goto('/playground')
   await expect(page.getByRole('heading', { name: 'Playground' })).toBeVisible()
+  await selectPlaygroundView(page, '对话')
 
   const prompt = page.getByLabel('消息')
   await prompt.fill('给出流式结果')
-  await page.getByRole('button', { name: '运行' }).click()
+  await page.getByRole('button', { name: '运行', exact: true }).click()
   await expect(page.getByText('这是流式响应')).toBeVisible()
+  await selectPlaygroundView(page, '运行事实')
   const facts = page.getByRole('complementary', { name: '运行事实' })
   await expect(facts).toContainText('响应完成')
   await expect(facts).toContainText('req-stream')
   await expect(facts).toContainText('上游权威')
 
+  await selectPlaygroundView(page, '对话')
   await prompt.fill('触发错误')
-  await page.getByRole('button', { name: '运行' }).click()
+  const failedRunResponsePromise = page.waitForResponse(
+    (response) =>
+      response.url().endsWith('/api/control/playground/runs') && response.status() === 429,
+  )
+  await page.getByRole('button', { name: '运行', exact: true }).click()
+  allowExpectedResponse(page, await failedRunResponsePromise)
+  await selectPlaygroundView(page, '运行事实')
   await expect(page.getByRole('alert')).toContainText('上游当前繁忙')
   await expect(page.getByRole('alert')).toContainText('provider_busy')
 
+  await selectPlaygroundView(page, '对话')
   await prompt.fill('等待取消')
-  await page.getByRole('button', { name: '运行' }).click()
+  await page.getByRole('button', { name: '运行', exact: true }).click()
   await page.getByRole('button', { name: '取消' }).click()
+  await selectPlaygroundView(page, '运行事实')
   await expect(facts).toContainText('请求已取消')
   await expectPageWidthToFit(page)
 })
@@ -137,6 +181,23 @@ async function navigateFromShell(page: Page, label: string) {
   }
   await page.getByRole('button', { name: '打开导航' }).click()
   await page.getByRole('dialog').getByRole('link', { name: label }).click()
+}
+
+async function selectPlaygroundView(page: Page, label: string) {
+  const button = page.getByRole('button', { name: label, exact: true })
+  if (await button.isVisible()) await button.click()
+}
+
+function allowExpectedResponse(page: Page, response: Response) {
+  const observation = browserObservations.get(page)
+  if (!observation) throw new Error('browser observation was not initialized')
+  const problem = formatResponseProblem(response)
+  observation.allowedProblems.set(problem, (observation.allowedProblems.get(problem) ?? 0) + 1)
+}
+
+function formatResponseProblem(response: Response) {
+  const url = new URL(response.url())
+  return `http: ${response.request().method()} ${url.pathname} -> ${response.status()}`
 }
 
 function responsiveCollection(page: Page, label: string) {

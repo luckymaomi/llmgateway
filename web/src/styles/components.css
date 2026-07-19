@@ -229,7 +229,8 @@
   flex-direction: column;
   gap: 3px;
   padding: 10px 12px;
-  border-left: 3px solid var(--danger);
+  border: 1px solid #efc0ba;
+  border-radius: var(--radius);
   background: var(--danger-soft);
   color: var(--danger);
   font-size: 12px;
@@ -346,7 +347,6 @@ input[role='switch'] {
   display: flex;
   width: min(92vw, 760px);
   flex-direction: column;
-  border-left: 1px solid var(--border);
   background: var(--surface);
   box-shadow: var(--shadow-md);
 }

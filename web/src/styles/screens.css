@@ -43,7 +43,7 @@
 .auth-marker {
   margin-bottom: 14px;
   padding: 9px 10px;
-  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
   background: var(--accent-soft);
   font-size: 12px;
 }
@@ -264,7 +264,6 @@
 }
 
 .detail-band--error {
-  border-left: 3px solid var(--danger);
   background: var(--danger-soft);
   color: var(--danger);
 }
@@ -380,6 +379,10 @@
   background: var(--surface);
 }
 
+.playground-view-switcher {
+  display: none;
+}
+
 .playground-controls,
 .run-facts {
   min-width: 0;
@@ -392,11 +395,6 @@
   display: flex;
   flex-direction: column;
   gap: 13px;
-  border-right: 1px solid var(--border);
-}
-
-.run-facts {
-  border-left: 1px solid var(--border);
 }
 
 .run-facts > header {
@@ -598,26 +596,74 @@
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .page--playground {
+    overflow: auto;
+  }
+
   .playground-workspace {
     display: flex;
-    overflow-y: auto;
+    flex: 0 0 auto;
     flex-direction: column;
-  }
-
-  .playground-controls {
     overflow: visible;
-    border-right: 0;
-    border-bottom: 1px solid var(--border);
   }
 
+  .playground-view-switcher {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 4px;
+    padding: 6px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-subtle);
+  }
+
+  .playground-view-switcher button {
+    display: flex;
+    min-width: 0;
+    min-height: 38px;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 7px 8px;
+    border: 1px solid transparent;
+    border-radius: var(--radius);
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  .playground-view-switcher button[aria-pressed='true'] {
+    border-color: var(--border);
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .playground-view-switcher button:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 1px;
+  }
+
+  .playground-controls,
+  .conversation,
   .run-facts {
+    display: none;
+  }
+
+  .playground-workspace[data-mobile-view='settings'] .playground-controls {
+    display: flex;
+    overflow: visible;
+  }
+
+  .playground-workspace[data-mobile-view='facts'] .run-facts {
     display: block;
     overflow: visible;
-    border-top: 1px solid var(--border);
-    border-left: 0;
   }
 
-  .conversation {
+  .playground-workspace[data-mobile-view='conversation'] .conversation {
+    display: grid;
     min-height: 520px;
   }
 

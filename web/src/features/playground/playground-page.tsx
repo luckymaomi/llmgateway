@@ -1,5 +1,15 @@
 import { useQuery } from '@tanstack/react-query'
-import { Ban, Braces, Eraser, Play, Send, Wrench } from 'lucide-react'
+import {
+  Activity,
+  Ban,
+  Braces,
+  Eraser,
+  MessageSquare,
+  Play,
+  Send,
+  SlidersHorizontal,
+  Wrench,
+} from 'lucide-react'
 import { useMemo, useState } from 'react'
 
 import { operationsApi, type PlaygroundRunInput } from '@/api'
@@ -13,6 +23,7 @@ import { formatNumber } from '@/lib/format'
 import { usePlaygroundRun } from './use-playground-run'
 
 const terminal = ['idle', 'completed', 'failed', 'canceled', 'uncertain']
+type PlaygroundView = 'conversation' | 'settings' | 'facts'
 
 export function PlaygroundPage() {
   const models = useQuery({
@@ -26,6 +37,7 @@ export function PlaygroundPage() {
   const [stream, setStream] = useState(true)
   const [toolJson, setToolJson] = useState('')
   const [toolError, setToolError] = useState('')
+  const [mobileView, setMobileView] = useState<PlaygroundView>('conversation')
   const run = usePlaygroundRun()
   const selectedModel = models.data?.find((item) => item.alias === model) ?? models.data?.[0]
   const activeModel = model || selectedModel?.alias || ''
@@ -81,8 +93,35 @@ export function PlaygroundPage() {
       {models.error ? (
         <ErrorState error={models.error} onRetry={() => void models.refetch()} />
       ) : (
-        <div className="playground-workspace">
-          <aside className="playground-controls" aria-label="请求设置">
+        <div className="playground-workspace" data-mobile-view={mobileView}>
+          <div className="playground-view-switcher" role="group" aria-label="Playground 视图">
+            <button
+              type="button"
+              aria-pressed={mobileView === 'conversation'}
+              onClick={() => setMobileView('conversation')}
+            >
+              <MessageSquare size={16} />
+              对话
+            </button>
+            <button
+              type="button"
+              aria-pressed={mobileView === 'settings'}
+              onClick={() => setMobileView('settings')}
+            >
+              <SlidersHorizontal size={16} />
+              设置
+            </button>
+            <button
+              type="button"
+              aria-pressed={mobileView === 'facts'}
+              onClick={() => setMobileView('facts')}
+            >
+              <Activity size={16} />
+              运行事实
+            </button>
+          </div>
+
+          <aside id="playground-settings" className="playground-controls" aria-label="请求设置">
             <Field label="模型" htmlFor="playground-model">
               <NativeSelect
                 id="playground-model"
@@ -147,7 +186,7 @@ export function PlaygroundPage() {
             </Field>
           </aside>
 
-          <section className="conversation" aria-label="对话">
+          <section id="playground-conversation" className="conversation" aria-label="对话">
             <div className="conversation__messages" aria-live="polite">
               {run.messages.length === 0 ? (
                 <div className="conversation__empty">
@@ -216,7 +255,12 @@ export function PlaygroundPage() {
             </div>
           </section>
 
-          <aside className="run-facts" aria-label="运行事实" aria-live="polite">
+          <aside
+            id="playground-facts"
+            className="run-facts"
+            aria-label="运行事实"
+            aria-live="polite"
+          >
             <header>
               <h2>运行事实</h2>
               {run.facts.phase !== 'idle' ? <StatusBadge status={run.facts.phase} /> : null}

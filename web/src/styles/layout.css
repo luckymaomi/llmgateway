@@ -68,7 +68,6 @@
 .sidebar__link--active {
   background: var(--sidebar-active);
   color: #ffffff;
-  box-shadow: inset 3px 0 #67c8b7;
 }
 
 .sidebar__link span {
