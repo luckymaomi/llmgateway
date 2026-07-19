@@ -1,0 +1,54 @@
+name: llmgateway
+
+services:
+  postgres:
+    image: postgres:18.4-alpine
+    container_name: llmgateway-postgres
+    environment:
+      POSTGRES_DB: ${LLMGATEWAY_POSTGRES_DB:-llmgateway}
+      POSTGRES_USER: ${LLMGATEWAY_POSTGRES_USER:-llmgateway}
+      POSTGRES_PASSWORD: ${LLMGATEWAY_POSTGRES_PASSWORD:-llmgateway_dev}
+      TZ: ${LLMGATEWAY_TZ:-Asia/Shanghai}
+    ports:
+      - "${LLMGATEWAY_POSTGRES_BIND:-127.0.0.1}:${LLMGATEWAY_POSTGRES_PORT:-15432}:5432"
+    volumes:
+      - llmgateway_postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+  valkey:
+    image: valkey/valkey:9.1.0-alpine
+    container_name: llmgateway-valkey
+    environment:
+      VALKEY_PASSWORD: ${LLMGATEWAY_VALKEY_PASSWORD:-llmgateway_dev}
+      TZ: ${LLMGATEWAY_TZ:-Asia/Shanghai}
+    command:
+      - valkey-server
+      - --appendonly
+      - "yes"
+      - --requirepass
+      - ${LLMGATEWAY_VALKEY_PASSWORD:-llmgateway_dev}
+    ports:
+      - "${LLMGATEWAY_VALKEY_BIND:-127.0.0.1}:${LLMGATEWAY_VALKEY_PORT:-16380}:6379"
+    volumes:
+      - llmgateway_valkey:/data
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli --no-auth-warning -a \"$$VALKEY_PASSWORD\" ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+    stop_grace_period: 20s
+
+volumes:
+  llmgateway_postgres:
+    name: llmgateway_postgres
+  llmgateway_valkey:
+    name: llmgateway_valkey
