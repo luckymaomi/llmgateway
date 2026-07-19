@@ -11,5 +11,8 @@ Thumbs.db
 # Logs
 *.log
 
+# Local reference repositories
+ref/
+
 # One-time project inception source
 /skill.md

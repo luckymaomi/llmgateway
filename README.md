@@ -1,10 +1,10 @@
-# BirdAPI
+# LLMGateway
 
-BirdAPI 是面向多 Provider 的 LLM 聚合网关：对外提供统一接口，并集中管理账号、模型、Key、额度、限流、调度、故障切换和用量。项目优先接入合法可用的免费模型、免费套餐与免费额度。
+LLMGateway 是面向多 Provider 的 LLM 聚合网关：对外提供统一接口，并集中管理账号、模型、Key、额度、限流、调度、故障切换和用量。项目优先接入合法可用的免费模型、免费套餐与免费额度。
 
 ## 方向
 
-- 一个 Base URL、一个 BirdAPI Key 调用多个上游模型。
+- 一个 Base URL、一个 LLMGateway Key 调用多个上游模型。
 - OpenAI-compatible 模型列表、Chat Completions、Responses 与流式接口。
 - 统一工具调用、推理内容、usage 和错误格式。
 - 多 Provider、多账号池、模型分组与 Key 分发。

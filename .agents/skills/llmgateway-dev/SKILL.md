@@ -1,9 +1,9 @@
 ---
-name: birdapi-dev
-description: 维护 birdapi 项目时使用。适用于修改实现、接口、数据、测试、事实文档、依赖、构建和运行配置，要求先确认事实，再完成实现、验证、文档同步与交付闭环。
+name: llmgateway-dev
+description: 维护 llmgateway 项目时使用。适用于修改实现、接口、数据、测试、事实文档、依赖、构建和运行配置，要求先确认事实，再完成实现、验证、文档同步与交付闭环。
 ---
 
-# birdapi Development
+# llmgateway Development
 
 在本项目发生开发性修改时使用本 skill。
 

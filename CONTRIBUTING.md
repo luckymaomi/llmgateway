@@ -1,10 +1,10 @@
-# Contributing to BirdAPI
+# Contributing to LLMGateway
 
 ## 开始前
 
 - 阅读 `AGENTS.md`、`spec.md`，以及存在时的当前 `plan.md`。
 - 产品边界、公共协议、安全模型或技术栈变化先通过 Issue 或 Discussion 对齐。
-- 正式实现阶段的中大型任务先读取 `.agents/skills/plan/SKILL.md` 与 `.agents/skills/birdapi-dev/SKILL.md`，并从 `plan.example.md` 创建当前 `plan.md`。
+- 正式实现阶段的中大型任务先读取 `.agents/skills/plan/SKILL.md` 与 `.agents/skills/llmgateway-dev/SKILL.md`，并从 `plan.example.md` 创建当前 `plan.md`。
 - 不提交真实 API Key、私有数据、日志、生成制品或无关改动。
 
 ## 变更要求
