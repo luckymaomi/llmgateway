@@ -51,11 +51,10 @@ Public LLM API -> 鉴权与请求归一 -> 路由与账号调度 -> Provider Ada
 - 有边界的重试、退避、熔断、恢复和长流式连接管理。
 - 用量、请求、错误、限流与账号健康的脱敏记录和管理界面。
 - Windows、Linux、macOS 以及常见 x64/ARM 环境的部署交付。
-- 图片、视频和其他多模态接口在对应 Provider 合同明确后纳入统一网关表面。
 
 ## Provider 方向
 
-首批接入范围是智谱 GLM、DeepSeek 和 Agnes，并保留通用 OpenAI-compatible Provider 接入能力。具体模型、鉴权、额度查询、RPM、流式、工具调用、图片/视频和错误合同必须在实现接入时依据官方资料验证。
+首批接入范围是智谱 GLM、DeepSeek 和 Agnes，并保留通用 OpenAI-compatible Provider 接入能力。具体模型、鉴权、额度查询、RPM、流式、工具调用、reasoning 和错误合同必须在实现接入时依据官方资料验证。
 
 当前范围不是已支持清单。无法可靠查询余额的账号不能伪造“剩余额度”，只能基于已知限额、实际 usage、响应状态和冷却时间维护可解释状态。
 
