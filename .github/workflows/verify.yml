@@ -47,12 +47,12 @@ jobs:
       - name: Install browser
         run: pnpm --dir web exec playwright install --with-deps chromium
       - name: Verify
-        shell: pwsh
+        shell: bash
         env:
           LLMGATEWAY_POSTGRES_PASSWORD: llmgateway_ci
           LLMGATEWAY_DATABASE_URL: postgres://llmgateway:llmgateway_ci@127.0.0.1:15432/llmgateway?sslmode=disable
           LLMGATEWAY_VALKEY_PASSWORD: ""
-        run: ./scripts/verify.ps1 -SkipBuildMatrix
+        run: xvfb-run --auto-servernum pwsh -NoProfile -File ./scripts/verify.ps1 -SkipBuildMatrix
       - name: Race detector
         run: go test -race ./internal/...
 

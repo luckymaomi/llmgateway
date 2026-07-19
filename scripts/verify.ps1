@@ -5,6 +5,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$pnpmCommand = if ($env:OS -eq "Windows_NT") { "pnpm.cmd" } else { "pnpm" }
 
 function Invoke-Step {
   param(
@@ -41,10 +42,10 @@ try {
   }
 
   if (Test-Path .\web\package.json) {
-    Invoke-Step "Frontend install integrity" { pnpm.cmd --dir web install --frozen-lockfile }
-    Invoke-Step "Frontend checks" { pnpm.cmd --dir web run verify }
+    Invoke-Step "Frontend install integrity" { & $pnpmCommand --dir web install --frozen-lockfile }
+    Invoke-Step "Frontend checks" { & $pnpmCommand --dir web run verify }
     if (-not $SkipBrowser) {
-      Invoke-Step "Browser acceptance" { pnpm.cmd --dir web run test:e2e }
+      Invoke-Step "Headed browser acceptance" { & $pnpmCommand --dir web run test:e2e }
     }
   }
 

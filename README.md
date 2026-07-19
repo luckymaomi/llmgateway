@@ -54,6 +54,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\stop-dev.ps1
 
 Linux 与 macOS 使用同一份 `compose.yaml`：`docker compose up -d` 与 `docker compose down`。默认 PostgreSQL 位于 `127.0.0.1:15432`，Valkey 位于 `127.0.0.1:16380`；本地覆盖值写入不进 Git 的 `.env`。
 
+## 浏览器验收
+
+Playwright 默认以有头模式依次打开桌面 Chrome 与 Pixel 7 视口，方便直接观察真实点击、导航和表单状态：
+
+```powershell
+pnpm.cmd --dir web run test:e2e
+```
+
+当前 E2E 使用 mock server 做管理端结构与交互回归；它不能替代连接真实 Go、PostgreSQL、Valkey 和构建前端的最终验收。完整验证入口会调用同一套有头测试；Linux CI 通过 Xvfb 提供显示环境。
+
 ## License
 
 [MIT](LICENSE)
