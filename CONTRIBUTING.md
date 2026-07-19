@@ -3,7 +3,8 @@
 ## 开始前
 
 - 阅读 `AGENTS.md`、`spec.md`、`dev.md`，以及存在时的当前 `plan.md`。
-- 修改实现、接口、数据、测试、依赖、构建或事实文档时，读取 `.agents/skills/llmgateway-dev/SKILL.md`。
+- 正式实现、修复、测试或验收时，首先读取 `.agents/skills/rapid-iteration/SKILL.md`，按参考研究、真实失败、实现、真实入口验收和再优化的循环推进。
+- 然后读取 `.agents/skills/llmgateway-dev/SKILL.md`，再修改实现、接口、数据、测试、依赖、构建或事实文档。
 - 中大型正式实现从 `plan.example.md` 创建根目录 `plan.md`；讨论和骨架阶段不创建计划。
 - 产品边界、公共协议、安全模型或技术栈变化先在 Issue 或 Discussion 对齐。
 - 不提交真实 API Key、私有数据、日志、生成制品或无关改动。

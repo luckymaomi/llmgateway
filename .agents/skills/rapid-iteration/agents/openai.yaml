@@ -1,0 +1,4 @@
+interface:
+  display_name: "快速迭代开发循环"
+  short_description: "先研究参考机制与真实踩坑，再走真实用户入口验收并持续修复优化"
+  default_prompt: "使用 $rapid-iteration 研究参考实现并以真实用户路径完成当前生产切片。"
