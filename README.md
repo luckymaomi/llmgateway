@@ -17,7 +17,6 @@ BirdAPI 是面向多 Provider 的 LLM 聚合网关：对外提供统一接口，
 ## 项目文档
 
 - [`spec.md`](spec.md)：产品定位、能力方向与边界。
-- [`docs/architecture.md`](docs/architecture.md)：总体架构、主链路与职责划分。
 - [`AGENTS.md`](AGENTS.md)：长期开发和安全规则。
 - [`plan.example.md`](plan.example.md)：正式实现任务的计划模板。
 - [`CONTRIBUTING.md`](CONTRIBUTING.md)：贡献要求。
