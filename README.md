@@ -18,6 +18,7 @@ LLMGateway 是面向多 Provider 的 LLM 聚合网关：对外提供统一接口
 
 - [`spec.md`](spec.md)：产品定位、能力方向与边界。
 - [`AGENTS.md`](AGENTS.md)：长期开发和安全规则。
+- [`dev.md`](dev.md)：生产级阶段、事实 owner 与恶劣路径验收纪律。
 - [`plan.example.md`](plan.example.md)：正式实现任务的计划模板。
 - [`CONTRIBUTING.md`](CONTRIBUTING.md)：贡献要求。
 - [`SECURITY.md`](SECURITY.md)：安全报告方式。
