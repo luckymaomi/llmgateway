@@ -14,7 +14,9 @@ type Querier interface {
 	AuthorizeUserModel(ctx context.Context, arg AuthorizeUserModelParams) error
 	BindCredentialModel(ctx context.Context, arg BindCredentialModelParams) error
 	ClaimInvitation(ctx context.Context, arg ClaimInvitationParams) (int64, error)
+	ClaimProviderMutation(ctx context.Context, arg ClaimProviderMutationParams) (ProviderMutation, error)
 	CompleteLedgerReservation(ctx context.Context, arg CompleteLedgerReservationParams) (LedgerReservation, error)
+	CompleteProviderMutation(ctx context.Context, arg CompleteProviderMutationParams) (ProviderMutation, error)
 	CompleteRequest(ctx context.Context, arg CompleteRequestParams) (Request, error)
 	CountUsers(ctx context.Context, status *UserStatus) (int64, error)
 	CreateAttempt(ctx context.Context, arg CreateAttemptParams) (RequestAttempt, error)
@@ -53,6 +55,7 @@ type Querier interface {
 	GetModelDomain(ctx context.Context, modelID uuid.UUID) (ResourceDomain, error)
 	GetProvider(ctx context.Context, id uuid.UUID) (Provider, error)
 	GetProviderForUpdate(ctx context.Context, id uuid.UUID) (Provider, error)
+	GetProviderMutation(ctx context.Context, arg GetProviderMutationParams) (ProviderMutation, error)
 	GetRequest(ctx context.Context, id uuid.UUID) (Request, error)
 	GetRequestByIdempotencyKey(ctx context.Context, arg GetRequestByIdempotencyKeyParams) (Request, error)
 	GetRequestForUpdate(ctx context.Context, id uuid.UUID) (Request, error)

@@ -1,8 +1,8 @@
 package controlapi
 
 import (
-	"encoding/json"
 	"net/http"
+	"slices"
 	"testing"
 	"time"
 
@@ -110,16 +110,29 @@ func TestAccessManagementContract(t *testing.T) {
 	}
 }
 
-func TestUnavailableCapabilityUsesTypedProblem(t *testing.T) {
-	fixture := newControlFixture(t)
-	response := request(t, fixture.handler, http.MethodGet, "/api/control/overview", nil, true, false)
-	requireStatus(t, response, http.StatusNotImplemented)
-	var envelope problemEnvelope
-	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
-		t.Fatalf("decode problem: %v", err)
+func TestSessionCapabilityContract(t *testing.T) {
+	tests := []struct {
+		name         string
+		role         identity.Role
+		capabilities []string
+	}{
+		{name: "administrator", role: identity.RoleAdministrator, capabilities: []string{"providers:read", "providers:write", "access:read", "access:write", "revisions:publish"}},
+		{name: "operator", role: identity.RoleOperator, capabilities: []string{"providers:read", "providers:write", "revisions:publish"}},
+		{name: "member", role: identity.RoleMember, capabilities: []string{"access:read"}},
 	}
-	if envelope.Error.Code != "feature_not_implemented" || envelope.Error.Stage != "overview" || envelope.Error.Retryable {
-		t.Fatalf("unexpected problem: %+v", envelope.Error)
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newControlFixture(t)
+			fixture.identity.principal.Role = test.role
+
+			response := request(t, fixture.handler, http.MethodGet, "/api/control/session", nil, true, false)
+			requireStatus(t, response, http.StatusOK)
+			session := decodeData[sessionView](t, response)
+			if session.Role != test.role || !slices.Equal(session.Capabilities, test.capabilities) {
+				t.Fatalf("session role/capabilities = %s/%v, want %s/%v", session.Role, session.Capabilities, test.role, test.capabilities)
+			}
+		})
 	}
 }
 

@@ -31,13 +31,20 @@ func NewService(repository Repository, envelope *security.EnvelopeCipher, urls *
 	return &Service{repository: repository, envelope: envelope, urls: urls}, nil
 }
 
-func (s *Service) CreateProvider(ctx context.Context, actor identity.Principal, provider Provider) (Provider, error) {
+func (s *Service) CreateProvider(ctx context.Context, actor identity.Principal, provider Provider, request MutationRequest) (Provider, error) {
 	if !actor.CanOperateProviders() {
 		return Provider{}, ErrForbidden
 	}
 	provider.ID = uuid.New()
 	provider.Enabled = false
 	provider = normalizeProvider(provider)
+	mutation, err := createProviderMutation(request, provider)
+	if err != nil {
+		return Provider{}, err
+	}
+	if replayed, found, err := s.repository.ReplayProviderMutation(ctx, actor.UserID, mutation); err != nil || found {
+		return replayed, err
+	}
 	if !slugPattern.MatchString(provider.Slug) {
 		return Provider{}, ErrInvalidInput
 	}
@@ -47,10 +54,10 @@ func (s *Service) CreateProvider(ctx context.Context, actor identity.Principal, 
 	if err := s.validateProviderSource(ctx, provider); err != nil {
 		return Provider{}, err
 	}
-	return s.repository.CreateProvider(ctx, provider, actor.UserID)
+	return s.repository.CreateProvider(ctx, provider, actor.UserID, mutation)
 }
 
-func (s *Service) UpdateProvider(ctx context.Context, actor identity.Principal, provider Provider) (Provider, error) {
+func (s *Service) UpdateProvider(ctx context.Context, actor identity.Principal, provider Provider, request MutationRequest) (Provider, error) {
 	if !actor.CanOperateProviders() {
 		return Provider{}, ErrForbidden
 	}
@@ -58,20 +65,34 @@ func (s *Service) UpdateProvider(ctx context.Context, actor identity.Principal, 
 		return Provider{}, ErrInvalidInput
 	}
 	provider = normalizeProvider(provider)
+	mutation, err := updateProviderMutation(request, provider)
+	if err != nil {
+		return Provider{}, err
+	}
+	if replayed, found, err := s.repository.ReplayProviderMutation(ctx, actor.UserID, mutation); err != nil || found {
+		return replayed, err
+	}
 	if err := s.validateProviderDetails(ctx, provider); err != nil {
 		return Provider{}, err
 	}
-	return s.repository.UpdateProvider(ctx, provider, actor.UserID)
+	return s.repository.UpdateProvider(ctx, provider, actor.UserID, mutation)
 }
 
-func (s *Service) SetProviderEnabled(ctx context.Context, actor identity.Principal, providerID uuid.UUID, enabled bool, expectedUpdatedAt time.Time) (Provider, error) {
+func (s *Service) SetProviderEnabled(ctx context.Context, actor identity.Principal, providerID uuid.UUID, enabled bool, expectedUpdatedAt time.Time, request MutationRequest) (Provider, error) {
 	if !actor.CanOperateProviders() {
 		return Provider{}, ErrForbidden
 	}
 	if providerID == uuid.Nil || expectedUpdatedAt.IsZero() {
 		return Provider{}, ErrInvalidInput
 	}
-	return s.repository.SetProviderEnabled(ctx, providerID, enabled, expectedUpdatedAt, actor.UserID)
+	mutation, err := statusProviderMutation(request, providerID, enabled, expectedUpdatedAt)
+	if err != nil {
+		return Provider{}, err
+	}
+	if replayed, found, err := s.repository.ReplayProviderMutation(ctx, actor.UserID, mutation); err != nil || found {
+		return replayed, err
+	}
+	return s.repository.SetProviderEnabled(ctx, providerID, enabled, expectedUpdatedAt, actor.UserID, mutation)
 }
 
 func (s *Service) ListProviders(ctx context.Context, actor identity.Principal) ([]Provider, error) {
@@ -79,6 +100,16 @@ func (s *Service) ListProviders(ctx context.Context, actor identity.Principal) (
 		return nil, ErrForbidden
 	}
 	return s.repository.ListProviders(ctx)
+}
+
+func (s *Service) GetProvider(ctx context.Context, actor identity.Principal, providerID uuid.UUID) (Provider, error) {
+	if !actor.CanOperateProviders() {
+		return Provider{}, ErrForbidden
+	}
+	if providerID == uuid.Nil {
+		return Provider{}, ErrInvalidInput
+	}
+	return s.repository.GetProvider(ctx, providerID)
 }
 
 func (s *Service) CreateModel(ctx context.Context, actor identity.Principal, model Model) (Model, error) {

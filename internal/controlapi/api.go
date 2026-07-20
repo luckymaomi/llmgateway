@@ -38,10 +38,11 @@ type identityService interface {
 }
 
 type registryService interface {
-	CreateProvider(context.Context, identity.Principal, registry.Provider) (registry.Provider, error)
-	UpdateProvider(context.Context, identity.Principal, registry.Provider) (registry.Provider, error)
-	SetProviderEnabled(context.Context, identity.Principal, uuid.UUID, bool, time.Time) (registry.Provider, error)
+	CreateProvider(context.Context, identity.Principal, registry.Provider, registry.MutationRequest) (registry.Provider, error)
+	UpdateProvider(context.Context, identity.Principal, registry.Provider, registry.MutationRequest) (registry.Provider, error)
+	SetProviderEnabled(context.Context, identity.Principal, uuid.UUID, bool, time.Time, registry.MutationRequest) (registry.Provider, error)
 	ListProviders(context.Context, identity.Principal) ([]registry.Provider, error)
+	GetProvider(context.Context, identity.Principal, uuid.UUID) (registry.Provider, error)
 	CreateModel(context.Context, identity.Principal, registry.Model) (registry.Model, error)
 	UpdateModel(context.Context, identity.Principal, registry.Model) (registry.Model, error)
 	ListModels(context.Context, identity.Principal) ([]registry.Model, error)
@@ -97,7 +98,6 @@ func (a *API) Routes() http.Handler {
 			a.registerAccessRoutes(authenticated)
 			a.registerRegistryRoutes(authenticated)
 			a.registerConfigurationRoutes(authenticated)
-			a.registerUnavailableRoutes(authenticated)
 		})
 	})
 	return router
@@ -116,6 +116,7 @@ func (a *API) registerAccessRoutes(router chi.Router) {
 
 func (a *API) registerRegistryRoutes(router chi.Router) {
 	router.With(a.requireOperator).Get("/providers", a.listProviders)
+	router.With(a.requireOperator).Get("/providers/{providerID}", a.getProvider)
 	router.With(a.requireOperator, a.requireCSRF).Post("/providers", a.createProvider)
 	router.With(a.requireOperator, a.requireCSRF).Put("/providers/{providerID}", a.updateProvider)
 	router.With(a.requireOperator, a.requireCSRF).Put("/providers/{providerID}/status", a.setProviderStatus)
@@ -126,9 +127,6 @@ func (a *API) registerRegistryRoutes(router chi.Router) {
 
 	router.With(a.requireOperator).Get("/credentials", a.listCredentials)
 	router.With(a.requireOperator, a.requireCSRF).Post("/credentials", a.createCredential)
-	router.With(a.requireOperator, a.requireCSRF).Put("/credentials/{credentialID}", a.unavailable("credential_updates"))
-	router.With(a.requireOperator, a.requireCSRF).Put("/credentials/{credentialID}/status", a.unavailable("credential_status"))
-	router.With(a.requireOperator, a.requireCSRF).Post("/credentials/{credentialID}/tests", a.unavailable("credential_tests"))
 }
 
 func (a *API) registerConfigurationRoutes(router chi.Router) {
@@ -136,21 +134,4 @@ func (a *API) registerConfigurationRoutes(router chi.Router) {
 	router.With(a.requireOperator, a.requireCSRF).Post("/configuration/revisions/{revisionID}/validate", a.validateConfigurationRevision)
 	router.With(a.requireOperator, a.requireCSRF).Post("/configuration/revisions/{revisionID}/publish", a.publishConfigurationRevision)
 	router.With(a.requireOperator, a.requireCSRF).Post("/configuration/revisions/{revisionID}/rollback", a.rollbackConfigurationRevision)
-}
-
-func (a *API) registerUnavailableRoutes(router chi.Router) {
-	router.Get("/overview", a.unavailable("overview"))
-	router.Get("/requests", a.unavailable("request_operations"))
-	router.Get("/requests/{requestID}", a.unavailable("request_operations"))
-	router.Get("/audit/events", a.unavailable("audit_events"))
-	router.Get("/content-records", a.unavailable("content_records"))
-	router.With(a.requireCSRF).Post("/content-records/{recordID}/access", a.unavailable("content_records"))
-	router.With(a.requireCSRF).Post("/content-records/{recordID}/deletion", a.unavailable("content_records"))
-	router.Get("/operations/{operationID}", a.unavailable("background_operations"))
-	router.With(a.requireCSRF).Post("/operations/{operationID}/cancel", a.unavailable("background_operations"))
-	router.Get("/playground/models", a.unavailable("playground"))
-	router.With(a.requireCSRF).Post("/playground/runs", a.unavailable("playground"))
-	router.Get("/settings/{section}", a.unavailable("settings"))
-	router.With(a.requireCSRF).Put("/settings/{section}", a.unavailable("settings"))
-	router.With(a.requireCSRF).Post("/settings/backups/runs", a.unavailable("backups"))
 }

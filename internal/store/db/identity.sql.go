@@ -94,13 +94,14 @@ func (q *Queries) CreateGatewayKey(ctx context.Context, arg CreateGatewayKeyPara
 }
 
 const createInvitation = `-- name: CreateInvitation :one
-INSERT INTO invitations (code_digest, created_by, role, expires_at)
-VALUES ($1, $2, $3, $4)
-RETURNING id, code_digest, created_by, role, expires_at, claimed_by, claimed_at, revoked_at, created_at
+INSERT INTO invitations (code_digest, code_prefix, created_by, role, expires_at)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING id, code_digest, code_prefix, created_by, role, expires_at, claimed_by, claimed_at, revoked_at, created_at
 `
 
 type CreateInvitationParams struct {
 	CodeDigest []byte             `json:"code_digest"`
+	CodePrefix string             `json:"code_prefix"`
 	CreatedBy  uuid.UUID          `json:"created_by"`
 	Role       UserRole           `json:"role"`
 	ExpiresAt  pgtype.Timestamptz `json:"expires_at"`
@@ -109,6 +110,7 @@ type CreateInvitationParams struct {
 func (q *Queries) CreateInvitation(ctx context.Context, arg CreateInvitationParams) (Invitation, error) {
 	row := q.db.QueryRow(ctx, createInvitation,
 		arg.CodeDigest,
+		arg.CodePrefix,
 		arg.CreatedBy,
 		arg.Role,
 		arg.ExpiresAt,
@@ -117,6 +119,7 @@ func (q *Queries) CreateInvitation(ctx context.Context, arg CreateInvitationPara
 	err := row.Scan(
 		&i.ID,
 		&i.CodeDigest,
+		&i.CodePrefix,
 		&i.CreatedBy,
 		&i.Role,
 		&i.ExpiresAt,
@@ -257,7 +260,7 @@ func (q *Queries) GetGatewayKeyByDigest(ctx context.Context, secretDigest []byte
 }
 
 const getInvitationByDigestForUpdate = `-- name: GetInvitationByDigestForUpdate :one
-SELECT id, code_digest, created_by, role, expires_at, claimed_by, claimed_at, revoked_at, created_at FROM invitations WHERE code_digest = $1 FOR UPDATE
+SELECT id, code_digest, code_prefix, created_by, role, expires_at, claimed_by, claimed_at, revoked_at, created_at FROM invitations WHERE code_digest = $1 FOR UPDATE
 `
 
 func (q *Queries) GetInvitationByDigestForUpdate(ctx context.Context, codeDigest []byte) (Invitation, error) {
@@ -266,6 +269,7 @@ func (q *Queries) GetInvitationByDigestForUpdate(ctx context.Context, codeDigest
 	err := row.Scan(
 		&i.ID,
 		&i.CodeDigest,
+		&i.CodePrefix,
 		&i.CreatedBy,
 		&i.Role,
 		&i.ExpiresAt,
@@ -438,7 +442,7 @@ func (q *Queries) ListGatewayKeysByUser(ctx context.Context, userID uuid.UUID) (
 }
 
 const listInvitations = `-- name: ListInvitations :many
-SELECT id, code_digest, created_by, role, expires_at, claimed_by, claimed_at, revoked_at, created_at FROM invitations ORDER BY created_at DESC, id LIMIT $2 OFFSET $1
+SELECT id, code_digest, code_prefix, created_by, role, expires_at, claimed_by, claimed_at, revoked_at, created_at FROM invitations ORDER BY created_at DESC, id LIMIT $2 OFFSET $1
 `
 
 type ListInvitationsParams struct {
@@ -458,6 +462,7 @@ func (q *Queries) ListInvitations(ctx context.Context, arg ListInvitationsParams
 		if err := rows.Scan(
 			&i.ID,
 			&i.CodeDigest,
+			&i.CodePrefix,
 			&i.CreatedBy,
 			&i.Role,
 			&i.ExpiresAt,

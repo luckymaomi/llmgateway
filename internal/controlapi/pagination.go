@@ -58,10 +58,3 @@ func positiveQueryInteger(value string, fallback int) int {
 	}
 	return parsed
 }
-
-func prefix(value string, length int) string {
-	if len(value) <= length {
-		return value
-	}
-	return value[:length]
-}

@@ -16,7 +16,29 @@ var (
 	ErrForbidden             = errors.New("registry operation forbidden")
 	ErrProviderEnabled       = errors.New("provider must be disabled before changing routing fields")
 	ErrValidationUnavailable = errors.New("registry validation is temporarily unavailable")
+	ErrIdempotencyConflict   = errors.New("registry idempotency key conflict")
+	ErrOutcomeUnknown        = errors.New("registry operation outcome is unknown")
 )
+
+type ProviderMutationAction string
+
+const (
+	ProviderMutationCreate ProviderMutationAction = "provider.create"
+	ProviderMutationUpdate ProviderMutationAction = "provider.update"
+	ProviderMutationStatus ProviderMutationAction = "provider.status"
+)
+
+type MutationRequest struct {
+	IdempotencyKey uuid.UUID
+	RequestID      string
+}
+
+type ProviderMutation struct {
+	Action             ProviderMutationAction
+	IdempotencyKey     uuid.UUID
+	RequestFingerprint []byte
+	RequestID          string
+}
 
 type ResourceDomain string
 
@@ -102,9 +124,10 @@ type NewCredential struct {
 }
 
 type Repository interface {
-	CreateProvider(context.Context, Provider, uuid.UUID) (Provider, error)
-	UpdateProvider(context.Context, Provider, uuid.UUID) (Provider, error)
-	SetProviderEnabled(context.Context, uuid.UUID, bool, time.Time, uuid.UUID) (Provider, error)
+	ReplayProviderMutation(context.Context, uuid.UUID, ProviderMutation) (Provider, bool, error)
+	CreateProvider(context.Context, Provider, uuid.UUID, ProviderMutation) (Provider, error)
+	UpdateProvider(context.Context, Provider, uuid.UUID, ProviderMutation) (Provider, error)
+	SetProviderEnabled(context.Context, uuid.UUID, bool, time.Time, uuid.UUID, ProviderMutation) (Provider, error)
 	ListProviders(context.Context) ([]Provider, error)
 	GetProvider(context.Context, uuid.UUID) (Provider, error)
 

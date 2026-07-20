@@ -6,6 +6,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/luckymaomi/llmgateway/internal/httpserver"
 	"github.com/luckymaomi/llmgateway/internal/providers"
 	"github.com/luckymaomi/llmgateway/internal/registry"
 )
@@ -31,6 +32,20 @@ func (a *API) listProviders(w http.ResponseWriter, r *http.Request) {
 	writeData(w, http.StatusOK, paginate(views, query))
 }
 
+func (a *API) getProvider(w http.ResponseWriter, r *http.Request) {
+	providerID, err := uuid.Parse(chi.URLParam(r, "providerID"))
+	if err != nil {
+		writeDecodeError(w, r, err)
+		return
+	}
+	provider, err := a.registry.GetProvider(r.Context(), principalFromContext(r.Context()), providerID)
+	if err != nil {
+		a.writeRegistryError(w, r, err)
+		return
+	}
+	writeData(w, http.StatusOK, presentProviderRecord(provider))
+}
+
 func (a *API) createProvider(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Slug    string         `json:"slug"`
@@ -42,9 +57,13 @@ func (a *API) createProvider(w http.ResponseWriter, r *http.Request) {
 		writeDecodeError(w, r, err)
 		return
 	}
+	mutation, ok := providerMutationRequest(w, r)
+	if !ok {
+		return
+	}
 	created, err := a.registry.CreateProvider(r.Context(), principalFromContext(r.Context()), registry.Provider{
 		Slug: input.Slug, Name: input.Name, Kind: input.Kind, BaseURL: input.BaseURL, Enabled: false,
-	})
+	}, mutation)
 	if err != nil {
 		a.writeRegistryError(w, r, err)
 		return
@@ -68,9 +87,13 @@ func (a *API) updateProvider(w http.ResponseWriter, r *http.Request) {
 		writeDecodeError(w, r, err)
 		return
 	}
+	mutation, ok := providerMutationRequest(w, r)
+	if !ok {
+		return
+	}
 	updated, err := a.registry.UpdateProvider(r.Context(), principalFromContext(r.Context()), registry.Provider{
 		ID: providerID, Name: input.Name, Kind: input.Kind, BaseURL: input.BaseURL, UpdatedAt: input.ExpectedUpdatedAt,
-	})
+	}, mutation)
 	if err != nil {
 		a.writeRegistryError(w, r, err)
 		return
@@ -96,12 +119,30 @@ func (a *API) setProviderStatus(w http.ResponseWriter, r *http.Request) {
 		a.writeRegistryError(w, r, registry.ErrInvalidInput)
 		return
 	}
-	updated, err := a.registry.SetProviderEnabled(r.Context(), principalFromContext(r.Context()), id, *input.Enabled, input.ExpectedUpdatedAt)
+	mutation, ok := providerMutationRequest(w, r)
+	if !ok {
+		return
+	}
+	updated, err := a.registry.SetProviderEnabled(r.Context(), principalFromContext(r.Context()), id, *input.Enabled, input.ExpectedUpdatedAt, mutation)
 	if err != nil {
 		a.writeRegistryError(w, r, err)
 		return
 	}
 	writeData(w, http.StatusOK, presentProviderRecord(updated))
+}
+
+func providerMutationRequest(w http.ResponseWriter, r *http.Request) (registry.MutationRequest, bool) {
+	idempotencyKey, err := uuid.Parse(r.Header.Get("Idempotency-Key"))
+	if err != nil || idempotencyKey == uuid.Nil {
+		writeProblem(w, r, problem{Status: http.StatusBadRequest, Code: "invalid_idempotency_key", Message: "Idempotency-Key must be a UUID.", Stage: "registry"})
+		return registry.MutationRequest{}, false
+	}
+	requestID := httpserver.RequestIDFromContext(r.Context())
+	if requestID == "" {
+		writeProblem(w, r, problem{Status: http.StatusInternalServerError, Code: "internal_invariant", Message: "Request identity is unavailable.", Stage: "registry", Retryable: true})
+		return registry.MutationRequest{}, false
+	}
+	return registry.MutationRequest{IdempotencyKey: idempotencyKey, RequestID: requestID}, true
 }
 
 func (a *API) listModels(w http.ResponseWriter, r *http.Request) {

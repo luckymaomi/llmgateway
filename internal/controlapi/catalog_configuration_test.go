@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/luckymaomi/llmgateway/internal/identity"
 	"github.com/luckymaomi/llmgateway/internal/providers"
 	"github.com/luckymaomi/llmgateway/internal/registry"
 )
@@ -32,6 +33,12 @@ func TestRegistryContract(t *testing.T) {
 	provider := providersPage.Items[0]
 	if provider.Slug != "openai" || provider.Status != "disabled" || provider.ModelCount != 1 || provider.CredentialCount != 1 || !provider.UpdatedAt.Equal(fixture.now) {
 		t.Fatalf("unexpected provider presentation: %+v", provider)
+	}
+	providerResponse := request(t, fixture.handler, http.MethodGet, "/api/control/providers/"+providerID.String(), nil, true, false)
+	requireStatus(t, providerResponse, http.StatusOK)
+	providerRecord := decodeData[providerRecordView](t, providerResponse)
+	if providerRecord.ID != providerID.String() || providerRecord.Slug != "openai" || providerRecord.Name != "OpenAI" || !providerRecord.UpdatedAt.Equal(fixture.now) {
+		t.Fatalf("unexpected provider record: %+v", providerRecord)
 	}
 
 	createResponse := request(t, fixture.handler, http.MethodPost, "/api/control/providers", map[string]any{
@@ -75,6 +82,24 @@ func TestRegistryContract(t *testing.T) {
 	if updated.Status != "enabled" || !updated.UpdatedAt.After(updatedProvider.UpdatedAt) || fixture.registry.updatedProvider.ID != providerID || !fixture.registry.updatedProvider.Enabled {
 		t.Fatalf("unexpected provider status: %+v", updated)
 	}
+}
+
+func TestGetProviderAuthorizationAndMissingRecord(t *testing.T) {
+	t.Run("member is forbidden", func(t *testing.T) {
+		fixture := newControlFixture(t)
+		fixture.identity.principal.Role = identity.RoleMember
+		fixture.identity.principal.Status = identity.StatusActive
+
+		response := request(t, fixture.handler, http.MethodGet, "/api/control/providers/"+uuid.NewString(), nil, true, false)
+		requireStatus(t, response, http.StatusForbidden)
+	})
+
+	t.Run("missing provider is not found", func(t *testing.T) {
+		fixture := newControlFixture(t)
+
+		response := request(t, fixture.handler, http.MethodGet, "/api/control/providers/"+uuid.NewString(), nil, true, false)
+		requireStatus(t, response, http.StatusNotFound)
+	})
 }
 
 func TestConfigurationContract(t *testing.T) {

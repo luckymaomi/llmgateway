@@ -83,13 +83,14 @@ type SessionCredentials struct {
 }
 
 type Invitation struct {
-	ID        uuid.UUID  `json:"id"`
-	Role      Role       `json:"role"`
-	ExpiresAt time.Time  `json:"expires_at"`
-	ClaimedAt *time.Time `json:"claimed_at,omitempty"`
-	RevokedAt *time.Time `json:"revoked_at,omitempty"`
-	CreatedAt time.Time  `json:"created_at"`
-	Code      string     `json:"code,omitempty"`
+	ID         uuid.UUID  `json:"id"`
+	Role       Role       `json:"role"`
+	ExpiresAt  time.Time  `json:"expires_at"`
+	ClaimedAt  *time.Time `json:"claimed_at,omitempty"`
+	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	CodePrefix string     `json:"code_prefix"`
+	Code       string     `json:"code,omitempty"`
 }
 
 type GatewayKey struct {
@@ -135,7 +136,7 @@ type Repository interface {
 	TouchSession(context.Context, uuid.UUID) error
 	RevokeSession(context.Context, uuid.UUID) error
 
-	CreateInvitation(context.Context, uuid.UUID, []byte, Role, time.Time) (Invitation, error)
+	CreateInvitation(context.Context, uuid.UUID, []byte, string, Role, time.Time) (Invitation, error)
 	ListInvitations(context.Context, Page) ([]Invitation, error)
 	RevokeInvitation(context.Context, uuid.UUID, uuid.UUID) error
 

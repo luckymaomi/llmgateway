@@ -156,11 +156,11 @@ func presentSession(principal identity.Principal, csrfToken string) sessionView 
 func capabilitiesFor(role identity.Role) []string {
 	switch role {
 	case identity.RoleAdministrator:
-		return []string{"overview:read", "providers:read", "providers:write", "credentials:read", "credentials:write", "access:read", "access:write", "ledger:read", "ledger:write", "operations:read", "audit:read", "content:read", "playground:use", "settings:read", "settings:write", "revisions:publish"}
+		return []string{"providers:read", "providers:write", "access:read", "access:write", "revisions:publish"}
 	case identity.RoleOperator:
-		return []string{"overview:read", "providers:read", "providers:write", "credentials:read", "credentials:write", "operations:read", "audit:read", "playground:use", "settings:read", "revisions:publish"}
+		return []string{"providers:read", "providers:write", "revisions:publish"}
 	case identity.RoleMember:
-		return []string{"access:read", "ledger:read", "playground:use"}
+		return []string{"access:read"}
 	default:
 		return []string{}
 	}

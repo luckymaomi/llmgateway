@@ -32,17 +32,6 @@ func writeProblem(w http.ResponseWriter, r *http.Request, value problem) {
 	_ = json.NewEncoder(w).Encode(problemEnvelope{Error: value})
 }
 
-func (a *API) unavailable(feature string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		writeProblem(w, r, problem{
-			Status:  http.StatusNotImplemented,
-			Code:    "feature_not_implemented",
-			Message: "This control-plane capability does not have a runtime owner yet.",
-			Stage:   feature,
-		})
-	}
-}
-
 func (a *API) writeConfigurationError(w http.ResponseWriter, r *http.Request, err error) {
 	value := problem{Status: http.StatusInternalServerError, Code: "internal_error", Message: "Configuration operation failed.", Retryable: true, Stage: "configuration"}
 	switch {
@@ -71,10 +60,14 @@ func (a *API) writeRegistryError(w http.ResponseWriter, r *http.Request, err err
 		value.Status, value.Code, value.Message, value.Retryable = http.StatusNotFound, "not_found", "Registry record was not found.", false
 	case errors.Is(err, registry.ErrConflict):
 		value.Status, value.Code, value.Message, value.Retryable = http.StatusConflict, "conflict", "Registry facts changed.", false
+	case errors.Is(err, registry.ErrIdempotencyConflict):
+		value.Status, value.Code, value.Message, value.Retryable = http.StatusConflict, "idempotency_conflict", "Idempotency-Key was already used for different Provider input.", false
 	case errors.Is(err, registry.ErrProviderEnabled):
 		value.Status, value.Code, value.Message, value.Retryable = http.StatusConflict, "provider_must_be_disabled", "Disable the Provider before changing its type or Base URL.", false
 	case errors.Is(err, registry.ErrValidationUnavailable):
 		value.Status, value.Code, value.Message, value.Retryable = http.StatusServiceUnavailable, "registry_validation_unavailable", "Provider address validation is temporarily unavailable.", true
+	case errors.Is(err, registry.ErrOutcomeUnknown):
+		value.Status, value.Code, value.Message, value.Retryable = http.StatusServiceUnavailable, "operation_outcome_unknown", "The Provider operation may have committed. Retry with the same Idempotency-Key.", true
 	default:
 		a.logFailure("registry operation failed", r, err)
 	}

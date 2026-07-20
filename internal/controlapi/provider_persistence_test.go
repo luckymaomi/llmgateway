@@ -16,10 +16,12 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/luckymaomi/llmgateway/internal/config"
 	"github.com/luckymaomi/llmgateway/internal/configuration"
+	"github.com/luckymaomi/llmgateway/internal/httpserver"
 	"github.com/luckymaomi/llmgateway/internal/identity"
 	"github.com/luckymaomi/llmgateway/internal/registry"
 	"github.com/luckymaomi/llmgateway/internal/security"
@@ -30,6 +32,9 @@ import (
 func TestPersistentProviderControlLifecycle(t *testing.T) {
 	databaseURL := os.Getenv("LLMGATEWAY_CONTROL_TEST_DATABASE_URL")
 	if databaseURL == "" {
+		if os.Getenv("LLMGATEWAY_CONTROL_TEST_REQUIRED") == "true" {
+			t.Fatal("LLMGATEWAY_CONTROL_TEST_DATABASE_URL is required for the Provider control persistence test")
+		}
 		t.Skip("LLMGATEWAY_CONTROL_TEST_DATABASE_URL is required for the isolated control API test")
 	}
 	ctx := context.Background()
@@ -72,6 +77,7 @@ func TestPersistentProviderControlLifecycle(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	api := New(identityService, registryService, configurationService, nil, config.Security{}, logger)
 	router := chi.NewRouter()
+	router.Use(httpserver.RequestID)
 	router.Mount("/api", api.Routes())
 	server := httptest.NewServer(router)
 	defer server.Close()
@@ -93,12 +99,45 @@ func TestPersistentProviderControlLifecycle(t *testing.T) {
 	createInput := map[string]any{
 		"slug": "fixture-provider", "name": "Fixture Provider", "kind": "openai-compatible", "baseUrl": "https://198.18.0.1/v1",
 	}
-	createdResponse := controlRequest(t, client, http.MethodPost, server.URL+"/api/control/providers", session.CSRFToken, createInput, http.StatusCreated)
+	createIdempotencyKey := uuid.NewString()
+	createdResponse := controlMutationRequest(t, client, http.MethodPost, server.URL+"/api/control/providers", session.CSRFToken, createInput, createIdempotencyKey, "provider-create-original", http.StatusCreated)
+	createdRequestID := createdResponse.Header.Get("X-Request-ID")
 	var created providerView
 	decodeControlData(t, createdResponse, &created)
 	if created.Slug != "fixture-provider" || created.Name != "Fixture Provider" || created.Status != "disabled" || created.UpdatedAt.IsZero() {
 		t.Fatalf("created provider = %#v", created)
 	}
+	replayResponse := controlMutationRequest(t, client, http.MethodPost, server.URL+"/api/control/providers", session.CSRFToken, createInput, createIdempotencyKey, "provider-create-replay", http.StatusCreated)
+	var replayed providerView
+	decodeControlData(t, replayResponse, &replayed)
+	if replayed.ID != created.ID || replayed.Slug != created.Slug || replayed.Name != created.Name || replayed.Kind != created.Kind || replayed.BaseURL != created.BaseURL || replayed.Status != created.Status || !replayed.UpdatedAt.Equal(created.UpdatedAt) {
+		t.Fatalf("replayed provider = %#v, want original %#v", replayed, created)
+	}
+	idempotencyConflict := controlMutationRequest(t, client, http.MethodPost, server.URL+"/api/control/providers", session.CSRFToken, map[string]any{
+		"slug": "fixture-provider", "name": "Different Provider Input", "kind": "openai-compatible", "baseUrl": "https://198.18.0.1/v1",
+	}, createIdempotencyKey, "provider-create-conflict", http.StatusConflict)
+	requireControlProblem(t, idempotencyConflict, "idempotency_conflict")
+	missingIdempotencyKey := controlMutationRequest(t, client, http.MethodPost, server.URL+"/api/control/providers", session.CSRFToken, map[string]any{
+		"slug": "missing-idempotency-key", "name": "Missing Key", "kind": "openai-compatible", "baseUrl": "https://198.18.0.10/v1",
+	}, "", "provider-create-missing-key", http.StatusBadRequest)
+	requireControlProblem(t, missingIdempotencyKey, "invalid_idempotency_key")
+	invalidIdempotencyKey := controlMutationRequest(t, client, http.MethodPost, server.URL+"/api/control/providers", session.CSRFToken, map[string]any{
+		"slug": "invalid-idempotency-key", "name": "Invalid Key", "kind": "openai-compatible", "baseUrl": "https://198.18.0.11/v1",
+	}, "not-a-uuid", "provider-create-invalid-key", http.StatusBadRequest)
+	requireControlProblem(t, invalidIdempotencyKey, "invalid_idempotency_key")
+	nilIdempotencyKey := controlMutationRequest(t, client, http.MethodPost, server.URL+"/api/control/providers", session.CSRFToken, map[string]any{
+		"slug": "nil-idempotency-key", "name": "Nil Key", "kind": "openai-compatible", "baseUrl": "https://198.18.0.12/v1",
+	}, uuid.Nil.String(), "provider-create-nil-key", http.StatusBadRequest)
+	requireControlProblem(t, nilIdempotencyKey, "invalid_idempotency_key")
+	assertProviderCreateIdempotencyFacts(t, pool, created.ID, createIdempotencyKey)
+	providerResponse := controlRequest(t, client, http.MethodGet, server.URL+"/api/control/providers/"+created.ID, "", nil, http.StatusOK)
+	var providerRecord providerRecordView
+	decodeControlData(t, providerResponse, &providerRecord)
+	if providerRecord.ID != created.ID || providerRecord.Slug != created.Slug || providerRecord.Name != created.Name || !providerRecord.UpdatedAt.Equal(created.UpdatedAt) {
+		t.Fatalf("provider record = %#v", providerRecord)
+	}
+	missingProvider := controlRequest(t, client, http.MethodGet, server.URL+"/api/control/providers/"+uuid.NewString(), "", nil, http.StatusNotFound)
+	requireControlProblem(t, missingProvider, "not_found")
 
 	duplicate := controlRequest(t, client, http.MethodPost, server.URL+"/api/control/providers", session.CSRFToken, createInput, http.StatusConflict)
 	requireControlProblem(t, duplicate, "conflict")
@@ -136,6 +175,7 @@ func TestPersistentProviderControlLifecycle(t *testing.T) {
 	updatedResponse := controlRequest(t, client, http.MethodPut, server.URL+"/api/control/providers/"+created.ID, session.CSRFToken, map[string]any{
 		"name": "Fixture Provider Updated", "kind": "deepseek", "baseUrl": "https://198.18.0.2/v1", "expectedUpdatedAt": created.UpdatedAt,
 	}, http.StatusOK)
+	updatedRequestID := updatedResponse.Header.Get("X-Request-ID")
 	var updated providerView
 	decodeControlData(t, updatedResponse, &updated)
 	if updated.Slug != created.Slug || updated.Name != "Fixture Provider Updated" || updated.Kind != "deepseek" || updated.BaseURL != "https://198.18.0.2/v1" || updated.Status != "disabled" || !updated.UpdatedAt.After(created.UpdatedAt) {
@@ -154,6 +194,7 @@ func TestPersistentProviderControlLifecycle(t *testing.T) {
 	enableResponse := controlRequest(t, client, http.MethodPut, server.URL+"/api/control/providers/"+created.ID+"/status", session.CSRFToken, map[string]any{
 		"enabled": true, "expectedUpdatedAt": updated.UpdatedAt,
 	}, http.StatusOK)
+	enabledRequestID := enableResponse.Header.Get("X-Request-ID")
 	var enabled providerView
 	decodeControlData(t, enableResponse, &enabled)
 	if enabled.Status != "enabled" || enabled.Name != updated.Name || enabled.Kind != updated.Kind || enabled.BaseURL != updated.BaseURL || !enabled.UpdatedAt.After(updated.UpdatedAt) {
@@ -168,6 +209,7 @@ func TestPersistentProviderControlLifecycle(t *testing.T) {
 	disableResponse := controlRequest(t, client, http.MethodPut, server.URL+"/api/control/providers/"+created.ID+"/status", session.CSRFToken, map[string]any{
 		"enabled": false, "expectedUpdatedAt": enabled.UpdatedAt,
 	}, http.StatusOK)
+	disabledRequestID := disableResponse.Header.Get("X-Request-ID")
 	var disabled providerView
 	decodeControlData(t, disableResponse, &disabled)
 	if disabled.Status != "disabled" || disabled.Name != updated.Name || disabled.Kind != updated.Kind || disabled.BaseURL != updated.BaseURL || !disabled.UpdatedAt.After(enabled.UpdatedAt) {
@@ -186,21 +228,27 @@ func TestPersistentProviderControlLifecycle(t *testing.T) {
 		t.Fatalf("persisted provider = %#v", persisted)
 	}
 
-	createdAudit := readProviderAuditDetail(t, pool, created.ID, "provider.created")
-	if createdAudit["slug"] != created.Slug || createdAudit["kind"] != "openai-compatible" {
-		t.Fatalf("provider.created detail = %#v", createdAudit)
+	createdAudits := readProviderAudits(t, pool, created.ID, "provider.created")
+	if len(createdAudits) != 1 || createdAudits[0].RequestID != createdRequestID || createdAudits[0].Detail.Before != nil {
+		t.Fatalf("provider.created audit = %#v", createdAudits)
 	}
-	updatedAudit := readProviderAuditDetail(t, pool, created.ID, "provider.updated")
-	if updatedAudit["name"] != updated.Name || updatedAudit["kind"] != string(updated.Kind) || updatedAudit["base_url"] != updated.BaseURL {
-		t.Fatalf("provider.updated detail = %#v", updatedAudit)
+	requireProviderAuditSummary(t, createdAudits[0].Detail.After, created.Slug, created.Name, string(created.Kind), created.BaseURL, false)
+	updatedAudits := readProviderAudits(t, pool, created.ID, "provider.updated")
+	if len(updatedAudits) != 1 || updatedAudits[0].RequestID != updatedRequestID {
+		t.Fatalf("provider.updated audit = %#v", updatedAudits)
 	}
-	var statusAuditCount, enabledAuditCount, disabledAuditCount int
-	if err := pool.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE detail ->> 'enabled' = 'true'), count(*) FILTER (WHERE detail ->> 'enabled' = 'false') FROM audit_events WHERE target_type = 'provider' AND target_id = $1 AND action = 'provider.status_changed'`, created.ID).Scan(&statusAuditCount, &enabledAuditCount, &disabledAuditCount); err != nil {
-		t.Fatalf("read provider status audits: %v", err)
+	requireProviderAuditSummary(t, updatedAudits[0].Detail.Before, created.Slug, created.Name, string(created.Kind), created.BaseURL, false)
+	requireProviderAuditSummary(t, updatedAudits[0].Detail.After, updated.Slug, updated.Name, string(updated.Kind), updated.BaseURL, false)
+	statusAudits := readProviderAudits(t, pool, created.ID, "provider.status_changed")
+	if len(statusAudits) != 2 {
+		t.Fatalf("provider status audit count = %d, want 2: %#v", len(statusAudits), statusAudits)
 	}
-	if statusAuditCount != 2 || enabledAuditCount != 1 || disabledAuditCount != 1 {
-		t.Fatalf("provider status audits = total %d enabled %d disabled %d", statusAuditCount, enabledAuditCount, disabledAuditCount)
-	}
+	enabledAudit := providerAuditByRequestID(t, statusAudits, enabledRequestID)
+	requireProviderAuditSummary(t, enabledAudit.Detail.Before, updated.Slug, updated.Name, string(updated.Kind), updated.BaseURL, false)
+	requireProviderAuditSummary(t, enabledAudit.Detail.After, enabled.Slug, enabled.Name, string(enabled.Kind), enabled.BaseURL, true)
+	disabledAudit := providerAuditByRequestID(t, statusAudits, disabledRequestID)
+	requireProviderAuditSummary(t, disabledAudit.Detail.Before, enabled.Slug, enabled.Name, string(enabled.Kind), enabled.BaseURL, true)
+	requireProviderAuditSummary(t, disabledAudit.Detail.After, disabled.Slug, disabled.Name, string(disabled.Kind), disabled.BaseURL, false)
 
 	installProviderAuditFailure(t, pool)
 	failedUpdate := controlRequest(t, client, http.MethodPut, server.URL+"/api/control/providers/"+created.ID, session.CSRFToken, map[string]any{
@@ -230,6 +278,24 @@ type persistedProvider struct {
 	UpdatedAt time.Time
 }
 
+type providerAuditSummary struct {
+	Slug    string `json:"slug"`
+	Name    string `json:"name"`
+	Kind    string `json:"kind"`
+	BaseURL string `json:"base_url"`
+	Enabled bool   `json:"enabled"`
+}
+
+type providerAuditDetail struct {
+	Before *providerAuditSummary `json:"before"`
+	After  *providerAuditSummary `json:"after"`
+}
+
+type providerAuditRecord struct {
+	RequestID string
+	Detail    providerAuditDetail
+}
+
 func readPersistedProvider(t *testing.T, pool *pgxpool.Pool, providerID string) persistedProvider {
 	t.Helper()
 	var result persistedProvider
@@ -239,17 +305,75 @@ func readPersistedProvider(t *testing.T, pool *pgxpool.Pool, providerID string) 
 	return result
 }
 
-func readProviderAuditDetail(t *testing.T, pool *pgxpool.Pool, providerID, action string) map[string]any {
+func assertProviderCreateIdempotencyFacts(t *testing.T, pool *pgxpool.Pool, providerID, idempotencyKey string) {
 	t.Helper()
-	var encoded []byte
-	if err := pool.QueryRow(context.Background(), "SELECT detail FROM audit_events WHERE target_type = 'provider' AND target_id = $1 AND action = $2", providerID, action).Scan(&encoded); err != nil {
-		t.Fatalf("read %s audit: %v", action, err)
+	key, err := uuid.Parse(idempotencyKey)
+	if err != nil {
+		t.Fatalf("parse test idempotency key: %v", err)
 	}
-	var detail map[string]any
-	if err := json.Unmarshal(encoded, &detail); err != nil {
-		t.Fatalf("decode %s audit: %v", action, err)
+	var providerCount, mutationCount, auditCount int
+	ctx := context.Background()
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM providers WHERE id = $1", providerID).Scan(&providerCount); err != nil {
+		t.Fatalf("count idempotent Provider records: %v", err)
 	}
-	return detail
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM provider_mutations
+WHERE action = 'provider.create' AND idempotency_key = $1`, key).Scan(&mutationCount); err != nil {
+		t.Fatalf("count idempotent Provider mutations: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_events
+WHERE target_type = 'provider' AND target_id = $1 AND action = 'provider.created'`, providerID).Scan(&auditCount); err != nil {
+		t.Fatalf("count idempotent Provider audits: %v", err)
+	}
+	if providerCount != 1 || mutationCount != 1 || auditCount != 1 {
+		t.Fatalf("idempotent create counts = Provider %d mutation %d audit %d, want 1/1/1", providerCount, mutationCount, auditCount)
+	}
+}
+
+func readProviderAudits(t *testing.T, pool *pgxpool.Pool, providerID, action string) []providerAuditRecord {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), `SELECT request_id, detail FROM audit_events
+WHERE target_type = 'provider' AND target_id = $1 AND action = $2`, providerID, action)
+	if err != nil {
+		t.Fatalf("read %s audits: %v", action, err)
+	}
+	defer rows.Close()
+	var result []providerAuditRecord
+	for rows.Next() {
+		var record providerAuditRecord
+		var encoded []byte
+		if err := rows.Scan(&record.RequestID, &encoded); err != nil {
+			t.Fatalf("scan %s audit: %v", action, err)
+		}
+		if err := json.Unmarshal(encoded, &record.Detail); err != nil {
+			t.Fatalf("decode %s audit: %v", action, err)
+		}
+		result = append(result, record)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate %s audits: %v", action, err)
+	}
+	return result
+}
+
+func providerAuditByRequestID(t *testing.T, audits []providerAuditRecord, requestID string) providerAuditRecord {
+	t.Helper()
+	var matches []providerAuditRecord
+	for _, audit := range audits {
+		if audit.RequestID == requestID {
+			matches = append(matches, audit)
+		}
+	}
+	if len(matches) != 1 {
+		t.Fatalf("Provider audits with request_id %q = %d, want 1: %#v", requestID, len(matches), audits)
+	}
+	return matches[0]
+}
+
+func requireProviderAuditSummary(t *testing.T, actual *providerAuditSummary, slug, name, kind, baseURL string, enabled bool) {
+	t.Helper()
+	if actual == nil || actual.Slug != slug || actual.Name != name || actual.Kind != kind || actual.BaseURL != baseURL || actual.Enabled != enabled {
+		t.Fatalf("Provider audit summary = %#v, want slug=%q name=%q kind=%q baseURL=%q enabled=%t", actual, slug, name, kind, baseURL, enabled)
+	}
 }
 
 func installProviderAuditFailure(t *testing.T, pool *pgxpool.Pool) {
@@ -257,7 +381,7 @@ func installProviderAuditFailure(t *testing.T, pool *pgxpool.Pool) {
 	ctx := context.Background()
 	if _, err := pool.Exec(ctx, `CREATE OR REPLACE FUNCTION reject_provider_update_audit() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-    IF NEW.action = 'provider.updated' AND NEW.detail ->> 'name' = 'Rollback Attempt' THEN
+    IF NEW.action = 'provider.updated' AND NEW.detail -> 'after' ->> 'name' = 'Rollback Attempt' THEN
         RAISE EXCEPTION 'forced provider audit failure';
     END IF;
     RETURN NEW;
@@ -274,6 +398,15 @@ $$`); err != nil {
 }
 
 func controlRequest(t *testing.T, client *http.Client, method, target, csrf string, body any, wantStatus int) *http.Response {
+	t.Helper()
+	idempotencyKey := ""
+	if method != http.MethodGet {
+		idempotencyKey = uuid.NewString()
+	}
+	return controlMutationRequest(t, client, method, target, csrf, body, idempotencyKey, "", wantStatus)
+}
+
+func controlMutationRequest(t *testing.T, client *http.Client, method, target, csrf string, body any, idempotencyKey, requestID string, wantStatus int) *http.Response {
 	t.Helper()
 	var encoded []byte
 	var err error
@@ -292,6 +425,12 @@ func controlRequest(t *testing.T, client *http.Client, method, target, csrf stri
 	}
 	if csrf != "" {
 		request.Header.Set("X-CSRF-Token", csrf)
+	}
+	if idempotencyKey != "" {
+		request.Header.Set("Idempotency-Key", idempotencyKey)
+	}
+	if requestID != "" {
+		request.Header.Set("X-Request-ID", requestID)
 	}
 	response, err := client.Do(request)
 	if err != nil {

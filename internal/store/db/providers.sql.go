@@ -35,6 +35,74 @@ func (q *Queries) BindCredentialModel(ctx context.Context, arg BindCredentialMod
 	return err
 }
 
+const claimProviderMutation = `-- name: ClaimProviderMutation :one
+INSERT INTO provider_mutations (actor_user_id, action, idempotency_key, request_fingerprint, request_id)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (actor_user_id, action, idempotency_key) DO NOTHING
+RETURNING id, actor_user_id, action, idempotency_key, request_fingerprint, request_id, provider_id, result, created_at
+`
+
+type ClaimProviderMutationParams struct {
+	ActorUserID        uuid.UUID `json:"actor_user_id"`
+	Action             string    `json:"action"`
+	IdempotencyKey     uuid.UUID `json:"idempotency_key"`
+	RequestFingerprint []byte    `json:"request_fingerprint"`
+	RequestID          string    `json:"request_id"`
+}
+
+func (q *Queries) ClaimProviderMutation(ctx context.Context, arg ClaimProviderMutationParams) (ProviderMutation, error) {
+	row := q.db.QueryRow(ctx, claimProviderMutation,
+		arg.ActorUserID,
+		arg.Action,
+		arg.IdempotencyKey,
+		arg.RequestFingerprint,
+		arg.RequestID,
+	)
+	var i ProviderMutation
+	err := row.Scan(
+		&i.ID,
+		&i.ActorUserID,
+		&i.Action,
+		&i.IdempotencyKey,
+		&i.RequestFingerprint,
+		&i.RequestID,
+		&i.ProviderID,
+		&i.Result,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const completeProviderMutation = `-- name: CompleteProviderMutation :one
+UPDATE provider_mutations
+SET provider_id = $1, result = $2
+WHERE id = $3
+RETURNING id, actor_user_id, action, idempotency_key, request_fingerprint, request_id, provider_id, result, created_at
+`
+
+type CompleteProviderMutationParams struct {
+	ProviderID *uuid.UUID `json:"provider_id"`
+	Result     []byte     `json:"result"`
+	ID         uuid.UUID  `json:"id"`
+}
+
+func (q *Queries) CompleteProviderMutation(ctx context.Context, arg CompleteProviderMutationParams) (ProviderMutation, error) {
+	row := q.db.QueryRow(ctx, completeProviderMutation, arg.ProviderID, arg.Result, arg.ID)
+	var i ProviderMutation
+	err := row.Scan(
+		&i.ID,
+		&i.ActorUserID,
+		&i.Action,
+		&i.IdempotencyKey,
+		&i.RequestFingerprint,
+		&i.RequestID,
+		&i.ProviderID,
+		&i.Result,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const createCredential = `-- name: CreateCredential :one
 INSERT INTO provider_credentials (id, provider_id, name, encrypted_secret, resource_domain, rpm_limit, tpm_limit, concurrency_limit, fixed_proxy_url)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
@@ -283,6 +351,36 @@ func (q *Queries) GetProviderForUpdate(ctx context.Context, id uuid.UUID) (Provi
 		&i.VerifiedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getProviderMutation = `-- name: GetProviderMutation :one
+SELECT id, actor_user_id, action, idempotency_key, request_fingerprint, request_id, provider_id, result, created_at FROM provider_mutations
+WHERE actor_user_id = $1
+  AND action = $2
+  AND idempotency_key = $3
+`
+
+type GetProviderMutationParams struct {
+	ActorUserID    uuid.UUID `json:"actor_user_id"`
+	Action         string    `json:"action"`
+	IdempotencyKey uuid.UUID `json:"idempotency_key"`
+}
+
+func (q *Queries) GetProviderMutation(ctx context.Context, arg GetProviderMutationParams) (ProviderMutation, error) {
+	row := q.db.QueryRow(ctx, getProviderMutation, arg.ActorUserID, arg.Action, arg.IdempotencyKey)
+	var i ProviderMutation
+	err := row.Scan(
+		&i.ID,
+		&i.ActorUserID,
+		&i.Action,
+		&i.IdempotencyKey,
+		&i.RequestFingerprint,
+		&i.RequestID,
+		&i.ProviderID,
+		&i.Result,
+		&i.CreatedAt,
 	)
 	return i, err
 }

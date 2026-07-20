@@ -34,8 +34,8 @@ WHERE id = sqlc.arg(id)
 RETURNING *;
 
 -- name: CreateInvitation :one
-INSERT INTO invitations (code_digest, created_by, role, expires_at)
-VALUES (sqlc.arg(code_digest), sqlc.arg(created_by), sqlc.arg(role), sqlc.arg(expires_at))
+INSERT INTO invitations (code_digest, code_prefix, created_by, role, expires_at)
+VALUES (sqlc.arg(code_digest), sqlc.arg(code_prefix), sqlc.arg(created_by), sqlc.arg(role), sqlc.arg(expires_at))
 RETURNING *;
 
 -- name: GetInvitationByDigestForUpdate :one

@@ -1,3 +1,21 @@
+-- name: ClaimProviderMutation :one
+INSERT INTO provider_mutations (actor_user_id, action, idempotency_key, request_fingerprint, request_id)
+VALUES (sqlc.arg(actor_user_id), sqlc.arg(action), sqlc.arg(idempotency_key), sqlc.arg(request_fingerprint), sqlc.arg(request_id))
+ON CONFLICT (actor_user_id, action, idempotency_key) DO NOTHING
+RETURNING *;
+
+-- name: GetProviderMutation :one
+SELECT * FROM provider_mutations
+WHERE actor_user_id = sqlc.arg(actor_user_id)
+  AND action = sqlc.arg(action)
+  AND idempotency_key = sqlc.arg(idempotency_key);
+
+-- name: CompleteProviderMutation :one
+UPDATE provider_mutations
+SET provider_id = sqlc.arg(provider_id), result = sqlc.arg(result)
+WHERE id = sqlc.arg(id)
+RETURNING *;
+
 -- name: CreateProvider :one
 INSERT INTO providers (slug, name, kind, base_url, enabled, source_url, verified_at)
 VALUES (sqlc.arg(slug), sqlc.arg(name), sqlc.arg(kind), sqlc.arg(base_url), sqlc.arg(enabled), sqlc.narg(source_url), sqlc.narg(verified_at))

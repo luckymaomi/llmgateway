@@ -35,6 +35,7 @@ CREATE TABLE users (
 CREATE TABLE invitations (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     code_digest bytea NOT NULL UNIQUE,
+    code_prefix text NOT NULL CHECK (octet_length(code_prefix) = 13 AND left(code_prefix, 7) = 'invite_'),
     created_by uuid NOT NULL REFERENCES users(id),
     role user_role NOT NULL DEFAULT 'member',
     expires_at timestamptz NOT NULL,
@@ -79,6 +80,19 @@ CREATE TABLE providers (
     verified_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE provider_mutations (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    actor_user_id uuid NOT NULL REFERENCES users(id),
+    action text NOT NULL,
+    idempotency_key uuid NOT NULL,
+    request_fingerprint bytea NOT NULL CHECK (octet_length(request_fingerprint) = 32),
+    request_id text NOT NULL,
+    provider_id uuid REFERENCES providers(id),
+    result jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (actor_user_id, action, idempotency_key)
 );
 
 CREATE TABLE models (
@@ -256,7 +270,7 @@ CREATE TABLE audit_events (
     action text NOT NULL,
     target_type text NOT NULL,
     target_id text,
-    request_id uuid,
+    request_id text,
     detail jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_at timestamptz NOT NULL DEFAULT now()
 );
@@ -310,6 +324,7 @@ DROP TABLE IF EXISTS model_authorizations;
 DROP TABLE IF EXISTS credential_models;
 DROP TABLE IF EXISTS provider_credentials;
 DROP TABLE IF EXISTS models;
+DROP TABLE IF EXISTS provider_mutations;
 DROP TABLE IF EXISTS providers;
 DROP TABLE IF EXISTS gateway_keys;
 DROP TABLE IF EXISTS sessions;

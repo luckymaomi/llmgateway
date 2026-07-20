@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/luckymaomi/llmgateway/internal/config"
 	"github.com/luckymaomi/llmgateway/internal/configuration"
+	"github.com/luckymaomi/llmgateway/internal/httpserver"
 	"github.com/luckymaomi/llmgateway/internal/identity"
 )
 
@@ -75,6 +76,7 @@ func newControlFixture(t *testing.T) controlFixture {
 	registryService := &registryStub{}
 	api := New(identityService, registryService, configurationService, nil, config.Security{}, nil)
 	router := chi.NewRouter()
+	router.Use(httpserver.RequestID)
 	router.Mount("/api", api.Routes())
 	return controlFixture{
 		handler:       router,
@@ -109,6 +111,9 @@ func request(t *testing.T, handler http.Handler, method, path string, body any, 
 	}
 	if csrf {
 		req.Header.Set("X-CSRF-Token", "csrf-test-token")
+	}
+	if method != http.MethodGet {
+		req.Header.Set("Idempotency-Key", uuid.NewString())
 	}
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)

@@ -15,10 +15,11 @@ import (
 )
 
 const (
-	minimumPasswordBytes = 12
-	maximumPasswordBytes = 1024
-	maximumNameRunes     = 80
-	defaultSessionLength = 12 * time.Hour
+	minimumPasswordBytes  = 12
+	maximumPasswordBytes  = 1024
+	maximumNameRunes      = 80
+	credentialPrefixBytes = 13
+	defaultSessionLength  = 12 * time.Hour
 )
 
 type Service struct {
@@ -156,7 +157,7 @@ func (s *Service) CreateInvitation(ctx context.Context, actor Principal, role Ro
 	if err != nil {
 		return Invitation{}, err
 	}
-	invitation, err := s.repository.CreateInvitation(ctx, actor.UserID, digest[:], role, s.now().Add(validFor))
+	invitation, err := s.repository.CreateInvitation(ctx, actor.UserID, digest[:], credentialPrefix(code), role, s.now().Add(validFor))
 	if err != nil {
 		return Invitation{}, err
 	}
@@ -184,16 +185,19 @@ func (s *Service) CreateGatewayKey(ctx context.Context, actor Principal, userID 
 	if err != nil {
 		return GatewayKey{}, err
 	}
-	prefixLength := 13
-	if len(secret) < prefixLength {
-		prefixLength = len(secret)
-	}
-	key, err := s.repository.CreateGatewayKey(ctx, userID, name, secret[:prefixLength], digest[:], expiresAt, actor.UserID)
+	key, err := s.repository.CreateGatewayKey(ctx, userID, name, credentialPrefix(secret), digest[:], expiresAt, actor.UserID)
 	if err != nil {
 		return GatewayKey{}, err
 	}
 	key.Secret = secret
 	return key, nil
+}
+
+func credentialPrefix(value string) string {
+	if len(value) <= credentialPrefixBytes {
+		return value
+	}
+	return value[:credentialPrefixBytes]
 }
 
 func (s *Service) AuthenticateGatewayKey(ctx context.Context, secret string) (GatewayPrincipal, error) {

@@ -91,7 +91,7 @@ func (s *identityStub) SetUserStatus(_ context.Context, _ identity.Principal, us
 
 func (s *identityStub) CreateInvitation(_ context.Context, actor identity.Principal, role identity.Role, validFor time.Duration) (identity.Invitation, error) {
 	s.createdInvitationFor = validFor
-	item := identity.Invitation{ID: uuid.New(), Role: role, ExpiresAt: time.Now().UTC().Add(validFor), CreatedAt: time.Now().UTC(), Code: "invite_once_secret"}
+	item := identity.Invitation{ID: uuid.New(), Role: role, ExpiresAt: time.Now().UTC().Add(validFor), CreatedAt: time.Now().UTC(), CodePrefix: "invite_once_s", Code: "invite_once_secret"}
 	s.invitations = append(s.invitations, item)
 	_ = actor
 	return item, nil
@@ -152,7 +152,7 @@ type registryStub struct {
 	providerTime    time.Time
 }
 
-func (s *registryStub) CreateProvider(_ context.Context, _ identity.Principal, provider registry.Provider) (registry.Provider, error) {
+func (s *registryStub) CreateProvider(_ context.Context, _ identity.Principal, provider registry.Provider, _ registry.MutationRequest) (registry.Provider, error) {
 	provider.ID = uuid.New()
 	for _, current := range s.providers {
 		if current.UpdatedAt.After(provider.UpdatedAt) {
@@ -165,7 +165,7 @@ func (s *registryStub) CreateProvider(_ context.Context, _ identity.Principal, p
 	return provider, nil
 }
 
-func (s *registryStub) UpdateProvider(_ context.Context, _ identity.Principal, provider registry.Provider) (registry.Provider, error) {
+func (s *registryStub) UpdateProvider(_ context.Context, _ identity.Principal, provider registry.Provider, _ registry.MutationRequest) (registry.Provider, error) {
 	for index := range s.providers {
 		current := s.providers[index]
 		if current.ID != provider.ID {
@@ -190,7 +190,7 @@ func (s *registryStub) UpdateProvider(_ context.Context, _ identity.Principal, p
 	return registry.Provider{}, registry.ErrNotFound
 }
 
-func (s *registryStub) SetProviderEnabled(_ context.Context, _ identity.Principal, providerID uuid.UUID, enabled bool, expectedUpdatedAt time.Time) (registry.Provider, error) {
+func (s *registryStub) SetProviderEnabled(_ context.Context, _ identity.Principal, providerID uuid.UUID, enabled bool, expectedUpdatedAt time.Time, _ registry.MutationRequest) (registry.Provider, error) {
 	for index := range s.providers {
 		current := s.providers[index]
 		if current.ID != providerID {
@@ -210,6 +210,15 @@ func (s *registryStub) SetProviderEnabled(_ context.Context, _ identity.Principa
 
 func (s *registryStub) ListProviders(context.Context, identity.Principal) ([]registry.Provider, error) {
 	return append([]registry.Provider(nil), s.providers...), nil
+}
+
+func (s *registryStub) GetProvider(_ context.Context, _ identity.Principal, providerID uuid.UUID) (registry.Provider, error) {
+	for _, provider := range s.providers {
+		if provider.ID == providerID {
+			return provider, nil
+		}
+	}
+	return registry.Provider{}, registry.ErrNotFound
 }
 
 func (s *registryStub) CreateModel(_ context.Context, _ identity.Principal, model registry.Model) (registry.Model, error) {

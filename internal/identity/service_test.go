@@ -53,6 +53,26 @@ func TestRegisterCreatesPendingUserFromInvitation(t *testing.T) {
 	}
 }
 
+func TestInvitationPersistsOnlyItsDisplayPrefix(t *testing.T) {
+	actorID := uuid.New()
+	repository := &repositoryStub{}
+	repository.createInvitation = func(_ context.Context, persistedActorID uuid.UUID, digest []byte, codePrefix string, role Role, expiresAt time.Time) (Invitation, error) {
+		if persistedActorID != actorID || len(digest) != 32 || len(codePrefix) != credentialPrefixBytes || role != RoleMember || !expiresAt.After(time.Now()) {
+			t.Fatal("invitation persistence received incomplete facts")
+		}
+		return Invitation{ID: uuid.New(), Role: role, ExpiresAt: expiresAt, CodePrefix: codePrefix}, nil
+	}
+
+	service := newTestService(t, repository)
+	created, err := service.CreateInvitation(context.Background(), Principal{UserID: actorID, Role: RoleAdministrator, Status: StatusActive}, RoleMember, 48*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(created.Code) <= credentialPrefixBytes || created.Code[:credentialPrefixBytes] != created.CodePrefix || created.CodePrefix[:7] != "invite_" {
+		t.Fatalf("invitation one-time code/prefix = %q/%q", created.Code, created.CodePrefix)
+	}
+}
+
 func TestGatewayKeyIsRevealedOnceAndRevokedWithinOwnerBoundary(t *testing.T) {
 	userID := uuid.New()
 	keyID := uuid.New()
@@ -97,6 +117,7 @@ type repositoryStub struct {
 	bootstrap        func(context.Context, NewUser) (User, error)
 	register         func(context.Context, []byte, NewUser) (User, error)
 	createSession    func(context.Context, uuid.UUID, []byte, []byte, time.Time) (Principal, error)
+	createInvitation func(context.Context, uuid.UUID, []byte, string, Role, time.Time) (Invitation, error)
 	createGatewayKey func(context.Context, uuid.UUID, string, string, []byte, *time.Time, uuid.UUID) (GatewayKey, error)
 	revokeGatewayKey func(context.Context, uuid.UUID, uuid.UUID, bool) error
 }
@@ -125,8 +146,11 @@ func (r *repositoryStub) FindSession(context.Context, []byte) (Principal, error)
 }
 func (r *repositoryStub) TouchSession(context.Context, uuid.UUID) error  { return nil }
 func (r *repositoryStub) RevokeSession(context.Context, uuid.UUID) error { return nil }
-func (r *repositoryStub) CreateInvitation(context.Context, uuid.UUID, []byte, Role, time.Time) (Invitation, error) {
-	return Invitation{}, nil
+func (r *repositoryStub) CreateInvitation(ctx context.Context, actorID uuid.UUID, digest []byte, codePrefix string, role Role, expiresAt time.Time) (Invitation, error) {
+	if r.createInvitation == nil {
+		return Invitation{}, nil
+	}
+	return r.createInvitation(ctx, actorID, digest, codePrefix, role, expiresAt)
 }
 func (r *repositoryStub) ListInvitations(context.Context, Page) ([]Invitation, error) {
 	return []Invitation{}, nil

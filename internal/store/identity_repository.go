@@ -192,8 +192,8 @@ func (r *IdentityRepository) RevokeSession(ctx context.Context, id uuid.UUID) er
 	return err
 }
 
-func (r *IdentityRepository) CreateInvitation(ctx context.Context, actorID uuid.UUID, digest []byte, role identity.Role, expiresAt time.Time) (identity.Invitation, error) {
-	invitation, err := r.queries.CreateInvitation(ctx, db.CreateInvitationParams{CodeDigest: digest, CreatedBy: actorID, Role: db.UserRole(role), ExpiresAt: timestamp(expiresAt)})
+func (r *IdentityRepository) CreateInvitation(ctx context.Context, actorID uuid.UUID, digest []byte, codePrefix string, role identity.Role, expiresAt time.Time) (identity.Invitation, error) {
+	invitation, err := r.queries.CreateInvitation(ctx, db.CreateInvitationParams{CodeDigest: digest, CodePrefix: codePrefix, CreatedBy: actorID, Role: db.UserRole(role), ExpiresAt: timestamp(expiresAt)})
 	if err != nil {
 		return identity.Invitation{}, translateStoreError(err)
 	}
@@ -283,7 +283,7 @@ func userFromDB(user db.User) identity.User {
 }
 
 func invitationFromDB(invitation db.Invitation) identity.Invitation {
-	return identity.Invitation{ID: invitation.ID, Role: identity.Role(invitation.Role), ExpiresAt: invitation.ExpiresAt.Time, ClaimedAt: timePointer(invitation.ClaimedAt), RevokedAt: timePointer(invitation.RevokedAt), CreatedAt: invitation.CreatedAt.Time}
+	return identity.Invitation{ID: invitation.ID, Role: identity.Role(invitation.Role), ExpiresAt: invitation.ExpiresAt.Time, ClaimedAt: timePointer(invitation.ClaimedAt), RevokedAt: timePointer(invitation.RevokedAt), CreatedAt: invitation.CreatedAt.Time, CodePrefix: invitation.CodePrefix}
 }
 
 func gatewayKeyFromDB(id, userID uuid.UUID, name, prefix string, expiresAt, revokedAt, lastUsedAt, createdAt pgtype.Timestamptz) identity.GatewayKey {

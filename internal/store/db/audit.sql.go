@@ -22,7 +22,7 @@ type CreateAuditEventParams struct {
 	Action      string     `json:"action"`
 	TargetType  string     `json:"target_type"`
 	TargetID    *string    `json:"target_id"`
-	RequestID   *uuid.UUID `json:"request_id"`
+	RequestID   *string    `json:"request_id"`
 	Detail      []byte     `json:"detail"`
 }
 

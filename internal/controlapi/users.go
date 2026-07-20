@@ -232,7 +232,7 @@ func presentInvitation(invitation identity.Invitation, createdBy, forcedStatus s
 	}
 	return invitationView{
 		ID:         invitation.ID.String(),
-		CodePrefix: prefix(invitation.Code, 13),
+		CodePrefix: invitation.CodePrefix,
 		Role:       invitation.Role,
 		Status:     status,
 		ExpiresAt:  invitation.ExpiresAt.UTC(),

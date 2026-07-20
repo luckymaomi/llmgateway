@@ -465,7 +465,7 @@ type AuditEvent struct {
 	Action      string             `json:"action"`
 	TargetType  string             `json:"target_type"`
 	TargetID    *string            `json:"target_id"`
-	RequestID   *uuid.UUID         `json:"request_id"`
+	RequestID   *string            `json:"request_id"`
 	Detail      []byte             `json:"detail"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
@@ -536,6 +536,7 @@ type GatewayKey struct {
 type Invitation struct {
 	ID         uuid.UUID          `json:"id"`
 	CodeDigest []byte             `json:"code_digest"`
+	CodePrefix string             `json:"code_prefix"`
 	CreatedBy  uuid.UUID          `json:"created_by"`
 	Role       UserRole           `json:"role"`
 	ExpiresAt  pgtype.Timestamptz `json:"expires_at"`
@@ -626,6 +627,18 @@ type ProviderCredential struct {
 	LastErrorKind       *string            `json:"last_error_kind"`
 	CreatedAt           pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
+}
+
+type ProviderMutation struct {
+	ID                 uuid.UUID          `json:"id"`
+	ActorUserID        uuid.UUID          `json:"actor_user_id"`
+	Action             string             `json:"action"`
+	IdempotencyKey     uuid.UUID          `json:"idempotency_key"`
+	RequestFingerprint []byte             `json:"request_fingerprint"`
+	RequestID          string             `json:"request_id"`
+	ProviderID         *uuid.UUID         `json:"provider_id"`
+	Result             []byte             `json:"result"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
 }
 
 type Request struct {
