@@ -155,3 +155,22 @@ func TestOpenAICompatibleBuildsDeclaredContractRequest(t *testing.T) {
 		"reasoning_effort":"medium"
 	}`)
 }
+
+func TestOpenAICompatibleRejectsBaseURLParameters(t *testing.T) {
+	t.Parallel()
+
+	for _, baseURL := range []string{
+		"https://llm.example/v1?",
+		"https://llm.example/v1?tenant=other",
+		"https://llm.example/v1#other",
+	} {
+		t.Run(baseURL, func(t *testing.T) {
+			t.Parallel()
+			if _, err := NewOpenAICompatible(OpenAICompatibleOptions{
+				BaseURL: baseURL, Capabilities: NarrowOpenAICompatibleCapabilities(),
+			}); err == nil {
+				t.Fatalf("NewOpenAICompatible(%q) succeeded", baseURL)
+			}
+		})
+	}
+}

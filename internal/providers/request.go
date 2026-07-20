@@ -158,7 +158,7 @@ func newAdapter(rawBaseURL string, policy wirePolicy) (*openAIAdapter, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse provider base URL: %w", err)
 	}
-	if (baseURL.Scheme != "http" && baseURL.Scheme != "https") || baseURL.Host == "" || baseURL.User != nil || baseURL.RawQuery != "" || baseURL.Fragment != "" {
+	if (baseURL.Scheme != "http" && baseURL.Scheme != "https") || baseURL.Host == "" || baseURL.User != nil || baseURL.ForceQuery || baseURL.RawQuery != "" || baseURL.Fragment != "" {
 		return nil, fmt.Errorf("provider base URL must be an absolute HTTP URL without credentials, query, or fragment")
 	}
 	return &openAIAdapter{baseURL: baseURL, policy: policy}, nil
