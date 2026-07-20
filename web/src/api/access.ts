@@ -17,6 +17,10 @@ export interface InvitationInput {
   expiresAt: string
 }
 
+export interface CreatedInvitation extends Invitation {
+  code: string
+}
+
 export interface GatewayKeyInput {
   ownerId: string
   name: string
@@ -42,7 +46,7 @@ export const accessApi = {
       ...(signal ? { signal } : {}),
     }),
   createInvitation: (input: InvitationInput) =>
-    apiClient.request<Invitation, InvitationInput>(`${base}/invitations`, {
+    apiClient.request<CreatedInvitation, InvitationInput>(`${base}/invitations`, {
       method: 'POST',
       body: input,
     }),

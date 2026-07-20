@@ -6,6 +6,7 @@ import { useForm } from 'react-hook-form'
 import { z } from 'zod'
 
 import { authApi } from '@/api'
+import { establishAuthenticatedSession } from '@/app/session'
 import { AuthPanel } from '@/components/layout'
 import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/field'
@@ -42,7 +43,7 @@ export function SetupPage() {
   const bootstrap = useMutation({
     mutationFn: authApi.bootstrap,
     async onSuccess(session) {
-      queryClient.setQueryData(['session'], session)
+      establishAuthenticatedSession(queryClient, session)
       await navigate({ to: '/providers/providers', replace: true })
     },
   })

@@ -3,6 +3,7 @@ import { Plus, XCircle } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
 import { accessApi, type Invitation } from '@/api'
+import { hasCapability, useSession } from '@/app/session'
 import { DataTable, type ColumnDef } from '@/components/data-table/data-table'
 import { TableToolbar } from '@/components/data-table/table-toolbar'
 import { Page, PageHeader, PageSection } from '@/components/layout'
@@ -15,6 +16,8 @@ import { AccessTabs } from './access-tabs'
 import { InvitationForm } from './invitation-form'
 
 export function InvitationsPage() {
+  const session = useSession()
+  const canWrite = hasCapability(session, 'access:write')
   const { state, setPage, setSearch, setStatus } = useListSearch()
   const [creating, setCreating] = useState(false)
   const queryClient = useQueryClient()
@@ -59,7 +62,7 @@ export function InvitationsPage() {
         id: 'actions',
         header: '操作',
         cell: ({ row }) =>
-          row.original.status === 'issued' ? (
+          canWrite && row.original.status === 'issued' ? (
             <Button
               size="sm"
               variant="quiet"
@@ -72,7 +75,7 @@ export function InvitationsPage() {
           ) : null,
       },
     ],
-    [revoke],
+    [canWrite, revoke],
   )
   return (
     <Page>
@@ -80,9 +83,11 @@ export function InvitationsPage() {
         title="用户与网关 Key"
         description="邀请、审核、模型授权和调用凭据"
         actions={
-          <Button icon={<Plus size={16} />} onClick={() => setCreating(true)}>
-            创建邀请
-          </Button>
+          canWrite ? (
+            <Button icon={<Plus size={16} />} onClick={() => setCreating(true)}>
+              创建邀请
+            </Button>
+          ) : null
         }
       />
       <AccessTabs />
@@ -127,7 +132,7 @@ export function InvitationsPage() {
           )}
         />
       </PageSection>
-      <InvitationForm open={creating} onOpenChange={setCreating} />
+      {canWrite ? <InvitationForm open={creating} onOpenChange={setCreating} /> : null}
     </Page>
   )
 }

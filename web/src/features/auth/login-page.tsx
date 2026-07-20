@@ -6,6 +6,8 @@ import { useForm } from 'react-hook-form'
 import { z } from 'zod'
 
 import { authApi } from '@/api'
+import { defaultRouteFor } from '@/app/navigation'
+import { establishAuthenticatedSession } from '@/app/session'
 import { AuthPanel } from '@/components/layout'
 import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/field'
@@ -29,9 +31,9 @@ export function LoginPage({ redirectTo }: { redirectTo?: string }) {
   const login = useMutation({
     mutationFn: authApi.login,
     async onSuccess(session) {
-      queryClient.setQueryData(['session'], session)
+      establishAuthenticatedSession(queryClient, session)
       await navigate({
-        to: redirectTo ?? (session.role === 'member' ? '/playground' : '/providers/providers'),
+        to: redirectTo ?? defaultRouteFor(session),
         replace: true,
       })
     },

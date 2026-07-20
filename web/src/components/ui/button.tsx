@@ -42,7 +42,7 @@ export function Button({
   return (
     <Component className={cn(buttonVariants({ variant, size }), className)} {...props}>
       {icon ? <span className="button__icon">{icon}</span> : null}
-      {children}
+      {asChild ? <Slot.Slottable>{children}</Slot.Slottable> : children}
     </Component>
   )
 }

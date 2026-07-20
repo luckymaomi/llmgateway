@@ -107,3 +107,11 @@ export function navigationFor(session: Session): NavigationItem[] {
   const source = session.role === 'member' ? memberNavigation : managementNavigation
   return source.filter((item) => session.capabilities.includes(item.capability))
 }
+
+export function defaultRouteFor(
+  session: Session,
+): '/providers/providers' | '/access/keys' | '/forbidden' {
+  if (session.capabilities.includes('providers:read')) return '/providers/providers'
+  if (session.capabilities.includes('access:read')) return '/access/keys'
+  return '/forbidden'
+}

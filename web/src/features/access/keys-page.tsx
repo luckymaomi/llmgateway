@@ -1,9 +1,9 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { KeyRound, Plus, XCircle } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { KeyRound, XCircle } from 'lucide-react'
+import { useMemo } from 'react'
 
 import { accessApi, type GatewayKey } from '@/api'
-import { useSession } from '@/app/session'
+import { hasCapability, useSession } from '@/app/session'
 import { DataTable, type ColumnDef } from '@/components/data-table/data-table'
 import { TableToolbar } from '@/components/data-table/table-toolbar'
 import { Page, PageHeader, PageSection } from '@/components/layout'
@@ -13,12 +13,10 @@ import { useListSearch } from '@/hooks/use-list-search'
 import { formatDateTime } from '@/lib/format'
 
 import { AccessTabs } from './access-tabs'
-import { KeyForm } from './key-form'
-
 export function KeysPage() {
   const session = useSession()
+  const canRevoke = session.role === 'member' || hasCapability(session, 'access:write')
   const { state, setPage, setSearch, setStatus } = useListSearch()
-  const [creating, setCreating] = useState(false)
   const queryClient = useQueryClient()
   const query = useQuery({
     queryKey: ['gateway-keys', state],
@@ -70,7 +68,7 @@ export function KeysPage() {
         id: 'actions',
         header: '操作',
         cell: ({ row }) =>
-          row.original.status === 'active' ? (
+          canRevoke && row.original.status === 'active' ? (
             <Button
               size="sm"
               variant="quiet"
@@ -83,19 +81,16 @@ export function KeysPage() {
           ) : null,
       },
     ],
-    [revoke, session.role],
+    [canRevoke, revoke, session.role],
   )
   return (
     <Page>
       <PageHeader
         title={session.role === 'member' ? '我的网关 Key' : '用户与网关 Key'}
         description={
-          session.role === 'member' ? '调用凭据与模型授权' : '邀请、审核、模型授权和调用凭据'
-        }
-        actions={
-          <Button icon={<Plus size={16} />} onClick={() => setCreating(true)}>
-            创建 Key
-          </Button>
+          session.role === 'member'
+            ? '查看并撤销当前账号的调用凭据'
+            : '查看用户调用凭据并撤销失效 Key'
         }
       />
       <AccessTabs />
@@ -143,7 +138,6 @@ export function KeysPage() {
           )}
         />
       </PageSection>
-      <KeyForm open={creating} onOpenChange={setCreating} />
     </Page>
   )
 }

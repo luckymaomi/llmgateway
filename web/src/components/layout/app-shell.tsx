@@ -4,9 +4,9 @@ import { Dialog, Tooltip } from 'radix-ui'
 import { LogOut, Menu, Network, PanelLeftClose, X } from 'lucide-react'
 import { Suspense, useState } from 'react'
 
-import { authApi } from '@/api'
+import { authApi, type Session } from '@/api'
 import { navigationFor } from '@/app/navigation'
-import { useSession } from '@/app/session'
+import { clearAuthenticatedSession, useSession } from '@/app/session'
 import { cn } from '@/lib/cn'
 
 import { IconButton } from '../ui/icon-button'
@@ -28,8 +28,8 @@ export function AppShell() {
   const queryClient = useQueryClient()
   const logout = useMutation({
     mutationFn: authApi.logout,
-    async onSuccess() {
-      queryClient.removeQueries({ queryKey: ['session'] })
+    async onSettled() {
+      clearAuthenticatedSession(queryClient)
       await navigate({ to: '/login', replace: true })
     },
   })
@@ -52,24 +52,11 @@ export function AppShell() {
             <span>LLMGateway</span>
           </div>
           {nav}
-          <div className="sidebar__footer">
-            <div className="sidebar__identity">
-              <span className="sidebar__avatar">
-                {session.displayName.slice(0, 1).toUpperCase()}
-              </span>
-              <span className="sidebar__identity-text">
-                <strong>{session.displayName}</strong>
-                <small>{roleLabel[session.role]}</small>
-              </span>
-            </div>
-            <IconButton
-              label="退出登录"
-              disabled={logout.isPending}
-              onClick={() => logout.mutate()}
-            >
-              <LogOut size={17} />
-            </IconButton>
-          </div>
+          <SessionControls
+            session={session}
+            logoutPending={logout.isPending}
+            onLogout={() => logout.mutate()}
+          />
         </aside>
 
         <div className="app-column">
@@ -93,6 +80,11 @@ export function AppShell() {
                       </Dialog.Close>
                     </div>
                     {nav}
+                    <SessionControls
+                      session={session}
+                      logoutPending={logout.isPending}
+                      onLogout={() => logout.mutate()}
+                    />
                   </Dialog.Content>
                 </Dialog.Portal>
               </Dialog.Root>
@@ -116,6 +108,31 @@ export function AppShell() {
         </div>
       </div>
     </Tooltip.Provider>
+  )
+}
+
+function SessionControls({
+  session,
+  logoutPending,
+  onLogout,
+}: {
+  session: Session
+  logoutPending: boolean
+  onLogout: () => void
+}) {
+  return (
+    <div className="sidebar__footer">
+      <div className="sidebar__identity">
+        <span className="sidebar__avatar">{session.displayName.slice(0, 1).toUpperCase()}</span>
+        <span className="sidebar__identity-text">
+          <strong>{session.displayName}</strong>
+          <small>{roleLabel[session.role]}</small>
+        </span>
+      </div>
+      <IconButton label="退出登录" disabled={logoutPending} onClick={onLogout}>
+        <LogOut size={17} />
+      </IconButton>
+    </div>
   )
 }
 

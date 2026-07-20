@@ -11,10 +11,11 @@ import {
   type AsyncRouteComponent,
 } from '@tanstack/react-router'
 
-import { ApiProblem, type Capability } from '@/api'
+import { ApiProblem, type Capability, type Role } from '@/api'
 import { AppShell, PublicShell } from '@/components/layout'
 import { ForbiddenPage, NotFoundPage, RouteErrorPage } from '@/features/errors/error-pages'
 
+import { defaultRouteFor } from './navigation'
 import { sessionQuery } from './session'
 
 const SetupPage = lazyRouteComponent(() => import('@/features/auth/setup-page'), 'SetupPage')
@@ -110,9 +111,7 @@ const rootIndex = createRoute({
   beforeLoad: async ({ context }) => {
     try {
       const session = await context.queryClient.ensureQueryData(sessionQuery)
-      throw redirect({
-        to: session.role === 'member' ? '/playground' : '/providers/providers',
-      })
+      throw redirect({ to: defaultRouteFor(session) })
     } catch (error) {
       if (isRedirect(error)) throw error
       throw redirect({ to: '/login' })
@@ -187,11 +186,12 @@ function protectedRoute<const TPath extends string>(
   capability: Capability,
   component: AsyncRouteComponent<unknown>,
   withSearch = false,
+  roles?: readonly Role[],
 ) {
   return createRoute({
     getParentRoute: () => authenticatedLayout,
     path,
-    beforeLoad: guard(capability),
+    beforeLoad: guard(capability, roles),
     ...(withSearch ? { validateSearch: listSearch } : {}),
     component,
   })
@@ -202,9 +202,20 @@ const providersRoute = protectedRoute('/providers/providers', 'providers:read', 
 const modelsRoute = protectedRoute('/providers/models', 'providers:read', ModelsPage, true)
 const revisionsRoute = protectedRoute('/providers/revisions', 'providers:read', RevisionsPage, true)
 const credentialsRoute = protectedRoute('/credentials', 'credentials:read', CredentialsPage, true)
-const usersRoute = protectedRoute('/access/users', 'access:read', UsersPage, true)
-const invitationsRoute = protectedRoute('/access/invitations', 'access:read', InvitationsPage, true)
-const keysRoute = protectedRoute('/access/keys', 'access:read', KeysPage, true)
+const usersRoute = protectedRoute('/access/users', 'access:read', UsersPage, true, [
+  'administrator',
+])
+const invitationsRoute = protectedRoute(
+  '/access/invitations',
+  'access:read',
+  InvitationsPage,
+  true,
+  ['administrator'],
+)
+const keysRoute = protectedRoute('/access/keys', 'access:read', KeysPage, true, [
+  'administrator',
+  'member',
+])
 const usageRoute = protectedRoute('/ledger/usage', 'ledger:read', UsagePage, true)
 const entriesRoute = protectedRoute('/ledger/entries', 'ledger:read', EntriesPage, true)
 const entitlementsRoute = protectedRoute(
@@ -238,10 +249,15 @@ const forbiddenRoute = createRoute({
   component: ForbiddenPage,
 })
 
-function guard(capability: Capability) {
+function guard(capability: Capability, roles?: readonly Role[]) {
   return async ({ context }: { context: RouterContext }) => {
     const session = await context.queryClient.ensureQueryData(sessionQuery)
-    if (!session.capabilities.includes(capability)) throw redirect({ to: '/forbidden' })
+    if (
+      !session.capabilities.includes(capability) ||
+      (roles !== undefined && !roles.includes(session.role))
+    ) {
+      throw redirect({ to: '/forbidden' })
+    }
   }
 }
 
