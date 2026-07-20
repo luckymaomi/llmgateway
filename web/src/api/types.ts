@@ -84,24 +84,34 @@ export interface Overview {
   alerts: OverviewAlert[]
 }
 
-export interface Provider {
+export interface ProviderRecord {
   id: string
+  slug: string
   name: string
   kind: 'openai-compatible' | 'zhipu' | 'deepseek' | 'agnes'
   baseUrl: string
-  resourceDomain: ResourceDomain
-  status: EntityStatus
-  modelCount: number
-  credentialCount: number
+  status: 'enabled' | 'disabled'
   verifiedAt?: string
-  revisionId: string
+  updatedAt: string
 }
 
-export interface ProviderInput {
+export interface Provider extends ProviderRecord {
+  modelCount: number
+  credentialCount: number
+}
+
+export interface ProviderCreateInput {
+  slug: string
   name: string
   kind: Provider['kind']
   baseUrl: string
-  resourceDomain: ResourceDomain
+}
+
+export interface ProviderUpdateInput {
+  name: string
+  kind: Provider['kind']
+  baseUrl: string
+  expectedUpdatedAt: string
 }
 
 export type ModelCapability = 'streaming' | 'tools' | 'reasoning' | 'structured_output'

@@ -344,15 +344,15 @@ const user = {
 
 const provider = {
   id: 'provider-main',
+  slug: 'primary-provider',
   name: 'Primary Provider',
   kind: 'openai-compatible',
   baseUrl: 'https://provider.example/v1',
-  resourceDomain: 'professional',
-  status: 'active',
+  status: 'enabled',
   modelCount: 1,
   credentialCount: 2,
   verifiedAt: now,
-  revisionId: 'revision-41',
+  updatedAt: now,
 }
 
 const overview = {

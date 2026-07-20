@@ -149,17 +149,63 @@ type registryStub struct {
 	credentials     []registry.Credential
 	updatedProvider registry.Provider
 	savedModel      registry.Model
+	providerTime    time.Time
 }
 
 func (s *registryStub) CreateProvider(_ context.Context, _ identity.Principal, provider registry.Provider) (registry.Provider, error) {
 	provider.ID = uuid.New()
+	for _, current := range s.providers {
+		if current.UpdatedAt.After(provider.UpdatedAt) {
+			provider.UpdatedAt = current.UpdatedAt
+		}
+	}
+	provider.UpdatedAt = s.nextProviderTime(provider.UpdatedAt)
+	provider.CreatedAt = provider.UpdatedAt
 	s.providers = append(s.providers, provider)
 	return provider, nil
 }
 
 func (s *registryStub) UpdateProvider(_ context.Context, _ identity.Principal, provider registry.Provider) (registry.Provider, error) {
-	s.updatedProvider = provider
-	return provider, nil
+	for index := range s.providers {
+		current := s.providers[index]
+		if current.ID != provider.ID {
+			continue
+		}
+		if !current.UpdatedAt.Equal(provider.UpdatedAt) {
+			return registry.Provider{}, registry.ErrConflict
+		}
+		if current.Enabled && (current.Kind != provider.Kind || current.BaseURL != provider.BaseURL) {
+			return registry.Provider{}, registry.ErrProviderEnabled
+		}
+		provider.Slug = current.Slug
+		provider.Enabled = current.Enabled
+		provider.SourceURL = current.SourceURL
+		provider.VerifiedAt = current.VerifiedAt
+		provider.CreatedAt = current.CreatedAt
+		provider.UpdatedAt = s.nextProviderTime(current.UpdatedAt)
+		s.providers[index] = provider
+		s.updatedProvider = provider
+		return provider, nil
+	}
+	return registry.Provider{}, registry.ErrNotFound
+}
+
+func (s *registryStub) SetProviderEnabled(_ context.Context, _ identity.Principal, providerID uuid.UUID, enabled bool, expectedUpdatedAt time.Time) (registry.Provider, error) {
+	for index := range s.providers {
+		current := s.providers[index]
+		if current.ID != providerID {
+			continue
+		}
+		if !current.UpdatedAt.Equal(expectedUpdatedAt) {
+			return registry.Provider{}, registry.ErrConflict
+		}
+		current.Enabled = enabled
+		current.UpdatedAt = s.nextProviderTime(current.UpdatedAt)
+		s.providers[index] = current
+		s.updatedProvider = current
+		return current, nil
+	}
+	return registry.Provider{}, registry.ErrNotFound
 }
 
 func (s *registryStub) ListProviders(context.Context, identity.Principal) ([]registry.Provider, error) {
@@ -194,6 +240,17 @@ func (s *registryStub) ListCredentials(context.Context, identity.Principal) ([]r
 
 func (s *registryStub) BindCredentialModel(context.Context, identity.Principal, uuid.UUID, uuid.UUID, int32, int32) error {
 	return nil
+}
+
+func (s *registryStub) nextProviderTime(current time.Time) time.Time {
+	if s.providerTime.IsZero() {
+		s.providerTime = time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	}
+	if !current.IsZero() && !s.providerTime.After(current) {
+		s.providerTime = current
+	}
+	s.providerTime = s.providerTime.Add(time.Millisecond)
+	return s.providerTime
 }
 
 type configurationStub struct {

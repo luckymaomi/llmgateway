@@ -4,11 +4,26 @@ VALUES (sqlc.arg(slug), sqlc.arg(name), sqlc.arg(kind), sqlc.arg(base_url), sqlc
 RETURNING *;
 
 -- name: UpdateProvider :one
-UPDATE providers SET name = sqlc.arg(name), kind = sqlc.arg(kind), base_url = sqlc.arg(base_url), enabled = sqlc.arg(enabled), source_url = sqlc.narg(source_url), verified_at = sqlc.narg(verified_at), updated_at = now()
+UPDATE providers
+SET name = sqlc.arg(name),
+    kind = sqlc.arg(kind),
+    base_url = sqlc.arg(base_url),
+    verified_at = CASE
+        WHEN kind IS DISTINCT FROM sqlc.arg(kind) OR base_url IS DISTINCT FROM sqlc.arg(base_url) THEN NULL
+        ELSE verified_at
+    END,
+    updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
+WHERE id = sqlc.arg(id) RETURNING *;
+
+-- name: SetProviderEnabled :one
+UPDATE providers SET enabled = sqlc.arg(enabled), updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
 WHERE id = sqlc.arg(id) RETURNING *;
 
 -- name: GetProvider :one
 SELECT * FROM providers WHERE id = sqlc.arg(id);
+
+-- name: GetProviderForUpdate :one
+SELECT * FROM providers WHERE id = sqlc.arg(id) FOR UPDATE;
 
 -- name: ListProviders :many
 SELECT * FROM providers ORDER BY name, id;

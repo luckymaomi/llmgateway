@@ -40,6 +40,7 @@ type identityService interface {
 type registryService interface {
 	CreateProvider(context.Context, identity.Principal, registry.Provider) (registry.Provider, error)
 	UpdateProvider(context.Context, identity.Principal, registry.Provider) (registry.Provider, error)
+	SetProviderEnabled(context.Context, identity.Principal, uuid.UUID, bool, time.Time) (registry.Provider, error)
 	ListProviders(context.Context, identity.Principal) ([]registry.Provider, error)
 	CreateModel(context.Context, identity.Principal, registry.Model) (registry.Model, error)
 	UpdateModel(context.Context, identity.Principal, registry.Model) (registry.Model, error)
@@ -118,7 +119,6 @@ func (a *API) registerRegistryRoutes(router chi.Router) {
 	router.With(a.requireOperator, a.requireCSRF).Post("/providers", a.createProvider)
 	router.With(a.requireOperator, a.requireCSRF).Put("/providers/{providerID}", a.updateProvider)
 	router.With(a.requireOperator, a.requireCSRF).Put("/providers/{providerID}/status", a.setProviderStatus)
-	router.With(a.requireOperator, a.requireCSRF).Post("/providers/{providerID}/tests", a.unavailable("provider_tests"))
 
 	router.With(a.requireOperator).Get("/models", a.listModels)
 	router.With(a.requireOperator, a.requireCSRF).Post("/models", a.createModel)

@@ -13,7 +13,7 @@ func TestRegistryContract(t *testing.T) {
 	fixture := newControlFixture(t)
 	providerID := uuid.New()
 	fixture.registry.providers = []registry.Provider{{
-		ID: providerID, Slug: "openai", Name: "OpenAI", Kind: providers.KindOpenAICompatible, BaseURL: "https://api.example.test/v1", Enabled: true, CreatedAt: fixture.now,
+		ID: providerID, Slug: "openai", Name: "OpenAI", Kind: providers.KindOpenAICompatible, BaseURL: "https://api.example.test/v1", Enabled: false, CreatedAt: fixture.now, UpdatedAt: fixture.now,
 	}}
 	fixture.registry.models = []registry.Model{{
 		ID: uuid.New(), ProviderID: providerID, PublicName: "fast", UpstreamName: "fast-v1", DisplayName: "Fast", ResourceDomain: registry.ResourceProfessional,
@@ -30,8 +30,26 @@ func TestRegistryContract(t *testing.T) {
 		t.Fatalf("unexpected providers page: %+v", providersPage)
 	}
 	provider := providersPage.Items[0]
-	if provider.ModelCount != 1 || provider.CredentialCount != 1 || provider.ResourceDomain == nil || *provider.ResourceDomain != registry.ResourceProfessional || provider.RevisionID != fixture.activeID.String() {
+	if provider.Slug != "openai" || provider.Status != "disabled" || provider.ModelCount != 1 || provider.CredentialCount != 1 || !provider.UpdatedAt.Equal(fixture.now) {
 		t.Fatalf("unexpected provider presentation: %+v", provider)
+	}
+
+	createResponse := request(t, fixture.handler, http.MethodPost, "/api/control/providers", map[string]any{
+		"slug": "deepseek", "name": "DeepSeek", "kind": providers.KindDeepSeek, "baseUrl": "https://api.deepseek.com",
+	}, true, true)
+	requireStatus(t, createResponse, http.StatusCreated)
+	createdProvider := decodeData[providerView](t, createResponse)
+	if createdProvider.Slug != "deepseek" || createdProvider.Name != "DeepSeek" || createdProvider.Status != "disabled" || createdProvider.UpdatedAt.IsZero() {
+		t.Fatalf("unexpected created provider: %+v", createdProvider)
+	}
+
+	updateResponse := request(t, fixture.handler, http.MethodPut, "/api/control/providers/"+providerID.String(), map[string]any{
+		"name": "OpenAI Primary", "kind": providers.KindOpenAICompatible, "baseUrl": "https://api.example.test/v2", "expectedUpdatedAt": fixture.now,
+	}, true, true)
+	requireStatus(t, updateResponse, http.StatusOK)
+	updatedProvider := decodeData[providerView](t, updateResponse)
+	if updatedProvider.Slug != "openai" || updatedProvider.Name != "OpenAI Primary" || updatedProvider.Status != "disabled" || !updatedProvider.UpdatedAt.After(fixture.now) || fixture.registry.updatedProvider.BaseURL != "https://api.example.test/v2" {
+		t.Fatalf("unexpected updated provider: %+v", updatedProvider)
 	}
 
 	modelResponse := request(t, fixture.handler, http.MethodPost, "/api/control/models", map[string]any{
@@ -44,17 +62,17 @@ func TestRegistryContract(t *testing.T) {
 	}, true, true)
 	requireStatus(t, modelResponse, http.StatusCreated)
 	model := decodeData[modelView](t, modelResponse)
-	if model.Alias != "reasoning" || model.ProviderName != "OpenAI" || model.ContextTokens == nil || *model.ContextTokens != 65536 {
+	if model.Alias != "reasoning" || model.ProviderName != "OpenAI Primary" || model.ContextTokens == nil || *model.ContextTokens != 65536 {
 		t.Fatalf("unexpected model: %+v", model)
 	}
 	if !fixture.registry.savedModel.Capabilities.Chat || !fixture.registry.savedModel.Capabilities.Tools || fixture.registry.savedModel.Capabilities.ContextTokens != 65536 {
 		t.Fatalf("unexpected persisted capabilities: %+v", fixture.registry.savedModel.Capabilities)
 	}
 
-	statusResponse := request(t, fixture.handler, http.MethodPut, "/api/control/providers/"+providerID.String()+"/status", map[string]bool{"enabled": false}, true, true)
+	statusResponse := request(t, fixture.handler, http.MethodPut, "/api/control/providers/"+providerID.String()+"/status", map[string]any{"enabled": true, "expectedUpdatedAt": updatedProvider.UpdatedAt}, true, true)
 	requireStatus(t, statusResponse, http.StatusOK)
 	updated := decodeData[providerView](t, statusResponse)
-	if updated.Status != "disabled" || fixture.registry.updatedProvider.ID != providerID || fixture.registry.updatedProvider.Enabled {
+	if updated.Status != "enabled" || !updated.UpdatedAt.After(updatedProvider.UpdatedAt) || fixture.registry.updatedProvider.ID != providerID || !fixture.registry.updatedProvider.Enabled {
 		t.Fatalf("unexpected provider status: %+v", updated)
 	}
 }

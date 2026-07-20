@@ -265,6 +265,28 @@ func (q *Queries) GetProvider(ctx context.Context, id uuid.UUID) (Provider, erro
 	return i, err
 }
 
+const getProviderForUpdate = `-- name: GetProviderForUpdate :one
+SELECT id, slug, name, kind, base_url, enabled, source_url, verified_at, created_at, updated_at FROM providers WHERE id = $1 FOR UPDATE
+`
+
+func (q *Queries) GetProviderForUpdate(ctx context.Context, id uuid.UUID) (Provider, error) {
+	row := q.db.QueryRow(ctx, getProviderForUpdate, id)
+	var i Provider
+	err := row.Scan(
+		&i.ID,
+		&i.Slug,
+		&i.Name,
+		&i.Kind,
+		&i.BaseUrl,
+		&i.Enabled,
+		&i.SourceUrl,
+		&i.VerifiedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const listAuthorizedModels = `-- name: ListAuthorizedModels :many
 SELECT m.id, m.provider_id, m.public_name, m.upstream_name, m.display_name, m.resource_domain, m.capabilities, m.enabled, m.created_at, m.updated_at, p.slug AS provider_slug, p.name AS provider_name
 FROM models m
@@ -545,6 +567,34 @@ func (q *Queries) ListProviders(ctx context.Context) ([]Provider, error) {
 	return items, nil
 }
 
+const setProviderEnabled = `-- name: SetProviderEnabled :one
+UPDATE providers SET enabled = $1, updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
+WHERE id = $2 RETURNING id, slug, name, kind, base_url, enabled, source_url, verified_at, created_at, updated_at
+`
+
+type SetProviderEnabledParams struct {
+	Enabled bool      `json:"enabled"`
+	ID      uuid.UUID `json:"id"`
+}
+
+func (q *Queries) SetProviderEnabled(ctx context.Context, arg SetProviderEnabledParams) (Provider, error) {
+	row := q.db.QueryRow(ctx, setProviderEnabled, arg.Enabled, arg.ID)
+	var i Provider
+	err := row.Scan(
+		&i.ID,
+		&i.Slug,
+		&i.Name,
+		&i.Kind,
+		&i.BaseUrl,
+		&i.Enabled,
+		&i.SourceUrl,
+		&i.VerifiedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const updateCredentialState = `-- name: UpdateCredentialState :one
 UPDATE provider_credentials
 SET status = $1, cooldown_until = $2, consecutive_failures = $3, last_success_at = $4, last_error_kind = $5, updated_at = now()
@@ -633,18 +683,23 @@ func (q *Queries) UpdateModel(ctx context.Context, arg UpdateModelParams) (Model
 }
 
 const updateProvider = `-- name: UpdateProvider :one
-UPDATE providers SET name = $1, kind = $2, base_url = $3, enabled = $4, source_url = $5, verified_at = $6, updated_at = now()
-WHERE id = $7 RETURNING id, slug, name, kind, base_url, enabled, source_url, verified_at, created_at, updated_at
+UPDATE providers
+SET name = $1,
+    kind = $2,
+    base_url = $3,
+    verified_at = CASE
+        WHEN kind IS DISTINCT FROM $2 OR base_url IS DISTINCT FROM $3 THEN NULL
+        ELSE verified_at
+    END,
+    updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
+WHERE id = $4 RETURNING id, slug, name, kind, base_url, enabled, source_url, verified_at, created_at, updated_at
 `
 
 type UpdateProviderParams struct {
-	Name       string             `json:"name"`
-	Kind       string             `json:"kind"`
-	BaseUrl    string             `json:"base_url"`
-	Enabled    bool               `json:"enabled"`
-	SourceUrl  *string            `json:"source_url"`
-	VerifiedAt pgtype.Timestamptz `json:"verified_at"`
-	ID         uuid.UUID          `json:"id"`
+	Name    string    `json:"name"`
+	Kind    string    `json:"kind"`
+	BaseUrl string    `json:"base_url"`
+	ID      uuid.UUID `json:"id"`
 }
 
 func (q *Queries) UpdateProvider(ctx context.Context, arg UpdateProviderParams) (Provider, error) {
@@ -652,9 +707,6 @@ func (q *Queries) UpdateProvider(ctx context.Context, arg UpdateProviderParams) 
 		arg.Name,
 		arg.Kind,
 		arg.BaseUrl,
-		arg.Enabled,
-		arg.SourceUrl,
-		arg.VerifiedAt,
 		arg.ID,
 	)
 	var i Provider

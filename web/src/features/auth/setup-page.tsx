@@ -43,7 +43,7 @@ export function SetupPage() {
     mutationFn: authApi.bootstrap,
     async onSuccess(session) {
       queryClient.setQueryData(['session'], session)
-      await navigate({ to: '/overview', replace: true })
+      await navigate({ to: '/providers/providers', replace: true })
     },
   })
 

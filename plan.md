@@ -67,7 +67,7 @@
 | --- | --- | --- | --- |
 | 服务底座 | 类型化启动配置、结构化日志、health/readiness、Prometheus、优雅停机、PG/Valkey 连接 | `cmd/gateway -> app -> httpserver` 可启动 | 没有前端 embed；唯一验证入口和 CI 存在漂移；备份/恢复与强杀恢复未闭环 |
 | 身份与访问 | bootstrap、邀请注册、审核、会话、CSRF、网关 Key 摘要/一次展示 | 控制面 `/api/control/*` 已挂载 | 只有 user-model 授权，没有 key-model 持久 owner；公开模型与 Chat 不能满足 Key 级权限合同 |
-| Provider 与配置 | Provider/model/credential schema、AEAD、SSRF、配置 revision/outbox/projector、四类 adapter | registry/configuration 控制面部分挂载 | Provider 新建/更新、credential 原子绑定仍返回 501；数据面不读取已发布快照，未发布表变更会直接生效 |
+| Provider 与配置 | Provider/model/credential schema、AEAD、SSRF、配置 revision/outbox/projector、四类 adapter | Provider create/update/list/status 已接真实 registry；其余 registry/configuration 控制面部分挂载 | credential 原子绑定仍返回 501；数据面不读取已发布快照，未发布表变更会直接生效 |
 | Quota 与账本 | PG entitlement、append-only ledger、reservation/settlement/release/compensation 及并发测试 | `QuotaAPI`、`QuotaAdapter` 均未装配 | 前后端 DTO 与 Idempotency-Key 合同不一致；entitlement 限制没有进入 requestflow coordination |
 | Admission 与协调 | 单实例公平队列核心、Valkey 多维 rate/lease 原子脚本与测试 | 公平队列无生产消费者；新增 coordination adapter 未装配 | requestflow 当前先 reservation、后 coordination，违反排队断连不建 reservation 的合同；跨域/entitlement 维度未闭合 |
 | 公共协议与请求流 | Models、Chat、Responses parser/presenter/stream、requestflow、retry/circuit/routing 基础 | `/v1` 未挂载，真实进程统一返回 404 | 发送边界、流中断、状态推进、凭据健康、幂等 replay 与恢复有缺口；不能直接开放 Chat |
@@ -104,7 +104,7 @@
 
 - 真实 gateway 只挂载 health、metrics 与 `/api/control`；`GET /v1/models`、Chat 和 Responses 在生产路由均返回 404。
 - `scripts/test-core.ps1` 仍调用已删除的旧控制面合同；本轮在首次 bootstrap 请求收到 404，证明唯一完整验证入口不能通过。
-- Provider 新建/更新、带模型绑定的 credential/Key，以及 credential 更新/停用/测试仍返回 typed 501，真实管理路径不能完成数据面前置配置。
+- 带模型绑定的 credential/Key，以及 credential 更新/停用/测试仍返回 typed 501，真实管理路径不能完成数据面前置配置。
 - `QuotaAPI` 没有挂入主控制 API；前端 entitlement 请求也不满足后端 wire 与幂等合同。
 - 公平 admission 无生产消费者；现有 requestflow 在排队/协调前创建请求与 reservation，排队断连或容量拒绝会留下本不应接受的持久事实。
 - 逻辑 request 只创建为 `queued`，生产代码没有写 `dispatching/streaming/canceled/uncertain`；settlement 失败也没有 recovery worker，强杀后无法据状态判断发送和结算边界。
@@ -281,7 +281,7 @@ cmd/gateway
 7. Playground：文本、工具调用、reasoning、非流式与流式响应。
 8. 系统设置：安全、保留期、代理出口、告警、备份和配置版本。
 
-页面采用稳定侧栏、紧凑页头、工具栏、桌面表格与移动列表。异步操作必须有提交、校验、排队、发送、等待、完成/失败等 typed 状态；错误内联展示 request ID、阶段和可行动建议，不以 toast 代替事实。审美由 owner 验收，自动测试只保护结构和交互合同。
+页面采用承载真实导航职责的稳定侧栏、紧凑页头、工具栏、桌面表格与移动列表；禁止单侧竖线、另一侧留空的伪 sidebar/callout。异步操作必须有提交、校验、排队、发送、等待、完成/失败等 typed 状态；错误内联展示 request ID、阶段和可行动建议，不以 toast 代替事实。审美由 owner 验收，自动测试只保护结构和交互合同。
 
 ### 安全与数据
 
@@ -292,7 +292,7 @@ cmd/gateway
 - 自定义 Base URL 和代理统一限制 scheme、端口、解析 IP、重定向与 DNS 重绑定；默认拒绝 loopback、link-local、私网和云元数据地址，除非部署策略显式受控允许。
 - 请求体、上下文、流时长、队列长度、响应大小、并发和日志都有配置上限。
 - 普通日志、trace、metric 和错误默认脱敏。请求内容进入独立加密受控存储，具有角色权限、访问审计、保留期、删除和导出规则。
-- 管理配置变更使用乐观并发和审计；危险操作需要明确确认，批量操作返回逐项结果而非整体假成功。
+- 管理配置和 registry 变更使用稳定 `updatedAt`/revision 乐观并发与事务审计；写入成功后的响应不能依赖无关二次读取而变成虚假失败。危险操作需要明确确认，批量操作返回逐项结果而非整体假成功。
 
 ### 关键取舍
 
@@ -392,7 +392,8 @@ cmd/gateway
 ### 配置、Provider 与协议
 
 - [x] 实现 Provider/model/capability/credential/resource-domain registry、固定代理字段与来源核验字段基础。
-- [ ] 删除 Provider 级资源域的错误 UI/DTO 事实；完成 Provider create/update、credential 原子模型绑定、更新/停用与连接测试。
+- [ ] 删除 Provider 级资源域与配置 revision 的错误 UI/DTO 事实；以稳定 slug、`expectedUpdatedAt`、事务审计和提交后确定响应闭合 Provider create/update/list/status，并完成真实 Go + PostgreSQL + Valkey + 有头浏览器的新建、编辑、冲突、停用、刷新与重启验收。
+- [ ] 完成 credential 原子模型绑定、更新/停用与连接测试。
 - [x] 实现配置 revision、校验、单一 active version、事务 outbox、Valkey projector 与发布审计基础。
 - [ ] 增加 revision 创建运行入口，让数据面只消费 published catalog/policy snapshot，并证明发布、并发冲突和回滚生效。
 - [x] 实现 canonical message/content/tool/reasoning/usage/error 与不可表达能力错误基础。
@@ -538,6 +539,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify.ps1
 - `go test ./...`：通过。
 - `go vet ./...`：通过。
 - `go test ./internal/requestflow ./internal/coordination ./internal/quota`：通过；只作为定向包证据。
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-control.ps1`：通过；隔离 PostgreSQL 中真实完成 bootstrap/session/CSRF、Provider create/update/list 与审计核验，临时数据库已删除。
+- `pnpm.cmd --dir web run format:check`、`lint`、`typecheck`、`test`：通过。
+- `pnpm.cmd --dir web run test:e2e`：桌面 Chromium 与 Pixel 7 共 8/8 通过；仍是 mock server 结构/交互证据，不作为真实后端浏览器验收。
 - `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-core.ps1`：失败；migration、gateway readiness 通过，旧 `POST /api/setup/bootstrap` 返回 404，临时资源已清理。
 
 ### 未验证项

@@ -58,8 +58,8 @@ test('completes setup and login, then follows capability navigation', async ({ p
     email: 'admin@example.com',
     password: 'correct-horse-battery',
   })
-  await expect(page).toHaveURL(/\/overview$/)
-  await expect(page.getByRole('heading', { name: '总览' })).toBeVisible()
+  await expect(page).toHaveURL(/\/providers\/providers$/)
+  await expect(page.getByRole('heading', { name: 'Provider 与模型' })).toBeVisible()
   await expectPageWidthToFit(page)
 
   await resetApi(request, { authenticated: false })
@@ -67,7 +67,7 @@ test('completes setup and login, then follows capability navigation', async ({ p
   await page.getByLabel('邮箱').fill('admin@example.com')
   await page.getByLabel('密码').fill('correct-horse-battery')
   await page.getByRole('button', { name: '登录' }).click()
-  await expect(page).toHaveURL(/\/overview$/)
+  await expect(page).toHaveURL(/\/providers\/providers$/)
 
   await navigateFromShell(page, 'Provider 与模型')
   await expect(page).toHaveURL(/\/providers\/providers$/)

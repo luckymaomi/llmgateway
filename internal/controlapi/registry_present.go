@@ -1,27 +1,29 @@
 package controlapi
 
 import (
-	"errors"
 	"net/http"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/luckymaomi/llmgateway/internal/configuration"
 	"github.com/luckymaomi/llmgateway/internal/providers"
 	"github.com/luckymaomi/llmgateway/internal/registry"
 )
 
+type providerRecordView struct {
+	ID         string         `json:"id"`
+	Slug       string         `json:"slug"`
+	Name       string         `json:"name"`
+	Kind       providers.Kind `json:"kind"`
+	BaseURL    string         `json:"baseUrl"`
+	Status     string         `json:"status"`
+	VerifiedAt *time.Time     `json:"verifiedAt,omitempty"`
+	UpdatedAt  time.Time      `json:"updatedAt"`
+}
+
 type providerView struct {
-	ID              string                   `json:"id"`
-	Name            string                   `json:"name"`
-	Kind            providers.Kind           `json:"kind"`
-	BaseURL         string                   `json:"baseUrl"`
-	ResourceDomain  *registry.ResourceDomain `json:"resourceDomain,omitempty"`
-	Status          string                   `json:"status"`
-	ModelCount      int                      `json:"modelCount"`
-	CredentialCount int                      `json:"credentialCount"`
-	VerifiedAt      *time.Time               `json:"verifiedAt,omitempty"`
-	RevisionID      string                   `json:"revisionId"`
+	providerRecordView
+	ModelCount      int `json:"modelCount"`
+	CredentialCount int `json:"credentialCount"`
 }
 
 type modelView struct {
@@ -61,8 +63,6 @@ type registrySnapshot struct {
 	providerNames    map[uuid.UUID]string
 	modelCounts      map[uuid.UUID]int
 	credentialCounts map[uuid.UUID]int
-	providerDomains  map[uuid.UUID]*registry.ResourceDomain
-	revisionID       string
 }
 
 func (a *API) loadRegistrySnapshot(r *http.Request) (registrySnapshot, error) {
@@ -86,53 +86,41 @@ func (a *API) loadRegistrySnapshot(r *http.Request) (registrySnapshot, error) {
 		providerNames:    make(map[uuid.UUID]string, len(providersList)),
 		modelCounts:      make(map[uuid.UUID]int),
 		credentialCounts: make(map[uuid.UUID]int),
-		providerDomains:  make(map[uuid.UUID]*registry.ResourceDomain),
 	}
-	domains := make(map[uuid.UUID]map[registry.ResourceDomain]struct{})
 	for _, provider := range providersList {
 		snapshot.providerNames[provider.ID] = provider.Name
 	}
 	for _, model := range models {
 		snapshot.modelCounts[model.ProviderID]++
-		addDomain(domains, model.ProviderID, model.ResourceDomain)
 	}
 	for _, credential := range credentials {
 		snapshot.credentialCounts[credential.ProviderID]++
-		addDomain(domains, credential.ProviderID, credential.ResourceDomain)
-	}
-	for providerID, values := range domains {
-		if len(values) == 1 {
-			for domain := range values {
-				value := domain
-				snapshot.providerDomains[providerID] = &value
-			}
-		}
-	}
-	active, activeErr := a.configuration.Active(r.Context(), principal)
-	if activeErr == nil {
-		snapshot.revisionID = active.Revision.ID.String()
-	} else if !errors.Is(activeErr, configuration.ErrNotFound) {
-		return registrySnapshot{}, activeErr
 	}
 	return snapshot, nil
 }
 
 func (s registrySnapshot) presentProvider(provider registry.Provider) providerView {
+	return providerView{
+		providerRecordView: presentProviderRecord(provider),
+		ModelCount:         s.modelCounts[provider.ID],
+		CredentialCount:    s.credentialCounts[provider.ID],
+	}
+}
+
+func presentProviderRecord(provider registry.Provider) providerRecordView {
 	status := "disabled"
 	if provider.Enabled {
-		status = "active"
+		status = "enabled"
 	}
-	return providerView{
-		ID:              provider.ID.String(),
-		Name:            provider.Name,
-		Kind:            provider.Kind,
-		BaseURL:         provider.BaseURL,
-		ResourceDomain:  s.providerDomains[provider.ID],
-		Status:          status,
-		ModelCount:      s.modelCounts[provider.ID],
-		CredentialCount: s.credentialCounts[provider.ID],
-		VerifiedAt:      utcTimePointer(provider.VerifiedAt),
-		RevisionID:      s.revisionID,
+	return providerRecordView{
+		ID:         provider.ID.String(),
+		Slug:       provider.Slug,
+		Name:       provider.Name,
+		Kind:       provider.Kind,
+		BaseURL:    provider.BaseURL,
+		Status:     status,
+		VerifiedAt: utcTimePointer(provider.VerifiedAt),
+		UpdatedAt:  provider.UpdatedAt.UTC(),
 	}
 }
 
@@ -207,11 +195,4 @@ func modelCapabilities(values []string, contextTokens int64) (registry.ModelCapa
 		}
 	}
 	return capabilities, nil
-}
-
-func addDomain(domains map[uuid.UUID]map[registry.ResourceDomain]struct{}, providerID uuid.UUID, domain registry.ResourceDomain) {
-	if domains[providerID] == nil {
-		domains[providerID] = make(map[registry.ResourceDomain]struct{})
-	}
-	domains[providerID][domain] = struct{}{}
 }

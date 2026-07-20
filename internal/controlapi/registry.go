@@ -2,6 +2,7 @@ package controlapi
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -32,40 +33,49 @@ func (a *API) listProviders(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) createProvider(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		Name           string                  `json:"name"`
-		Kind           providers.Kind          `json:"kind"`
-		BaseURL        string                  `json:"baseUrl"`
-		ResourceDomain registry.ResourceDomain `json:"resourceDomain"`
+		Slug    string         `json:"slug"`
+		Name    string         `json:"name"`
+		Kind    providers.Kind `json:"kind"`
+		BaseURL string         `json:"baseUrl"`
 	}
 	if err := decodeJSON(w, r, &input); err != nil {
 		writeDecodeError(w, r, err)
 		return
 	}
-	writeProblem(w, r, problem{
-		Status:  http.StatusNotImplemented,
-		Code:    "feature_not_implemented",
-		Message: "Provider resource-domain persistence does not have a matching registry owner.",
-		Stage:   "provider_resource_domain",
+	created, err := a.registry.CreateProvider(r.Context(), principalFromContext(r.Context()), registry.Provider{
+		Slug: input.Slug, Name: input.Name, Kind: input.Kind, BaseURL: input.BaseURL, Enabled: false,
 	})
+	if err != nil {
+		a.writeRegistryError(w, r, err)
+		return
+	}
+	writeData(w, http.StatusCreated, presentProviderRecord(created))
 }
 
 func (a *API) updateProvider(w http.ResponseWriter, r *http.Request) {
+	providerID, err := uuid.Parse(chi.URLParam(r, "providerID"))
+	if err != nil {
+		writeDecodeError(w, r, err)
+		return
+	}
 	var input struct {
-		Name           string                  `json:"name"`
-		Kind           providers.Kind          `json:"kind"`
-		BaseURL        string                  `json:"baseUrl"`
-		ResourceDomain registry.ResourceDomain `json:"resourceDomain"`
+		Name              string         `json:"name"`
+		Kind              providers.Kind `json:"kind"`
+		BaseURL           string         `json:"baseUrl"`
+		ExpectedUpdatedAt time.Time      `json:"expectedUpdatedAt"`
 	}
 	if err := decodeJSON(w, r, &input); err != nil {
 		writeDecodeError(w, r, err)
 		return
 	}
-	writeProblem(w, r, problem{
-		Status:  http.StatusNotImplemented,
-		Code:    "feature_not_implemented",
-		Message: "Provider resource-domain persistence does not have a matching registry owner.",
-		Stage:   "provider_resource_domain",
+	updated, err := a.registry.UpdateProvider(r.Context(), principalFromContext(r.Context()), registry.Provider{
+		ID: providerID, Name: input.Name, Kind: input.Kind, BaseURL: input.BaseURL, UpdatedAt: input.ExpectedUpdatedAt,
 	})
+	if err != nil {
+		a.writeRegistryError(w, r, err)
+		return
+	}
+	writeData(w, http.StatusOK, presentProviderRecord(updated))
 }
 
 func (a *API) setProviderStatus(w http.ResponseWriter, r *http.Request) {
@@ -75,35 +85,23 @@ func (a *API) setProviderStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		Enabled bool `json:"enabled"`
+		Enabled           *bool     `json:"enabled"`
+		ExpectedUpdatedAt time.Time `json:"expectedUpdatedAt"`
 	}
 	if err := decodeJSON(w, r, &input); err != nil {
 		writeDecodeError(w, r, err)
 		return
 	}
-	snapshot, err := a.loadRegistrySnapshot(r)
-	if err != nil {
-		a.writeRegistrySnapshotError(w, r, err)
+	if input.Enabled == nil {
+		a.writeRegistryError(w, r, registry.ErrInvalidInput)
 		return
 	}
-	var selected *registry.Provider
-	for index := range snapshot.providers {
-		if snapshot.providers[index].ID == id {
-			selected = &snapshot.providers[index]
-			break
-		}
-	}
-	if selected == nil {
-		a.writeRegistryError(w, r, registry.ErrNotFound)
-		return
-	}
-	selected.Enabled = input.Enabled
-	updated, err := a.registry.UpdateProvider(r.Context(), principalFromContext(r.Context()), *selected)
+	updated, err := a.registry.SetProviderEnabled(r.Context(), principalFromContext(r.Context()), id, *input.Enabled, input.ExpectedUpdatedAt)
 	if err != nil {
 		a.writeRegistryError(w, r, err)
 		return
 	}
-	writeData(w, http.StatusOK, snapshot.presentProvider(updated))
+	writeData(w, http.StatusOK, presentProviderRecord(updated))
 }
 
 func (a *API) listModels(w http.ResponseWriter, r *http.Request) {

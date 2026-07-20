@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -34,7 +35,7 @@ func (r *RegistryRepository) CreateProvider(ctx context.Context, input registry.
 	if err != nil {
 		return registry.Provider{}, translateRegistryError(err)
 	}
-	if _, err := queries.CreateAuditEvent(ctx, auditParams(&actorID, "provider.created", "provider", created.ID.String(), map[string]any{"slug": created.Slug, "kind": created.Kind})); err != nil {
+	if _, err := queries.CreateAuditEvent(ctx, auditParams(&actorID, "provider.created", "provider", created.ID.String(), map[string]any{"slug": created.Slug, "name": created.Name, "kind": created.Kind, "base_url": created.BaseUrl, "enabled": created.Enabled})); err != nil {
 		return registry.Provider{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -44,13 +45,58 @@ func (r *RegistryRepository) CreateProvider(ctx context.Context, input registry.
 }
 
 func (r *RegistryRepository) UpdateProvider(ctx context.Context, input registry.Provider, actorID uuid.UUID) (registry.Provider, error) {
-	updated, err := r.queries.UpdateProvider(ctx, db.UpdateProviderParams{ID: input.ID, Name: input.Name, Kind: string(input.Kind), BaseUrl: input.BaseURL, Enabled: input.Enabled, SourceUrl: input.SourceURL, VerifiedAt: optionalTimestamp(input.VerifiedAt)})
+	tx, err := r.connections.Postgres.Begin(ctx)
+	if err != nil {
+		return registry.Provider{}, err
+	}
+	defer tx.Rollback(ctx)
+	queries := r.queries.WithTx(tx)
+	current, err := queries.GetProviderForUpdate(ctx, input.ID)
 	if err != nil {
 		return registry.Provider{}, translateRegistryError(err)
 	}
-	_, err = r.queries.CreateAuditEvent(ctx, auditParams(&actorID, "provider.updated", "provider", input.ID.String(), map[string]any{"enabled": input.Enabled}))
+	if !current.UpdatedAt.Time.Equal(input.UpdatedAt) {
+		return registry.Provider{}, registry.ErrConflict
+	}
+	if current.Enabled && (current.Kind != string(input.Kind) || current.BaseUrl != input.BaseURL) {
+		return registry.Provider{}, registry.ErrProviderEnabled
+	}
+	updated, err := queries.UpdateProvider(ctx, db.UpdateProviderParams{ID: input.ID, Name: input.Name, Kind: string(input.Kind), BaseUrl: input.BaseURL})
+	if err != nil {
+		return registry.Provider{}, translateRegistryError(err)
+	}
+	if _, err := queries.CreateAuditEvent(ctx, auditParams(&actorID, "provider.updated", "provider", input.ID.String(), map[string]any{"name": updated.Name, "kind": updated.Kind, "base_url": updated.BaseUrl})); err != nil {
+		return registry.Provider{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return registry.Provider{}, translateRegistryError(err)
+	}
+	return providerFromDB(updated), nil
+}
+
+func (r *RegistryRepository) SetProviderEnabled(ctx context.Context, providerID uuid.UUID, enabled bool, expectedUpdatedAt time.Time, actorID uuid.UUID) (registry.Provider, error) {
+	tx, err := r.connections.Postgres.Begin(ctx)
 	if err != nil {
 		return registry.Provider{}, err
+	}
+	defer tx.Rollback(ctx)
+	queries := r.queries.WithTx(tx)
+	current, err := queries.GetProviderForUpdate(ctx, providerID)
+	if err != nil {
+		return registry.Provider{}, translateRegistryError(err)
+	}
+	if !current.UpdatedAt.Time.Equal(expectedUpdatedAt) {
+		return registry.Provider{}, registry.ErrConflict
+	}
+	updated, err := queries.SetProviderEnabled(ctx, db.SetProviderEnabledParams{ID: providerID, Enabled: enabled})
+	if err != nil {
+		return registry.Provider{}, translateRegistryError(err)
+	}
+	if _, err := queries.CreateAuditEvent(ctx, auditParams(&actorID, "provider.status_changed", "provider", providerID.String(), map[string]any{"enabled": enabled})); err != nil {
+		return registry.Provider{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return registry.Provider{}, translateRegistryError(err)
 	}
 	return providerFromDB(updated), nil
 }

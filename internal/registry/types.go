@@ -10,10 +10,12 @@ import (
 )
 
 var (
-	ErrInvalidInput = errors.New("invalid registry input")
-	ErrNotFound     = errors.New("registry record not found")
-	ErrConflict     = errors.New("registry conflict")
-	ErrForbidden    = errors.New("registry operation forbidden")
+	ErrInvalidInput          = errors.New("invalid registry input")
+	ErrNotFound              = errors.New("registry record not found")
+	ErrConflict              = errors.New("registry conflict")
+	ErrForbidden             = errors.New("registry operation forbidden")
+	ErrProviderEnabled       = errors.New("provider must be disabled before changing routing fields")
+	ErrValidationUnavailable = errors.New("registry validation is temporarily unavailable")
 )
 
 type ResourceDomain string
@@ -102,6 +104,7 @@ type NewCredential struct {
 type Repository interface {
 	CreateProvider(context.Context, Provider, uuid.UUID) (Provider, error)
 	UpdateProvider(context.Context, Provider, uuid.UUID) (Provider, error)
+	SetProviderEnabled(context.Context, uuid.UUID, bool, time.Time, uuid.UUID) (Provider, error)
 	ListProviders(context.Context) ([]Provider, error)
 	GetProvider(context.Context, uuid.UUID) (Provider, error)
 

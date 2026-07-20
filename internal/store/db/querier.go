@@ -52,6 +52,7 @@ type Querier interface {
 	GetModelByPublicName(ctx context.Context, publicName string) (GetModelByPublicNameRow, error)
 	GetModelDomain(ctx context.Context, modelID uuid.UUID) (ResourceDomain, error)
 	GetProvider(ctx context.Context, id uuid.UUID) (Provider, error)
+	GetProviderForUpdate(ctx context.Context, id uuid.UUID) (Provider, error)
 	GetRequest(ctx context.Context, id uuid.UUID) (Request, error)
 	GetRequestByIdempotencyKey(ctx context.Context, arg GetRequestByIdempotencyKeyParams) (Request, error)
 	GetRequestForUpdate(ctx context.Context, id uuid.UUID) (Request, error)
@@ -95,6 +96,7 @@ type Querier interface {
 	RevokeSession(ctx context.Context, id uuid.UUID) (int64, error)
 	RevokeUserModel(ctx context.Context, arg RevokeUserModelParams) (int64, error)
 	RevokeUserSessions(ctx context.Context, userID uuid.UUID) error
+	SetProviderEnabled(ctx context.Context, arg SetProviderEnabledParams) (Provider, error)
 	TouchGatewayKey(ctx context.Context, id uuid.UUID) error
 	TouchSession(ctx context.Context, id uuid.UUID) error
 	UpdateAttempt(ctx context.Context, arg UpdateAttemptParams) (RequestAttempt, error)

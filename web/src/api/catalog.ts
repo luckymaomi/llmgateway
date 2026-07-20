@@ -9,7 +9,9 @@ import type {
   OperationSnapshot,
   Page,
   Provider,
-  ProviderInput,
+  ProviderCreateInput,
+  ProviderRecord,
+  ProviderUpdateInput,
 } from './types'
 
 const base = '/api/control'
@@ -21,27 +23,24 @@ export const catalogApi = {
       query: listQuery(query),
       ...(signal ? { signal } : {}),
     }),
-  createProvider: (input: ProviderInput) =>
-    apiClient.request<Provider, ProviderInput>(`${base}/providers`, {
+  createProvider: (input: ProviderCreateInput) =>
+    apiClient.request<ProviderRecord, ProviderCreateInput>(`${base}/providers`, {
       method: 'POST',
       body: input,
     }),
-  updateProvider: (id: string, input: ProviderInput) =>
-    apiClient.request<Provider, ProviderInput>(item('providers', id), {
+  updateProvider: (id: string, input: ProviderUpdateInput) =>
+    apiClient.request<ProviderRecord, ProviderUpdateInput>(item('providers', id), {
       method: 'PUT',
       body: input,
     }),
-  setProviderEnabled: (id: string, enabled: boolean) =>
-    apiClient.request<Provider, { enabled: boolean }>(`${item('providers', id)}/status`, {
-      method: 'PUT',
-      body: { enabled },
-    }),
-  testProvider: (id: string, mode: 'connection' | 'generation') =>
-    apiClient.request<OperationSnapshot, { mode: 'connection' | 'generation' }>(
-      `${item('providers', id)}/tests`,
-      { method: 'POST', body: { mode } },
+  setProviderEnabled: (id: string, enabled: boolean, expectedUpdatedAt: string) =>
+    apiClient.request<ProviderRecord, { enabled: boolean; expectedUpdatedAt: string }>(
+      `${item('providers', id)}/status`,
+      {
+        method: 'PUT',
+        body: { enabled, expectedUpdatedAt },
+      },
     ),
-
   models: (query: ListQuery, signal?: AbortSignal) =>
     apiClient.request<Page<Model>>(`${base}/models`, {
       query: listQuery(query),

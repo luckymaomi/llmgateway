@@ -3,6 +3,7 @@ package registry
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -35,7 +36,15 @@ func (s *Service) CreateProvider(ctx context.Context, actor identity.Principal, 
 		return Provider{}, ErrForbidden
 	}
 	provider.ID = uuid.New()
-	if err := s.validateProvider(ctx, provider); err != nil {
+	provider.Enabled = false
+	provider = normalizeProvider(provider)
+	if !slugPattern.MatchString(provider.Slug) {
+		return Provider{}, ErrInvalidInput
+	}
+	if err := s.validateProviderDetails(ctx, provider); err != nil {
+		return Provider{}, err
+	}
+	if err := s.validateProviderSource(ctx, provider); err != nil {
 		return Provider{}, err
 	}
 	return s.repository.CreateProvider(ctx, provider, actor.UserID)
@@ -45,13 +54,24 @@ func (s *Service) UpdateProvider(ctx context.Context, actor identity.Principal, 
 	if !actor.CanOperateProviders() {
 		return Provider{}, ErrForbidden
 	}
-	if provider.ID == uuid.Nil {
+	if provider.ID == uuid.Nil || provider.UpdatedAt.IsZero() {
 		return Provider{}, ErrInvalidInput
 	}
-	if err := s.validateProvider(ctx, provider); err != nil {
+	provider = normalizeProvider(provider)
+	if err := s.validateProviderDetails(ctx, provider); err != nil {
 		return Provider{}, err
 	}
 	return s.repository.UpdateProvider(ctx, provider, actor.UserID)
+}
+
+func (s *Service) SetProviderEnabled(ctx context.Context, actor identity.Principal, providerID uuid.UUID, enabled bool, expectedUpdatedAt time.Time) (Provider, error) {
+	if !actor.CanOperateProviders() {
+		return Provider{}, ErrForbidden
+	}
+	if providerID == uuid.Nil || expectedUpdatedAt.IsZero() {
+		return Provider{}, ErrInvalidInput
+	}
+	return s.repository.SetProviderEnabled(ctx, providerID, enabled, expectedUpdatedAt, actor.UserID)
 }
 
 func (s *Service) ListProviders(ctx context.Context, actor identity.Principal) ([]Provider, error) {
@@ -151,10 +171,9 @@ func (s *Service) BindCredentialModel(ctx context.Context, actor identity.Princi
 	return s.repository.BindCredentialModel(ctx, credentialID, modelID, priority, weight, actor.UserID)
 }
 
-func (s *Service) validateProvider(ctx context.Context, provider Provider) error {
-	provider.Slug = strings.TrimSpace(provider.Slug)
-	provider.Name = strings.TrimSpace(provider.Name)
-	if !slugPattern.MatchString(provider.Slug) || provider.Name == "" || utf8.RuneCountInString(provider.Name) > 100 {
+func (s *Service) validateProviderDetails(ctx context.Context, provider Provider) error {
+	nameRunes := utf8.RuneCountInString(provider.Name)
+	if nameRunes < 2 || nameRunes > 100 || len(provider.BaseURL) > 2048 {
 		return ErrInvalidInput
 	}
 	switch provider.Kind {
@@ -162,11 +181,26 @@ func (s *Service) validateProvider(ctx context.Context, provider Provider) error
 	default:
 		return ErrInvalidInput
 	}
-	if _, err := s.urls.ValidateString(ctx, provider.BaseURL); err != nil {
+	baseURL, err := s.urls.ValidateString(ctx, provider.BaseURL)
+	if errors.Is(err, security.ErrURLResolution) {
+		return ErrValidationUnavailable
+	}
+	if err != nil || baseURL.Scheme != "https" || baseURL.ForceQuery || baseURL.RawQuery != "" || baseURL.Fragment != "" {
 		return fmt.Errorf("%w: provider base URL", ErrInvalidInput)
 	}
+	return nil
+}
+
+func (s *Service) validateProviderSource(ctx context.Context, provider Provider) error {
 	if provider.SourceURL != nil {
-		if _, err := s.urls.ValidateString(ctx, *provider.SourceURL); err != nil {
+		if len(*provider.SourceURL) > 2048 {
+			return ErrInvalidInput
+		}
+		sourceURL, err := s.urls.ValidateString(ctx, *provider.SourceURL)
+		if errors.Is(err, security.ErrURLResolution) {
+			return ErrValidationUnavailable
+		}
+		if err != nil || sourceURL.Scheme != "https" || sourceURL.ForceQuery || sourceURL.RawQuery != "" || sourceURL.Fragment != "" {
 			return fmt.Errorf("%w: provider source URL", ErrInvalidInput)
 		}
 	}
@@ -174,6 +208,17 @@ func (s *Service) validateProvider(ctx context.Context, provider Provider) error
 		return ErrInvalidInput
 	}
 	return nil
+}
+
+func normalizeProvider(provider Provider) Provider {
+	provider.Slug = strings.TrimSpace(provider.Slug)
+	provider.Name = strings.TrimSpace(provider.Name)
+	provider.BaseURL = strings.TrimSpace(provider.BaseURL)
+	if provider.SourceURL != nil {
+		value := strings.TrimSpace(*provider.SourceURL)
+		provider.SourceURL = &value
+	}
+	return provider
 }
 
 func validateModel(model Model) error {

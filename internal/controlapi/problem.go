@@ -71,6 +71,10 @@ func (a *API) writeRegistryError(w http.ResponseWriter, r *http.Request, err err
 		value.Status, value.Code, value.Message, value.Retryable = http.StatusNotFound, "not_found", "Registry record was not found.", false
 	case errors.Is(err, registry.ErrConflict):
 		value.Status, value.Code, value.Message, value.Retryable = http.StatusConflict, "conflict", "Registry facts changed.", false
+	case errors.Is(err, registry.ErrProviderEnabled):
+		value.Status, value.Code, value.Message, value.Retryable = http.StatusConflict, "provider_must_be_disabled", "Disable the Provider before changing its type or Base URL.", false
+	case errors.Is(err, registry.ErrValidationUnavailable):
+		value.Status, value.Code, value.Message, value.Retryable = http.StatusServiceUnavailable, "registry_validation_unavailable", "Provider address validation is temporarily unavailable.", true
 	default:
 		a.logFailure("registry operation failed", r, err)
 	}

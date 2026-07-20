@@ -110,7 +110,9 @@ const rootIndex = createRoute({
   beforeLoad: async ({ context }) => {
     try {
       const session = await context.queryClient.ensureQueryData(sessionQuery)
-      throw redirect({ to: session.role === 'member' ? '/playground' : '/overview' })
+      throw redirect({
+        to: session.role === 'member' ? '/playground' : '/providers/providers',
+      })
     } catch (error) {
       if (isRedirect(error)) throw error
       throw redirect({ to: '/login' })

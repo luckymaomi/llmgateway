@@ -10,6 +10,7 @@ export function Badge({ children, tone = 'neutral' }: { children: ReactNode; ton
 
 const statusLabels: Record<string, string> = {
   active: '可用',
+  enabled: '已启用',
   disabled: '已停用',
   pending: '待处理',
   pending_review: '待审核',
@@ -44,7 +45,7 @@ const statusLabels: Record<string, string> = {
 }
 
 function statusTone(status: string): BadgeTone {
-  if (['active', 'healthy', 'published', 'completed', 'approved'].includes(status))
+  if (['active', 'enabled', 'healthy', 'published', 'completed', 'approved'].includes(status))
     return 'positive'
   if (
     ['cooling', 'pending', 'pending_review', 'validating', 'queued', 'uncertain'].includes(status)

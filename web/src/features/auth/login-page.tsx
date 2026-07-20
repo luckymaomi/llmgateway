@@ -19,7 +19,7 @@ const schema = z.object({
 
 type FormValues = z.infer<typeof schema>
 
-export function LoginPage({ redirectTo = '/overview' }: { redirectTo?: string }) {
+export function LoginPage({ redirectTo }: { redirectTo?: string }) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const form = useForm<FormValues>({
@@ -30,7 +30,10 @@ export function LoginPage({ redirectTo = '/overview' }: { redirectTo?: string })
     mutationFn: authApi.login,
     async onSuccess(session) {
       queryClient.setQueryData(['session'], session)
-      await navigate({ to: redirectTo, replace: true })
+      await navigate({
+        to: redirectTo ?? (session.role === 'member' ? '/playground' : '/providers/providers'),
+        replace: true,
+      })
     },
   })
 

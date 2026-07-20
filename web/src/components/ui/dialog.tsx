@@ -12,6 +12,7 @@ interface DialogFrameProps {
   children: ReactNode
   footer?: ReactNode
   width?: 'sm' | 'md' | 'lg'
+  dismissible?: boolean
 }
 
 export function DialogFrame({
@@ -22,12 +23,24 @@ export function DialogFrame({
   children,
   footer,
   width = 'md',
+  dismissible = true,
 }: DialogFrameProps) {
   return (
-    <Dialog.Root open={open} onOpenChange={onOpenChange}>
+    <Dialog.Root
+      open={open}
+      onOpenChange={(nextOpen) => (dismissible || nextOpen) && onOpenChange(nextOpen)}
+    >
       <Dialog.Portal>
         <Dialog.Overlay className="dialog-overlay" />
-        <Dialog.Content className={`dialog-content dialog-content--${width}`}>
+        <Dialog.Content
+          className={`dialog-content dialog-content--${width}`}
+          onEscapeKeyDown={(event) => {
+            if (!dismissible) event.preventDefault()
+          }}
+          onPointerDownOutside={(event) => {
+            if (!dismissible) event.preventDefault()
+          }}
+        >
           <header className="dialog-header">
             <div>
               <Dialog.Title className="dialog-title">{title}</Dialog.Title>
@@ -37,11 +50,13 @@ export function DialogFrame({
                 </Dialog.Description>
               ) : null}
             </div>
-            <Dialog.Close asChild>
-              <IconButton label="关闭">
-                <X size={18} />
-              </IconButton>
-            </Dialog.Close>
+            {dismissible ? (
+              <Dialog.Close asChild>
+                <IconButton label="关闭">
+                  <X size={18} />
+                </IconButton>
+              </Dialog.Close>
+            ) : null}
           </header>
           <div className="dialog-body">{children}</div>
           {footer ? <footer className="dialog-footer">{footer}</footer> : null}
