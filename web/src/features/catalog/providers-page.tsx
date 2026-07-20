@@ -16,8 +16,20 @@ import { formatDateTime } from '@/lib/format'
 
 import { CatalogTabs } from './catalog-tabs'
 import { ProviderForm } from './provider-form'
+import {
+  createProviderOperation,
+  hasUnknownProviderOutcome,
+  type ProviderOperation,
+} from './provider-mutation'
+import { ProviderOperationRecovery } from './provider-operation-recovery'
 
-type EditingProvider = { kind: 'create' } | { kind: 'existing'; id: string }
+type EditingProvider = { kind: 'create' } | { kind: 'existing'; provider: Provider }
+type ProviderStatusVariables = {
+  providerID: string
+  enabled: boolean
+  expectedUpdatedAt: string
+}
+type ProviderStatusOperation = ProviderOperation<ProviderStatusVariables>
 
 export function ProvidersPage() {
   const session = useSession()
@@ -25,21 +37,32 @@ export function ProvidersPage() {
   const { state, setPage, setSearch, setStatus } = useListSearch()
   const queryClient = useQueryClient()
   const [editing, setEditing] = useState<EditingProvider | null>(null)
+  const [uncertainStatusOperation, setUncertainStatusOperation] = useState<
+    ProviderStatusOperation | undefined
+  >()
   const query = useQuery({
     queryKey: ['providers', state],
     queryFn: ({ signal }) => catalogApi.providers(state, signal),
     placeholderData: keepPreviousData,
   })
   const toggle = useMutation({
-    mutationFn: (provider: Provider) =>
-      catalogApi.setProviderEnabled(provider.id, provider.status !== 'enabled', provider.updatedAt),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['providers'] }),
-    onError: () => queryClient.invalidateQueries({ queryKey: ['providers'] }),
+    mutationFn: ({ variables, idempotencyKey }: ProviderStatusOperation) =>
+      catalogApi.setProviderEnabled(
+        variables.providerID,
+        variables.enabled,
+        variables.expectedUpdatedAt,
+        idempotencyKey,
+      ),
+    onSuccess: () => {
+      setUncertainStatusOperation(undefined)
+      return queryClient.invalidateQueries({ queryKey: ['providers'] })
+    },
+    onError: (error, operation) => {
+      setUncertainStatusOperation(hasUnknownProviderOutcome(error) ? operation : undefined)
+      return queryClient.invalidateQueries({ queryKey: ['providers'] })
+    },
   })
-  const editingProvider =
-    editing?.kind === 'existing'
-      ? query.data?.items.find((provider) => provider.id === editing.id)
-      : undefined
+  const editingProvider = editing?.kind === 'existing' ? editing.provider : undefined
 
   const columns = useMemo<ColumnDef<Provider, unknown>[]>(
     () => [
@@ -74,14 +97,22 @@ export function ProvidersPage() {
             <div className="row-actions" onClick={(event) => event.stopPropagation()}>
               <IconButton
                 label="编辑 Provider"
-                onClick={() => setEditing({ kind: 'existing', id: row.original.id })}
+                onClick={() => setEditing({ kind: 'existing', provider: row.original })}
               >
                 <Edit3 size={16} />
               </IconButton>
               <IconButton
                 label={row.original.status === 'enabled' ? '停用 Provider' : '启用 Provider'}
-                disabled={toggle.isPending}
-                onClick={() => toggle.mutate(row.original)}
+                disabled={toggle.isPending || Boolean(uncertainStatusOperation)}
+                onClick={() =>
+                  toggle.mutate(
+                    createProviderOperation({
+                      providerID: row.original.id,
+                      enabled: row.original.status !== 'enabled',
+                      expectedUpdatedAt: row.original.updatedAt,
+                    }),
+                  )
+                }
               >
                 <Power size={16} />
               </IconButton>
@@ -89,7 +120,7 @@ export function ProvidersPage() {
           ) : null,
       },
     ],
-    [canWrite, toggle],
+    [canWrite, toggle, uncertainStatusOperation],
   )
 
   return (
@@ -118,7 +149,15 @@ export function ProvidersPage() {
             { value: 'disabled', label: '已停用' },
           ]}
         />
-        <FormProblem error={toggle.error} />
+        {uncertainStatusOperation ? (
+          <ProviderOperationRecovery
+            error={toggle.error}
+            pending={toggle.isPending}
+            onRetry={() => toggle.mutate(uncertainStatusOperation)}
+          />
+        ) : (
+          <FormProblem error={toggle.error} />
+        )}
         <DataTable
           ariaLabel="Provider 列表"
           data={query.data?.items ?? []}
@@ -134,7 +173,7 @@ export function ProvidersPage() {
           total={query.data?.total ?? 0}
           onPageChange={setPage}
           onRowClick={
-            canWrite ? (provider) => setEditing({ kind: 'existing', id: provider.id }) : undefined
+            canWrite ? (provider) => setEditing({ kind: 'existing', provider }) : undefined
           }
           renderMobile={(provider) => (
             <div className="mobile-summary">
@@ -154,6 +193,11 @@ export function ProvidersPage() {
       </PageSection>
 
       <ProviderForm
+        key={
+          editing?.kind === 'existing'
+            ? `provider:${editing.provider.id}:${editing.provider.updatedAt}`
+            : (editing?.kind ?? 'closed')
+        }
         open={editing?.kind === 'create' || editingProvider !== undefined}
         onOpenChange={(open) => {
           if (!open) setEditing(null)

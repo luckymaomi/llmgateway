@@ -1,14 +1,28 @@
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { useEffect } from 'react'
+import { useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { z } from 'zod'
 
-import { catalogApi, type Provider } from '@/api'
+import { ApiProblem, catalogApi, type ProviderRecord } from '@/api'
 import { Button } from '@/components/ui/button'
 import { DialogFrame } from '@/components/ui/dialog'
 import { Field, Input, NativeSelect } from '@/components/ui/field'
 import { FormProblem } from '@/features/auth/form-problem'
+
+import {
+  buildProviderRebase,
+  type ProviderConflictChoice,
+  type ProviderConflictState,
+  type ProviderEditableField,
+} from './provider-conflict-rebase'
+import { ProviderConflictRecovery } from './provider-conflict-recovery'
+import {
+  createProviderOperation,
+  hasUnknownProviderOutcome,
+  type ProviderOperation,
+} from './provider-mutation'
+import { ProviderOperationRecovery } from './provider-operation-recovery'
 
 const schema = z.object({
   slug: z
@@ -27,6 +41,8 @@ const schema = z.object({
 })
 
 type Values = z.infer<typeof schema>
+type ProviderWriteVariables = { values: Values; opened?: ProviderRecord }
+type Submission = ProviderOperation<ProviderWriteVariables>
 
 export function ProviderForm({
   open,
@@ -35,57 +51,208 @@ export function ProviderForm({
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
-  provider?: Provider
+  provider?: ProviderRecord
 }) {
   const queryClient = useQueryClient()
   const form = useForm<Values>({
     resolver: zodResolver(schema),
     defaultValues: valuesFrom(provider),
   })
-  useEffect(() => form.reset(valuesFrom(provider)), [form, provider, open])
+  const [submissionSnapshot, setSubmissionSnapshot] = useState<ProviderRecord | undefined>(provider)
+  const [conflict, setConflict] = useState<ProviderConflictState | undefined>()
+  const [conflictReadError, setConflictReadError] = useState<unknown>()
+  const [uncertainOperation, setUncertainOperation] = useState<Submission | undefined>()
+  const [readingLatest, setReadingLatest] = useState(false)
   const mutation = useMutation({
-    mutationFn: (values: Values) =>
-      provider
-        ? catalogApi.updateProvider(provider.id, {
-            name: values.name,
-            kind: values.kind,
-            baseUrl: values.baseUrl,
-            expectedUpdatedAt: provider.updatedAt,
-          })
-        : catalogApi.createProvider(values),
+    mutationFn: ({ variables, idempotencyKey }: Submission) => {
+      const { values, opened } = variables
+      return provider
+        ? catalogApi.updateProvider(
+            provider.id,
+            {
+              name: values.name,
+              kind: values.kind,
+              baseUrl: values.baseUrl,
+              expectedUpdatedAt: opened?.updatedAt ?? provider.updatedAt,
+            },
+            idempotencyKey,
+          )
+        : catalogApi.createProvider(values, idempotencyKey)
+    },
     async onSuccess() {
       await queryClient.invalidateQueries({ queryKey: ['providers'] })
-      onOpenChange(false)
+      close()
     },
-    onError: () => queryClient.invalidateQueries({ queryKey: ['providers'] }),
+    onError(error, operation) {
+      const submission = operation.variables
+      if (
+        provider &&
+        submission.opened &&
+        error instanceof ApiProblem &&
+        error.code === 'conflict'
+      ) {
+        const recovery: ProviderConflictState = {
+          opened: submission.opened,
+          draft: submission.values,
+          choices: {},
+        }
+        setConflict(recovery)
+        setUncertainOperation(undefined)
+        setConflictReadError(undefined)
+        void readLatestProvider(provider.id, recovery)
+      } else if (hasUnknownProviderOutcome(error)) {
+        setUncertainOperation(operation)
+        form.reset(operation.variables.values)
+      } else {
+        setUncertainOperation(undefined)
+      }
+      void queryClient.invalidateQueries({ queryKey: ['providers'] })
+    },
   })
+  const currentServerSnapshot = conflict?.latest ?? conflict?.opened ?? submissionSnapshot
+  const routingLocked = currentServerSnapshot?.status === 'enabled'
+  const conflictRebase = conflict?.latest
+    ? buildProviderRebase(conflict.opened, conflict.draft, conflict.latest, conflict.choices)
+    : undefined
+
+  async function readLatestProvider(
+    providerID: string,
+    recovery: ProviderConflictState | undefined = conflict,
+  ): Promise<void> {
+    if (!recovery) return
+    setReadingLatest(true)
+    try {
+      setConflictReadError(undefined)
+      const latest = await catalogApi.provider(providerID)
+      const next: ProviderConflictState = { ...recovery, latest, choices: {} }
+      setConflict(next)
+      form.reset(buildProviderRebase(next.opened, next.draft, latest, next.choices).values)
+    } catch (error) {
+      setConflictReadError(error)
+    } finally {
+      setReadingLatest(false)
+    }
+  }
+
+  function close(): void {
+    mutation.reset()
+    setConflict(undefined)
+    setConflictReadError(undefined)
+    setUncertainOperation(undefined)
+    setReadingLatest(false)
+    onOpenChange(false)
+  }
+
+  function reloadLatest(): void {
+    if (!conflict?.latest) return
+    form.reset(valuesFrom(conflict.latest))
+    setSubmissionSnapshot(conflict.latest)
+    setConflict(undefined)
+    setConflictReadError(undefined)
+    setUncertainOperation(undefined)
+    setReadingLatest(false)
+    mutation.reset()
+  }
+
+  function submitNewOperation(values: Values, opened?: ProviderRecord): void {
+    setConflict(undefined)
+    setConflictReadError(undefined)
+    setUncertainOperation(undefined)
+    setReadingLatest(false)
+    mutation.mutate(
+      createProviderOperation({
+        values: { ...values },
+        ...(opened ? { opened: { ...opened } } : {}),
+      }),
+    )
+  }
+
+  function retryOriginalOperation(): void {
+    if (uncertainOperation) mutation.mutate(uncertainOperation)
+  }
+
+  function chooseConflict(field: ProviderEditableField, choice: ProviderConflictChoice): void {
+    if (!conflict?.latest) return
+    const latest = conflict.latest
+    const next: ProviderConflictState = {
+      ...conflict,
+      choices: { ...conflict.choices, [field]: choice },
+    }
+    setConflict(next)
+    form.reset(buildProviderRebase(next.opened, next.draft, latest, next.choices).values)
+  }
+
+  function retryLatest(): void {
+    if (!conflict?.latest || !conflictRebase || conflictRebase.unresolvedFields.length > 0) return
+    const latest = conflict.latest
+    setSubmissionSnapshot(latest)
+    submitNewOperation(conflictRebase.values, latest)
+  }
 
   return (
     <DialogFrame
       open={open}
-      onOpenChange={onOpenChange}
+      onOpenChange={(nextOpen) => {
+        if (nextOpen) onOpenChange(true)
+        else close()
+      }}
       dismissible={!mutation.isPending}
       title={provider ? '编辑 Provider' : '添加 Provider'}
       footer={
         <>
-          <Button
-            type="button"
-            variant="secondary"
-            disabled={mutation.isPending}
-            onClick={() => onOpenChange(false)}
-          >
+          <Button type="button" variant="secondary" disabled={mutation.isPending} onClick={close}>
             取消
           </Button>
-          <Button type="submit" form="provider-form" disabled={mutation.isPending}>
-            {mutation.isPending ? '保存中' : '保存'}
-          </Button>
+          {provider && conflict ? (
+            conflict.latest ? (
+              <>
+                <Button type="button" variant="secondary" onClick={reloadLatest}>
+                  重新载入
+                </Button>
+                <Button
+                  type="button"
+                  disabled={
+                    mutation.isPending || (conflictRebase?.unresolvedFields.length ?? 0) > 0
+                  }
+                  title={
+                    (conflictRebase?.unresolvedFields.length ?? 0) > 0
+                      ? '请先处理每个同字段冲突'
+                      : undefined
+                  }
+                  onClick={retryLatest}
+                >
+                  {mutation.isPending ? '保存中' : '保存合并结果'}
+                </Button>
+              </>
+            ) : (
+              <Button
+                type="button"
+                disabled={readingLatest}
+                onClick={() => void readLatestProvider(provider.id, conflict)}
+              >
+                {readingLatest ? '正在读取最新事实' : '重新读取最新事实'}
+              </Button>
+            )
+          ) : uncertainOperation ? (
+            <Button
+              type="submit"
+              form="provider-form"
+              disabled={mutation.isPending || !form.formState.isDirty}
+            >
+              {mutation.isPending ? '保存中' : '保存修改为新操作'}
+            </Button>
+          ) : (
+            <Button type="submit" form="provider-form" disabled={mutation.isPending}>
+              {mutation.isPending ? '保存中' : '保存'}
+            </Button>
+          )}
         </>
       }
     >
       <form
         id="provider-form"
         className="form-grid"
-        onSubmit={form.handleSubmit((values) => mutation.mutate(values))}
+        onSubmit={form.handleSubmit((values) => submitNewOperation(values, submissionSnapshot))}
       >
         <Field label="标识" htmlFor="provider-slug" error={form.formState.errors.slug?.message}>
           <Input
@@ -96,10 +263,19 @@ export function ProviderForm({
           />
         </Field>
         <Field label="名称" htmlFor="provider-name" error={form.formState.errors.name?.message}>
-          <Input id="provider-name" autoFocus={Boolean(provider)} {...form.register('name')} />
+          <Input
+            id="provider-name"
+            autoFocus={Boolean(provider)}
+            readOnly={mutation.isPending || Boolean(conflict)}
+            {...form.register('name')}
+          />
         </Field>
         <Field label="类型" htmlFor="provider-kind" error={form.formState.errors.kind?.message}>
-          <NativeSelect id="provider-kind" {...form.register('kind')}>
+          <NativeSelect
+            id="provider-kind"
+            disabled={routingLocked || mutation.isPending || Boolean(conflict)}
+            {...form.register('kind')}
+          >
             <option value="openai-compatible">OpenAI-compatible</option>
             <option value="zhipu">智谱 GLM</option>
             <option value="deepseek">DeepSeek</option>
@@ -111,15 +287,35 @@ export function ProviderForm({
           htmlFor="provider-base-url"
           error={form.formState.errors.baseUrl?.message}
         >
-          <Input id="provider-base-url" inputMode="url" {...form.register('baseUrl')} />
+          <Input
+            id="provider-base-url"
+            inputMode="url"
+            readOnly={routingLocked || mutation.isPending || Boolean(conflict)}
+            {...form.register('baseUrl')}
+          />
         </Field>
-        <FormProblem error={mutation.error} />
+        {uncertainOperation ? (
+          <ProviderOperationRecovery
+            error={mutation.error}
+            pending={mutation.isPending}
+            onRetry={retryOriginalOperation}
+          />
+        ) : (
+          <FormProblem error={mutation.error} />
+        )}
+        {conflict && conflictReadError ? <FormProblem error={conflictReadError} /> : null}
+        {conflict?.latest ? (
+          <ProviderConflictRecovery
+            state={{ ...conflict, latest: conflict.latest }}
+            onChoice={chooseConflict}
+          />
+        ) : null}
       </form>
     </DialogFrame>
   )
 }
 
-function valuesFrom(provider?: Provider): Values {
+function valuesFrom(provider?: ProviderRecord): Values {
   return provider
     ? {
         slug: provider.slug,

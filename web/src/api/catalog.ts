@@ -16,6 +16,9 @@ import type {
 
 const base = '/api/control'
 const item = (path: string, id: string) => `${base}/${path}/${encodeURIComponent(id)}`
+const providerMutationHeaders = (idempotencyKey: string) => ({
+  'Idempotency-Key': idempotencyKey,
+})
 
 export const catalogApi = {
   providers: (query: ListQuery, signal?: AbortSignal) =>
@@ -23,22 +26,34 @@ export const catalogApi = {
       query: listQuery(query),
       ...(signal ? { signal } : {}),
     }),
-  createProvider: (input: ProviderCreateInput) =>
+  provider: (id: string, signal?: AbortSignal) =>
+    apiClient.request<ProviderRecord>(item('providers', id), {
+      ...(signal ? { signal } : {}),
+    }),
+  createProvider: (input: ProviderCreateInput, idempotencyKey: string) =>
     apiClient.request<ProviderRecord, ProviderCreateInput>(`${base}/providers`, {
       method: 'POST',
       body: input,
+      headers: providerMutationHeaders(idempotencyKey),
     }),
-  updateProvider: (id: string, input: ProviderUpdateInput) =>
+  updateProvider: (id: string, input: ProviderUpdateInput, idempotencyKey: string) =>
     apiClient.request<ProviderRecord, ProviderUpdateInput>(item('providers', id), {
       method: 'PUT',
       body: input,
+      headers: providerMutationHeaders(idempotencyKey),
     }),
-  setProviderEnabled: (id: string, enabled: boolean, expectedUpdatedAt: string) =>
+  setProviderEnabled: (
+    id: string,
+    enabled: boolean,
+    expectedUpdatedAt: string,
+    idempotencyKey: string,
+  ) =>
     apiClient.request<ProviderRecord, { enabled: boolean; expectedUpdatedAt: string }>(
       `${item('providers', id)}/status`,
       {
         method: 'PUT',
         body: { enabled, expectedUpdatedAt },
+        headers: providerMutationHeaders(idempotencyKey),
       },
     ),
   models: (query: ListQuery, signal?: AbortSignal) =>
