@@ -100,10 +100,16 @@ func (a *openAIAdapter) encodeToolCalls(toolCalls []canonical.ToolCall, messageI
 		if toolType != "function" {
 			return nil, a.unsupported(fmt.Sprintf("messages[%d].tool_calls[%d].type", messageIndex, index))
 		}
-		encoded = append(encoded, wireToolCall{
+		encodedCall := wireToolCall{
 			ID: toolCall.ID, Type: toolType,
 			Function: wireFunctionCall{Name: toolCall.Function.Name, Arguments: toolCall.Function.Arguments},
-		})
+		}
+		if a.policy.encodeToolCallMetadata != nil {
+			if err := a.policy.encodeToolCallMetadata(&encodedCall, toolCall); err != nil {
+				return nil, err
+			}
+		}
+		encoded = append(encoded, encodedCall)
 	}
 	return encoded, nil
 }

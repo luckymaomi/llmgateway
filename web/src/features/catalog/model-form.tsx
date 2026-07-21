@@ -1,7 +1,7 @@
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, type FormEvent } from 'react'
-import { useForm, type DefaultValues } from 'react-hook-form'
+import { useForm, useWatch, type DefaultValues } from 'react-hook-form'
 import { z } from 'zod'
 
 import { catalogApi, type Model, type ModelCapability, type ModelInput } from '@/api'
@@ -17,16 +17,23 @@ const capabilities: Array<{ value: ModelCapability; label: string }> = [
   { value: 'structured_output', label: '结构化输出' },
 ]
 
-const schema = z.object({
-  providerId: z.string().min(1, '请选择 Provider'),
-  alias: z.string().trim().min(1, '请输入模型别名'),
-  upstreamModelId: z.string().trim().min(1, '请输入上游模型 ID'),
-  resourceDomain: z.enum(['free', 'professional']),
-  capabilities: z
-    .array(z.enum(['streaming', 'tools', 'reasoning', 'structured_output']))
-    .min(1, '至少选择一项能力'),
-  contextTokens: z.number().int().positive('请输入正整数上下文 Token 上限'),
-})
+const schema = z
+  .object({
+    providerId: z.string().min(1, '请选择 Provider'),
+    alias: z.string().trim().min(1, '请输入模型别名'),
+    upstreamModelId: z.string().trim().min(1, '请输入上游模型 ID'),
+    resourceDomain: z.enum(['free', 'professional']),
+    capabilities: z
+      .array(z.enum(['streaming', 'tools', 'reasoning', 'structured_output']))
+      .min(1, '至少选择一项能力'),
+    reasoningMode: z.enum(['', 'toggle', 'effort', 'hybrid']),
+    contextTokens: z.number().int().positive('请输入正整数上下文 Token 上限'),
+  })
+  .superRefine((value, context) => {
+    if (value.capabilities.includes('reasoning') && value.reasoningMode === '') {
+      context.addIssue({ code: 'custom', path: ['reasoningMode'], message: '请选择推理控制方式' })
+    }
+  })
 
 type Values = z.infer<typeof schema>
 
@@ -46,6 +53,7 @@ export function ModelForm({
   })
   const queryClient = useQueryClient()
   const form = useForm<Values>({ resolver: zodResolver(schema), defaultValues: valuesFrom(model) })
+  const selectedCapabilities = useWatch({ control: form.control, name: 'capabilities' })
   useEffect(() => form.reset(valuesFrom(model)), [form, model, open])
   const mutation = useMutation({
     mutationFn: (input: ModelInput) =>
@@ -64,6 +72,9 @@ export function ModelForm({
         upstreamModelId: values.upstreamModelId,
         resourceDomain: values.resourceDomain,
         capabilities: values.capabilities,
+        ...(values.capabilities.includes('reasoning') && values.reasoningMode
+          ? { reasoningMode: values.reasoningMode }
+          : {}),
         contextTokens: values.contextTokens,
       })
     } catch {
@@ -172,6 +183,20 @@ export function ModelForm({
             <span className="field__error">{form.formState.errors.capabilities.message}</span>
           ) : null}
         </fieldset>
+        {selectedCapabilities.includes('reasoning') ? (
+          <Field
+            label="推理控制"
+            htmlFor="model-reasoning-mode"
+            error={form.formState.errors.reasoningMode?.message}
+          >
+            <NativeSelect id="model-reasoning-mode" {...form.register('reasoningMode')}>
+              <option value="">请选择</option>
+              <option value="toggle">开关</option>
+              <option value="effort">强度</option>
+              <option value="hybrid">开关与强度</option>
+            </NativeSelect>
+          </Field>
+        ) : null}
         <FormProblem error={mutation.error ?? providers.error} />
       </form>
     </DialogFrame>
@@ -186,6 +211,7 @@ function valuesFrom(model?: Model): DefaultValues<Values> {
         upstreamModelId: model.upstreamModelId,
         resourceDomain: model.resourceDomain,
         capabilities: model.capabilities,
+        reasoningMode: model.reasoningMode ?? '',
         ...(model.contextTokens !== undefined ? { contextTokens: model.contextTokens } : {}),
       }
     : {
@@ -194,5 +220,6 @@ function valuesFrom(model?: Model): DefaultValues<Values> {
         upstreamModelId: '',
         resourceDomain: 'free',
         capabilities: ['streaming'],
+        reasoningMode: '',
       }
 }

@@ -26,7 +26,7 @@ WHERE id = $2
       OR
       (status = 'dispatching' AND execution_id = $1)
   )
-RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
+RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, input_cost_nanos, output_cost_nanos, total_cost_nanos, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
 `
 
 type ClaimRequestExecutionParams struct {
@@ -47,6 +47,13 @@ func (q *Queries) ClaimRequestExecution(ctx context.Context, arg ClaimRequestExe
 		&i.EntitlementID,
 		&i.ConfigRevisionID,
 		&i.ResourceDomain,
+		&i.PriceVersionID,
+		&i.CostCurrency,
+		&i.InputRateNanosPerMillion,
+		&i.OutputRateNanosPerMillion,
+		&i.InputCostNanos,
+		&i.OutputCostNanos,
+		&i.TotalCostNanos,
 		&i.Status,
 		&i.Stream,
 		&i.ExecutionID,
@@ -106,18 +113,23 @@ func (q *Queries) CompleteLedgerReservation(ctx context.Context, arg CompleteLed
 }
 
 const completeRequest = `-- name: CompleteRequest :one
-UPDATE requests SET status = 'completed', input_tokens = $1, output_tokens = $2, usage_source = $3, error_kind = NULL, error_detail = NULL, completed_at = now(), updated_at = now()
-WHERE id = $4
-  AND execution_id = $5
-  AND execution_generation = $6
+UPDATE requests SET status = 'completed', input_tokens = $1, output_tokens = $2, usage_source = $3,
+    input_cost_nanos = $4, output_cost_nanos = $5, total_cost_nanos = $6,
+    error_kind = NULL, error_detail = NULL, completed_at = now(), updated_at = now()
+WHERE id = $7
+  AND execution_id = $8
+  AND execution_generation = $9
   AND status IN ('dispatching', 'streaming')
-RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
+RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, input_cost_nanos, output_cost_nanos, total_cost_nanos, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
 `
 
 type CompleteRequestParams struct {
 	InputTokens         *int64      `json:"input_tokens"`
 	OutputTokens        *int64      `json:"output_tokens"`
 	UsageSource         UsageSource `json:"usage_source"`
+	InputCostNanos      *int64      `json:"input_cost_nanos"`
+	OutputCostNanos     *int64      `json:"output_cost_nanos"`
+	TotalCostNanos      *int64      `json:"total_cost_nanos"`
 	ID                  uuid.UUID   `json:"id"`
 	ExecutionID         *uuid.UUID  `json:"execution_id"`
 	ExecutionGeneration int64       `json:"execution_generation"`
@@ -128,6 +140,9 @@ func (q *Queries) CompleteRequest(ctx context.Context, arg CompleteRequestParams
 		arg.InputTokens,
 		arg.OutputTokens,
 		arg.UsageSource,
+		arg.InputCostNanos,
+		arg.OutputCostNanos,
+		arg.TotalCostNanos,
 		arg.ID,
 		arg.ExecutionID,
 		arg.ExecutionGeneration,
@@ -143,6 +158,13 @@ func (q *Queries) CompleteRequest(ctx context.Context, arg CompleteRequestParams
 		&i.EntitlementID,
 		&i.ConfigRevisionID,
 		&i.ResourceDomain,
+		&i.PriceVersionID,
+		&i.CostCurrency,
+		&i.InputRateNanosPerMillion,
+		&i.OutputRateNanosPerMillion,
+		&i.InputCostNanos,
+		&i.OutputCostNanos,
+		&i.TotalCostNanos,
 		&i.Status,
 		&i.Stream,
 		&i.ExecutionID,
@@ -363,23 +385,29 @@ func (q *Queries) CreateLedgerReservation(ctx context.Context, arg CreateLedgerR
 }
 
 const createRequest = `-- name: CreateRequest :one
-INSERT INTO requests (id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
+INSERT INTO requests (id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain,
+                      price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, status, stream)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+        $10, $11, $12, $13, $14, $15)
+RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, input_cost_nanos, output_cost_nanos, total_cost_nanos, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
 `
 
 type CreateRequestParams struct {
-	ID               uuid.UUID      `json:"id"`
-	IdempotencyKey   *string        `json:"idempotency_key"`
-	RequestDigest    []byte         `json:"request_digest"`
-	UserID           uuid.UUID      `json:"user_id"`
-	GatewayKeyID     uuid.UUID      `json:"gateway_key_id"`
-	ModelID          uuid.UUID      `json:"model_id"`
-	EntitlementID    uuid.UUID      `json:"entitlement_id"`
-	ConfigRevisionID *uuid.UUID     `json:"config_revision_id"`
-	ResourceDomain   ResourceDomain `json:"resource_domain"`
-	Status           RequestStatus  `json:"status"`
-	Stream           bool           `json:"stream"`
+	ID                        uuid.UUID      `json:"id"`
+	IdempotencyKey            *string        `json:"idempotency_key"`
+	RequestDigest             []byte         `json:"request_digest"`
+	UserID                    uuid.UUID      `json:"user_id"`
+	GatewayKeyID              uuid.UUID      `json:"gateway_key_id"`
+	ModelID                   uuid.UUID      `json:"model_id"`
+	EntitlementID             uuid.UUID      `json:"entitlement_id"`
+	ConfigRevisionID          *uuid.UUID     `json:"config_revision_id"`
+	ResourceDomain            ResourceDomain `json:"resource_domain"`
+	PriceVersionID            uuid.UUID      `json:"price_version_id"`
+	CostCurrency              string         `json:"cost_currency"`
+	InputRateNanosPerMillion  int64          `json:"input_rate_nanos_per_million"`
+	OutputRateNanosPerMillion int64          `json:"output_rate_nanos_per_million"`
+	Status                    RequestStatus  `json:"status"`
+	Stream                    bool           `json:"stream"`
 }
 
 func (q *Queries) CreateRequest(ctx context.Context, arg CreateRequestParams) (Request, error) {
@@ -393,6 +421,10 @@ func (q *Queries) CreateRequest(ctx context.Context, arg CreateRequestParams) (R
 		arg.EntitlementID,
 		arg.ConfigRevisionID,
 		arg.ResourceDomain,
+		arg.PriceVersionID,
+		arg.CostCurrency,
+		arg.InputRateNanosPerMillion,
+		arg.OutputRateNanosPerMillion,
 		arg.Status,
 		arg.Stream,
 	)
@@ -407,6 +439,13 @@ func (q *Queries) CreateRequest(ctx context.Context, arg CreateRequestParams) (R
 		&i.EntitlementID,
 		&i.ConfigRevisionID,
 		&i.ResourceDomain,
+		&i.PriceVersionID,
+		&i.CostCurrency,
+		&i.InputRateNanosPerMillion,
+		&i.OutputRateNanosPerMillion,
+		&i.InputCostNanos,
+		&i.OutputCostNanos,
+		&i.TotalCostNanos,
 		&i.Status,
 		&i.Stream,
 		&i.ExecutionID,
@@ -446,7 +485,7 @@ WHERE id = $3
       OR
       (execution_id = $4 AND execution_generation = $5)
   )
-RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
+RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, input_cost_nanos, output_cost_nanos, total_cost_nanos, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
 `
 
 type FailRequestParams struct {
@@ -476,6 +515,13 @@ func (q *Queries) FailRequest(ctx context.Context, arg FailRequestParams) (Reque
 		&i.EntitlementID,
 		&i.ConfigRevisionID,
 		&i.ResourceDomain,
+		&i.PriceVersionID,
+		&i.CostCurrency,
+		&i.InputRateNanosPerMillion,
+		&i.OutputRateNanosPerMillion,
+		&i.InputCostNanos,
+		&i.OutputCostNanos,
+		&i.TotalCostNanos,
 		&i.Status,
 		&i.Stream,
 		&i.ExecutionID,
@@ -497,18 +543,22 @@ func (q *Queries) FailRequest(ctx context.Context, arg FailRequestParams) (Reque
 const failRequestWithUsage = `-- name: FailRequestWithUsage :one
 UPDATE requests
 SET status = 'failed', input_tokens = $1, output_tokens = $2, usage_source = $3,
-    error_kind = $4, error_detail = $5, completed_at = now(), updated_at = now()
-WHERE id = $6
-  AND execution_id = $7
-  AND execution_generation = $8
+    input_cost_nanos = $4, output_cost_nanos = $5, total_cost_nanos = $6,
+    error_kind = $7, error_detail = $8, completed_at = now(), updated_at = now()
+WHERE id = $9
+  AND execution_id = $10
+  AND execution_generation = $11
   AND status IN ('dispatching', 'streaming')
-RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
+RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, input_cost_nanos, output_cost_nanos, total_cost_nanos, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
 `
 
 type FailRequestWithUsageParams struct {
 	InputTokens         *int64      `json:"input_tokens"`
 	OutputTokens        *int64      `json:"output_tokens"`
 	UsageSource         UsageSource `json:"usage_source"`
+	InputCostNanos      *int64      `json:"input_cost_nanos"`
+	OutputCostNanos     *int64      `json:"output_cost_nanos"`
+	TotalCostNanos      *int64      `json:"total_cost_nanos"`
 	ErrorKind           *string     `json:"error_kind"`
 	ErrorDetail         *string     `json:"error_detail"`
 	ID                  uuid.UUID   `json:"id"`
@@ -521,6 +571,9 @@ func (q *Queries) FailRequestWithUsage(ctx context.Context, arg FailRequestWithU
 		arg.InputTokens,
 		arg.OutputTokens,
 		arg.UsageSource,
+		arg.InputCostNanos,
+		arg.OutputCostNanos,
+		arg.TotalCostNanos,
 		arg.ErrorKind,
 		arg.ErrorDetail,
 		arg.ID,
@@ -538,6 +591,13 @@ func (q *Queries) FailRequestWithUsage(ctx context.Context, arg FailRequestWithU
 		&i.EntitlementID,
 		&i.ConfigRevisionID,
 		&i.ResourceDomain,
+		&i.PriceVersionID,
+		&i.CostCurrency,
+		&i.InputRateNanosPerMillion,
+		&i.OutputRateNanosPerMillion,
+		&i.InputCostNanos,
+		&i.OutputCostNanos,
+		&i.TotalCostNanos,
 		&i.Status,
 		&i.Stream,
 		&i.ExecutionID,
@@ -760,7 +820,7 @@ func (q *Queries) GetModelDomain(ctx context.Context, modelID uuid.UUID) (Resour
 }
 
 const getRequest = `-- name: GetRequest :one
-SELECT id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at FROM requests WHERE id = $1
+SELECT id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, input_cost_nanos, output_cost_nanos, total_cost_nanos, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at FROM requests WHERE id = $1
 `
 
 func (q *Queries) GetRequest(ctx context.Context, id uuid.UUID) (Request, error) {
@@ -776,6 +836,13 @@ func (q *Queries) GetRequest(ctx context.Context, id uuid.UUID) (Request, error)
 		&i.EntitlementID,
 		&i.ConfigRevisionID,
 		&i.ResourceDomain,
+		&i.PriceVersionID,
+		&i.CostCurrency,
+		&i.InputRateNanosPerMillion,
+		&i.OutputRateNanosPerMillion,
+		&i.InputCostNanos,
+		&i.OutputCostNanos,
+		&i.TotalCostNanos,
 		&i.Status,
 		&i.Stream,
 		&i.ExecutionID,
@@ -795,7 +862,7 @@ func (q *Queries) GetRequest(ctx context.Context, id uuid.UUID) (Request, error)
 }
 
 const getRequestByIdempotencyKey = `-- name: GetRequestByIdempotencyKey :one
-SELECT id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at FROM requests WHERE gateway_key_id = $1 AND idempotency_key = $2
+SELECT id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, input_cost_nanos, output_cost_nanos, total_cost_nanos, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at FROM requests WHERE gateway_key_id = $1 AND idempotency_key = $2
 `
 
 type GetRequestByIdempotencyKeyParams struct {
@@ -816,6 +883,13 @@ func (q *Queries) GetRequestByIdempotencyKey(ctx context.Context, arg GetRequest
 		&i.EntitlementID,
 		&i.ConfigRevisionID,
 		&i.ResourceDomain,
+		&i.PriceVersionID,
+		&i.CostCurrency,
+		&i.InputRateNanosPerMillion,
+		&i.OutputRateNanosPerMillion,
+		&i.InputCostNanos,
+		&i.OutputCostNanos,
+		&i.TotalCostNanos,
 		&i.Status,
 		&i.Stream,
 		&i.ExecutionID,
@@ -835,7 +909,7 @@ func (q *Queries) GetRequestByIdempotencyKey(ctx context.Context, arg GetRequest
 }
 
 const getRequestForUpdate = `-- name: GetRequestForUpdate :one
-SELECT id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at FROM requests WHERE id = $1 FOR UPDATE
+SELECT id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, input_cost_nanos, output_cost_nanos, total_cost_nanos, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at FROM requests WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) GetRequestForUpdate(ctx context.Context, id uuid.UUID) (Request, error) {
@@ -851,6 +925,13 @@ func (q *Queries) GetRequestForUpdate(ctx context.Context, id uuid.UUID) (Reques
 		&i.EntitlementID,
 		&i.ConfigRevisionID,
 		&i.ResourceDomain,
+		&i.PriceVersionID,
+		&i.CostCurrency,
+		&i.InputRateNanosPerMillion,
+		&i.OutputRateNanosPerMillion,
+		&i.InputCostNanos,
+		&i.OutputCostNanos,
+		&i.TotalCostNanos,
 		&i.Status,
 		&i.Stream,
 		&i.ExecutionID,
@@ -876,7 +957,7 @@ WHERE id = $1
   AND execution_id = $2
   AND execution_generation = $3
   AND status IN ('dispatching', 'streaming')
-RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
+RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, input_cost_nanos, output_cost_nanos, total_cost_nanos, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
 `
 
 type HeartbeatRequestExecutionParams struct {
@@ -898,6 +979,13 @@ func (q *Queries) HeartbeatRequestExecution(ctx context.Context, arg HeartbeatRe
 		&i.EntitlementID,
 		&i.ConfigRevisionID,
 		&i.ResourceDomain,
+		&i.PriceVersionID,
+		&i.CostCurrency,
+		&i.InputRateNanosPerMillion,
+		&i.OutputRateNanosPerMillion,
+		&i.InputCostNanos,
+		&i.OutputCostNanos,
+		&i.TotalCostNanos,
 		&i.Status,
 		&i.Stream,
 		&i.ExecutionID,
@@ -1343,7 +1431,7 @@ func (q *Queries) ListRequestUsage(ctx context.Context, arg ListRequestUsagePara
 }
 
 const listRequests = `-- name: ListRequests :many
-SELECT id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at FROM requests
+SELECT id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, input_cost_nanos, output_cost_nanos, total_cost_nanos, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at FROM requests
 WHERE ($1::uuid IS NULL OR user_id = $1)
 ORDER BY accepted_at DESC, id LIMIT $3 OFFSET $2
 `
@@ -1373,6 +1461,13 @@ func (q *Queries) ListRequests(ctx context.Context, arg ListRequestsParams) ([]R
 			&i.EntitlementID,
 			&i.ConfigRevisionID,
 			&i.ResourceDomain,
+			&i.PriceVersionID,
+			&i.CostCurrency,
+			&i.InputRateNanosPerMillion,
+			&i.OutputRateNanosPerMillion,
+			&i.InputCostNanos,
+			&i.OutputCostNanos,
+			&i.TotalCostNanos,
 			&i.Status,
 			&i.Stream,
 			&i.ExecutionID,
@@ -1443,7 +1538,7 @@ WHERE id = $1
   AND execution_id = $2
   AND execution_generation = $3
   AND status IN ('dispatching', 'streaming')
-RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
+RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, input_cost_nanos, output_cost_nanos, total_cost_nanos, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
 `
 
 type MarkRequestExecutionStreamingParams struct {
@@ -1465,6 +1560,13 @@ func (q *Queries) MarkRequestExecutionStreaming(ctx context.Context, arg MarkReq
 		&i.EntitlementID,
 		&i.ConfigRevisionID,
 		&i.ResourceDomain,
+		&i.PriceVersionID,
+		&i.CostCurrency,
+		&i.InputRateNanosPerMillion,
+		&i.OutputRateNanosPerMillion,
+		&i.InputCostNanos,
+		&i.OutputCostNanos,
+		&i.TotalCostNanos,
 		&i.Status,
 		&i.Stream,
 		&i.ExecutionID,
@@ -1491,7 +1593,7 @@ WHERE id = $3
   AND execution_id = $4
   AND execution_generation = $5
   AND status IN ('dispatching', 'streaming')
-RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
+RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, input_cost_nanos, output_cost_nanos, total_cost_nanos, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
 `
 
 type MarkRequestExecutionUncertainParams struct {
@@ -1521,6 +1623,13 @@ func (q *Queries) MarkRequestExecutionUncertain(ctx context.Context, arg MarkReq
 		&i.EntitlementID,
 		&i.ConfigRevisionID,
 		&i.ResourceDomain,
+		&i.PriceVersionID,
+		&i.CostCurrency,
+		&i.InputRateNanosPerMillion,
+		&i.OutputRateNanosPerMillion,
+		&i.InputCostNanos,
+		&i.OutputCostNanos,
+		&i.TotalCostNanos,
 		&i.Status,
 		&i.Stream,
 		&i.ExecutionID,

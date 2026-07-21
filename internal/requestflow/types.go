@@ -15,16 +15,17 @@ import (
 )
 
 var (
-	ErrModelNotFound       = errors.New("model not found")
-	ErrModelNotAuthorized  = errors.New("model not authorized")
-	ErrNoEligibleUpstream  = errors.New("no eligible upstream")
-	ErrCoordinationFailed  = errors.New("coordination unavailable")
-	ErrAdmissionQueueFull  = errors.New("admission queue full")
-	ErrAdmissionTimedOut   = errors.New("admission queue timed out")
-	ErrAdmissionCanceled   = errors.New("admission canceled")
-	ErrIdempotencyConflict = errors.New("idempotency conflict")
-	ErrQuotaExhausted      = errors.New("quota exhausted")
-	ErrInvalidAccounting   = errors.New("invalid accounting command")
+	ErrModelNotFound            = errors.New("model not found")
+	ErrModelNotAuthorized       = errors.New("model not authorized")
+	ErrNoEligibleUpstream       = errors.New("no eligible upstream")
+	ErrCoordinationFailed       = errors.New("coordination unavailable")
+	ErrAdmissionQueueFull       = errors.New("admission queue full")
+	ErrAdmissionTimedOut        = errors.New("admission queue timed out")
+	ErrAdmissionCanceled        = errors.New("admission canceled")
+	ErrIdempotencyConflict      = errors.New("idempotency conflict")
+	ErrQuotaExhausted           = errors.New("quota exhausted")
+	ErrCostConfigurationMissing = errors.New("model cost configuration is missing")
+	ErrInvalidAccounting        = errors.New("invalid accounting command")
 )
 
 type Model struct {
@@ -190,6 +191,10 @@ type Lease interface {
 
 type Coordinator interface {
 	Acquire(context.Context, LeaseRequest) (Lease, time.Duration, error)
+}
+
+type Observer interface {
+	ProviderAttempt(providerKind providers.Kind, outcome, errorKind string)
 }
 
 type AdapterFactory interface {

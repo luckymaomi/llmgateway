@@ -126,6 +126,30 @@ type Logging struct {
 
 func Load() (Config, error) {
 	profile := Profile(env("LLMGATEWAY_PROFILE", string(ProfileDevelopment)))
+	databaseURL, err := secretEnv("LLMGATEWAY_DATABASE_URL", developmentSecret(profile, "postgres://llmgateway:llmgateway_dev@127.0.0.1:15432/llmgateway?sslmode=disable"))
+	if err != nil {
+		return Config{}, err
+	}
+	valkeyPassword, err := secretEnv("LLMGATEWAY_VALKEY_PASSWORD", developmentSecret(profile, "llmgateway_dev"))
+	if err != nil {
+		return Config{}, err
+	}
+	masterKeyValue, err := secretEnv("LLMGATEWAY_MASTER_KEYS", developmentSecret(profile, "1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="))
+	if err != nil {
+		return Config{}, err
+	}
+	sessionPepper, err := secretEnv("LLMGATEWAY_SESSION_PEPPER", developmentSecret(profile, "llmgateway-development-session-pepper"))
+	if err != nil {
+		return Config{}, err
+	}
+	apiKeyPepper, err := secretEnv("LLMGATEWAY_API_KEY_PEPPER", developmentSecret(profile, "llmgateway-development-api-key-pepper"))
+	if err != nil {
+		return Config{}, err
+	}
+	coordinationKeyHash, err := secretEnv("LLMGATEWAY_COORDINATION_KEY_HASH_SECRET", developmentSecret(profile, "llmgateway-development-coordination-key-hash-secret"))
+	if err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
 		Profile: profile,
 		HTTP: HTTP{
@@ -136,7 +160,7 @@ func Load() (Config, error) {
 			MaxBodyBytes:      int64Env("LLMGATEWAY_HTTP_MAX_BODY_BYTES", 4<<20),
 		},
 		Database: Database{
-			URL:            env("LLMGATEWAY_DATABASE_URL", "postgres://llmgateway:llmgateway_dev@127.0.0.1:15432/llmgateway?sslmode=disable"),
+			URL:            databaseURL,
 			MaxConnections: int32(intEnv("LLMGATEWAY_DATABASE_MAX_CONNECTIONS", 20)),
 			MinConnections: int32(intEnv("LLMGATEWAY_DATABASE_MIN_CONNECTIONS", 2)),
 			ConnectTimeout: durationEnv("LLMGATEWAY_DATABASE_CONNECT_TIMEOUT", 10*time.Second),
@@ -144,16 +168,16 @@ func Load() (Config, error) {
 		},
 		Valkey: Valkey{
 			Address:        env("LLMGATEWAY_VALKEY_ADDRESS", "127.0.0.1:16380"),
-			Password:       env("LLMGATEWAY_VALKEY_PASSWORD", "llmgateway_dev"),
+			Password:       valkeyPassword,
 			Database:       intEnv("LLMGATEWAY_VALKEY_DATABASE", 0),
 			ConnectTimeout: durationEnv("LLMGATEWAY_VALKEY_CONNECT_TIMEOUT", 5*time.Second),
 		},
 		Security: Security{
-			MasterKeys:              masterKeysEnv("LLMGATEWAY_MASTER_KEYS", profile),
+			MasterKeys:              masterKeys(masterKeyValue),
 			ActiveMasterKeyVersion:  uint32(intEnv("LLMGATEWAY_ACTIVE_MASTER_KEY_VERSION", 1)),
-			SessionPepper:           []byte(env("LLMGATEWAY_SESSION_PEPPER", developmentSecret(profile, "llmgateway-development-session-pepper"))),
-			APIKeyPepper:            []byte(env("LLMGATEWAY_API_KEY_PEPPER", developmentSecret(profile, "llmgateway-development-api-key-pepper"))),
-			CoordinationKeyHash:     []byte(env("LLMGATEWAY_COORDINATION_KEY_HASH_SECRET", developmentSecret(profile, "llmgateway-development-coordination-key-hash-secret"))),
+			SessionPepper:           []byte(sessionPepper),
+			APIKeyPepper:            []byte(apiKeyPepper),
+			CoordinationKeyHash:     []byte(coordinationKeyHash),
 			ProviderCABundleFile:    strings.TrimSpace(os.Getenv("LLMGATEWAY_PROVIDER_CA_BUNDLE_FILE")),
 			CookieSecure:            boolEnv("LLMGATEWAY_COOKIE_SECURE", profile == ProfileProduction),
 			TrustedProxy:            strings.TrimSpace(os.Getenv("LLMGATEWAY_TRUSTED_PROXY")),
@@ -187,12 +211,12 @@ func Load() (Config, error) {
 			CircuitSuccessThreshold:    intEnv("LLMGATEWAY_REQUEST_CIRCUIT_SUCCESS_THRESHOLD", 1),
 			CircuitOpenDuration:        durationEnv("LLMGATEWAY_REQUEST_CIRCUIT_OPEN_DURATION", 30*time.Second),
 			CircuitHalfOpenMaxInFlight: intEnv("LLMGATEWAY_REQUEST_CIRCUIT_HALF_OPEN_MAX_IN_FLIGHT", 1),
-			Global:                     capacityEnv("GLOBAL", Capacity{RequestsPerMinute: 6000, TokensPerMinute: 6_000_000, Concurrency: 256}),
-			ResourceDomain:             capacityEnv("RESOURCE_DOMAIN", Capacity{RequestsPerMinute: 3000, TokensPerMinute: 3_000_000, Concurrency: 128}),
+			Global:                     capacityEnv("GLOBAL", Capacity{RequestsPerMinute: 12_000, TokensPerMinute: 6_000_000, Concurrency: 256}),
+			ResourceDomain:             capacityEnv("RESOURCE_DOMAIN", Capacity{RequestsPerMinute: 9_000, TokensPerMinute: 3_000_000, Concurrency: 128}),
 			User:                       capacityEnv("USER", Capacity{RequestsPerMinute: 600, TokensPerMinute: 600_000, Concurrency: 16}),
 			GatewayKey:                 capacityEnv("GATEWAY_KEY", Capacity{RequestsPerMinute: 300, TokensPerMinute: 300_000, Concurrency: 8}),
-			Model:                      capacityEnv("MODEL", Capacity{RequestsPerMinute: 3000, TokensPerMinute: 3_000_000, Concurrency: 128}),
-			Provider:                   capacityEnv("PROVIDER", Capacity{RequestsPerMinute: 3000, TokensPerMinute: 3_000_000, Concurrency: 128}),
+			Model:                      capacityEnv("MODEL", Capacity{RequestsPerMinute: 9_000, TokensPerMinute: 3_000_000, Concurrency: 128}),
+			Provider:                   capacityEnv("PROVIDER", Capacity{RequestsPerMinute: 9_000, TokensPerMinute: 3_000_000, Concurrency: 128}),
 			Credential:                 capacityEnv("CREDENTIAL", Capacity{RequestsPerMinute: 60, TokensPerMinute: 100_000, Concurrency: 4}),
 		},
 		Responses: Responses{
@@ -267,6 +291,9 @@ func (c Config) Validate() error {
 		if !c.Security.CookieSecure {
 			problems = append(problems, errors.New("secure cookies are required in production"))
 		}
+		if c.Valkey.Password == "" {
+			problems = append(problems, errors.New("LLMGATEWAY_VALKEY_PASSWORD is required in production"))
+		}
 	}
 	if c.RequestFlow.MaxResponseBytes < 1024 || c.RequestFlow.ExecutionHeartbeatInterval <= 0 ||
 		c.RequestFlow.ExecutionStaleAfter <= 2*c.RequestFlow.ExecutionHeartbeatInterval ||
@@ -324,8 +351,41 @@ func developmentSecret(profile Profile, value string) string {
 	return value
 }
 
-func masterKeysEnv(key string, profile Profile) map[uint32][]byte {
-	value := env(key, developmentSecret(profile, "1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="))
+func secretEnv(key, fallback string) (string, error) {
+	value, valueSet := os.LookupEnv(key)
+	filePath, fileSet := os.LookupEnv(key + "_FILE")
+	if valueSet && fileSet {
+		return "", fmt.Errorf("%s and %s_FILE cannot both be set", key, key)
+	}
+	if valueSet {
+		return strings.TrimSpace(value), nil
+	}
+	if !fileSet {
+		return fallback, nil
+	}
+	filePath = strings.TrimSpace(filePath)
+	if filePath == "" {
+		return "", fmt.Errorf("%s_FILE must name a secret file", key)
+	}
+	info, err := os.Stat(filePath)
+	if err != nil {
+		return "", fmt.Errorf("%s_FILE cannot be inspected: %w", key, err)
+	}
+	if !info.Mode().IsRegular() || info.Size() > 64<<10 {
+		return "", fmt.Errorf("%s_FILE must be a regular file no larger than 64 KiB", key)
+	}
+	contents, err := os.ReadFile(filePath)
+	if err != nil {
+		return "", fmt.Errorf("%s_FILE cannot be read: %w", key, err)
+	}
+	result := strings.TrimSpace(string(contents))
+	if result == "" || strings.ContainsRune(result, '\x00') {
+		return "", fmt.Errorf("%s_FILE must contain a non-empty text secret", key)
+	}
+	return result, nil
+}
+
+func masterKeys(value string) map[uint32][]byte {
 	keys := make(map[uint32][]byte)
 	for _, item := range strings.Split(value, ",") {
 		parts := strings.SplitN(strings.TrimSpace(item), ":", 2)

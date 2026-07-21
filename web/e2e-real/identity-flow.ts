@@ -2,6 +2,7 @@ import { devices, expect, type Browser, type Page, type Request } from '@playwri
 
 import {
   administratorEmail,
+  administratorPassword,
   clearClipboard,
   dataRecord,
   expectLocatorWidthToFit,
@@ -9,6 +10,7 @@ import {
   gatewayEndpoint,
   memberEmail,
   memberPassword,
+  memberReplacementPassword,
   problemCode,
 } from './acceptance-helpers'
 import type { PublishedCatalogFacts } from './catalog-flow'
@@ -112,6 +114,71 @@ export async function completeIdentityBoundary(
   expect((await approvalResponse).status()).toBe(200)
   await expect(memberRow).toContainText('可用')
 
+  const secondaryAdministratorContext = await browser.newContext({ baseURL: origin })
+  try {
+    const secondaryAdministratorPage = await secondaryAdministratorContext.newPage()
+    browserProblems.observe(secondaryAdministratorPage)
+    await secondaryAdministratorPage.goto('/login')
+    await secondaryAdministratorPage.getByLabel('邮箱').fill(administratorEmail)
+    await secondaryAdministratorPage.getByLabel('密码').fill(administratorPassword)
+    await secondaryAdministratorPage.getByRole('button', { name: '登录' }).click()
+    await expect(secondaryAdministratorPage).toHaveURL(/\/providers\/providers$/)
+
+    const administratorRow = page.getByRole('row').filter({ hasText: administratorEmail })
+    const revokeSessionsResponse = page.waitForResponse(
+      (response) =>
+        response.url().endsWith('/sessions/revoke') && response.request().method() === 'POST',
+    )
+    await administratorRow.getByRole('button', { name: '撤销会话' }).click()
+    const revokeDialog = page.getByRole('alertdialog')
+    await expect(revokeDialog).toContainText('保留当前会话')
+    await revokeDialog.getByRole('button', { name: '确认撤销' }).click()
+    const revokeResult = await revokeSessionsResponse
+    expect(revokeResult.status()).toBe(200)
+    expect(dataRecord(await revokeResult.json())?.revokedSessions).toBeGreaterThanOrEqual(1)
+    expect((await page.request.get('/api/control/session')).status()).toBe(200)
+    const rejectedSecondarySession =
+      await secondaryAdministratorPage.request.get('/api/control/session')
+    expect(rejectedSecondarySession.status()).toBe(401)
+  } finally {
+    await secondaryAdministratorContext.close()
+  }
+
+  const memberRecoveryContext = await browser.newContext({ baseURL: origin })
+  try {
+    const memberRecoveryPage = await memberRecoveryContext.newPage()
+    browserProblems.observe(memberRecoveryPage)
+    await memberRecoveryPage.goto('/login')
+    await memberRecoveryPage.getByLabel('邮箱').fill(memberEmail)
+    await memberRecoveryPage.getByLabel('密码').fill(memberPassword)
+    await memberRecoveryPage.getByRole('button', { name: '登录' }).click()
+    await expect(memberRecoveryPage).toHaveURL(/\/access\/keys$/)
+
+    const passwordResetResponse = page.waitForResponse(
+      (response) => response.url().endsWith('/password') && response.request().method() === 'POST',
+    )
+    await memberRow.getByRole('button', { name: '重置密码' }).click()
+    const passwordDialog = page.getByRole('dialog')
+    await passwordDialog.getByLabel('新密码', { exact: true }).fill(memberReplacementPassword)
+    await passwordDialog.getByLabel('确认新密码').fill(memberReplacementPassword)
+    await passwordDialog.getByRole('button', { name: '确认重置' }).click()
+    const passwordReset = await passwordResetResponse
+    expect(passwordReset.status()).toBe(200)
+    expect(dataRecord(await passwordReset.json())?.revokedSessions).toBe(1)
+    await expect(passwordDialog.getByRole('heading', { name: '成员密码已重置' })).toBeVisible()
+    const storedState = await page.evaluate(() =>
+      JSON.stringify({
+        local: Object.fromEntries(Object.entries(localStorage)),
+        session: Object.fromEntries(Object.entries(sessionStorage)),
+      }),
+    )
+    expect(storedState).not.toContain(memberReplacementPassword)
+    await passwordDialog.getByRole('button', { name: '完成' }).click()
+    expect((await memberRecoveryPage.request.get('/api/control/session')).status()).toBe(401)
+  } finally {
+    await memberRecoveryContext.close()
+  }
+
   await createEntitlementAfterLostResponse(page, browser, browserProblems, gateway, catalog)
   const gatewayKey = await createGatewayKeyAfterLostResponse(page, browserProblems, catalog)
   await expectPublicModels(page, gatewayKey.secret, {
@@ -141,8 +208,14 @@ export async function completeIdentityBoundary(
   browserProblems.allow(await rejectedAdministratorSession)
   await expect(page.getByRole('heading', { name: '登录' })).toBeVisible()
 
+  const oldPasswordLogin = await page.request.post('/api/control/session', {
+    data: { email: memberEmail, password: memberPassword },
+  })
+  expect(oldPasswordLogin.status()).toBe(401)
+  expect(problemCode(await oldPasswordLogin.json())).toBe('invalid_credential')
+
   await page.getByLabel('邮箱').fill(memberEmail)
-  await page.getByLabel('密码').fill(memberPassword)
+  await page.getByLabel('密码').fill(memberReplacementPassword)
   const memberLoginResponse = page.waitForResponse(
     (response) =>
       response.url().endsWith('/api/control/session') && response.request().method() === 'POST',
@@ -209,11 +282,75 @@ export async function completeIdentityBoundary(
   expect(problemCode(await forbiddenEntitlements.json())).toBe('forbidden')
 
   await page.goto('/access/keys')
-  const keyRow = page.getByRole('row').filter({ hasText: gatewayKey.name })
+  const keyRow = page
+    .getByRole('row')
+    .filter({ has: page.getByText(gatewayKey.name, { exact: true }) })
+  const replacementPath = '/api/control/keys/' + gatewayKey.id + '/replacement'
+  let replacementResponseInterrupted = false
+  let replacementIdempotencyKey = ''
+  await page.route('**' + replacementPath, async (route) => {
+    const request = route.request()
+    if (replacementResponseInterrupted || request.method() !== 'POST') {
+      await route.continue()
+      return
+    }
+    replacementResponseInterrupted = true
+    replacementIdempotencyKey = request.headers()['idempotency-key'] ?? ''
+    const committed = await route.fetch()
+    expect(committed.status()).toBe(201)
+    await route.abort('failed')
+  })
+  browserProblems.allowRequestFailure('POST', replacementPath, 'net::ERR_FAILED')
+  let replacementSecret: string
+  try {
+    const failedReplacement = page.waitForEvent(
+      'requestfailed',
+      (request) =>
+        new URL(request.url()).pathname === replacementPath && request.method() === 'POST',
+    )
+    await keyRow.getByRole('button', { name: '更换' }).click()
+    const replacementDialog = page.getByRole('dialog')
+    await replacementDialog.getByRole('button', { name: '创建替换 Key' }).click()
+    await failedReplacement
+    expect(replacementIdempotencyKey).toMatch(/^[0-9a-f-]{36}$/)
+    await expect(replacementDialog.getByRole('alert')).toBeVisible()
+    const replayResponse = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === replacementPath &&
+        response.request().method() === 'POST',
+    )
+    await replacementDialog.getByRole('button', { name: '重试创建' }).click()
+    const replayed = await replayResponse
+    expect(replayed.status()).toBe(201)
+    expect(replayed.request().headers()['idempotency-key']).toBe(replacementIdempotencyKey)
+    await replacementDialog.getByRole('button', { name: '复制 Key' }).click()
+    replacementSecret = await page.evaluate(() => navigator.clipboard.readText())
+    expect(replacementSecret).toMatch(/^llmg_[A-Za-z0-9_-]+$/)
+    const persistedState = await page.evaluate(() =>
+      JSON.stringify({
+        local: Object.fromEntries(Object.entries(localStorage)),
+        session: Object.fromEntries(Object.entries(sessionStorage)),
+      }),
+    )
+    expect(persistedState).not.toContain(replacementSecret)
+    await replacementDialog.getByRole('button', { name: '完成' }).click()
+  } finally {
+    await clearClipboard(page)
+    await page.unroute('**' + replacementPath)
+  }
+  await expectPublicModels(page, gatewayKey.secret, {
+    included: [catalog.authorizedModelAlias],
+    excluded: [catalog.ungrantedModelAlias, catalog.draftOnlyModelAlias],
+  })
+  await expectPublicModels(page, replacementSecret, {
+    included: [catalog.authorizedModelAlias],
+    excluded: [catalog.ungrantedModelAlias, catalog.draftOnlyModelAlias],
+  })
   const revokeResponse = page.waitForResponse(
     (response) => response.url().endsWith('/revoke') && response.request().method() === 'POST',
   )
   await keyRow.getByRole('button', { name: '撤销' }).click()
+  await page.getByRole('alertdialog').getByRole('button', { name: '确认撤销' }).click()
   expect((await revokeResponse).status()).toBe(200)
   await expect(keyRow).toContainText('已撤销')
   await gateway.restart()
@@ -228,6 +365,10 @@ export async function completeIdentityBoundary(
   })
   expect(rejectedModels.status()).toBe(401)
   expect(problemCode(await rejectedModels.json())).toBe('invalid_api_key')
+  await expectPublicModels(page, replacementSecret, {
+    included: [catalog.authorizedModelAlias],
+    excluded: [catalog.ungrantedModelAlias, catalog.draftOnlyModelAlias],
+  })
 
   const memberState = await page.context().storageState()
   const mobileContext = await browser.newContext({

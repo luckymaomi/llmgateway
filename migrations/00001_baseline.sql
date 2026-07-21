@@ -58,6 +58,18 @@ CREATE TABLE invitation_mutations (
     UNIQUE (actor_user_id, idempotency_key)
 );
 
+CREATE TABLE member_password_reset_mutations (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    actor_user_id uuid NOT NULL REFERENCES users(id),
+    idempotency_key uuid NOT NULL,
+    user_id uuid NOT NULL REFERENCES users(id),
+    request_fingerprint bytea NOT NULL CHECK (octet_length(request_fingerprint) = 32),
+    request_id text NOT NULL,
+    result jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (actor_user_id, idempotency_key)
+);
+
 CREATE TABLE sessions (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -132,6 +144,42 @@ CREATE TABLE models (
     updated_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE (provider_id, upstream_name)
 );
+
+CREATE TABLE model_price_versions (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    model_id uuid NOT NULL REFERENCES models(id),
+    currency text NOT NULL CHECK (currency ~ '^[A-Z]{3}$'),
+    input_rate_nanos_per_million bigint NOT NULL CHECK (input_rate_nanos_per_million BETWEEN 0 AND 1000000000000000),
+    output_rate_nanos_per_million bigint NOT NULL CHECK (output_rate_nanos_per_million BETWEEN 0 AND 1000000000000000),
+    effective_at timestamptz NOT NULL,
+    created_by uuid NOT NULL REFERENCES users(id),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (model_id, effective_at)
+);
+
+CREATE TABLE model_price_mutations (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    actor_user_id uuid NOT NULL REFERENCES users(id),
+    idempotency_key uuid NOT NULL,
+    request_fingerprint bytea NOT NULL CHECK (octet_length(request_fingerprint) = 32),
+    request_id text NOT NULL,
+    price_version_id uuid REFERENCES model_price_versions(id),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (actor_user_id, idempotency_key)
+);
+
+-- +goose StatementBegin
+CREATE FUNCTION reject_model_price_version_mutation() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION 'model price versions are immutable' USING ERRCODE = '55000';
+END;
+$$;
+-- +goose StatementEnd
+
+CREATE TRIGGER model_price_versions_immutable
+BEFORE UPDATE OR DELETE ON model_price_versions
+FOR EACH ROW EXECUTE FUNCTION reject_model_price_version_mutation();
 
 CREATE TABLE provider_credentials (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -297,6 +345,13 @@ CREATE TABLE requests (
     entitlement_id uuid NOT NULL REFERENCES entitlements(id),
     config_revision_id uuid REFERENCES config_revisions(id),
     resource_domain resource_domain NOT NULL,
+    price_version_id uuid NOT NULL REFERENCES model_price_versions(id),
+    cost_currency text NOT NULL CHECK (cost_currency ~ '^[A-Z]{3}$'),
+    input_rate_nanos_per_million bigint NOT NULL CHECK (input_rate_nanos_per_million BETWEEN 0 AND 1000000000000000),
+    output_rate_nanos_per_million bigint NOT NULL CHECK (output_rate_nanos_per_million BETWEEN 0 AND 1000000000000000),
+    input_cost_nanos bigint CHECK (input_cost_nanos IS NULL OR input_cost_nanos >= 0),
+    output_cost_nanos bigint CHECK (output_cost_nanos IS NULL OR output_cost_nanos >= 0),
+    total_cost_nanos bigint CHECK (total_cost_nanos IS NULL OR total_cost_nanos >= 0),
     status request_status NOT NULL,
     stream boolean NOT NULL,
     execution_id uuid,
@@ -313,6 +368,8 @@ CREATE TABLE requests (
     updated_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE (gateway_key_id, idempotency_key),
     UNIQUE (id, execution_id, execution_generation),
+    CHECK ((input_cost_nanos IS NULL AND output_cost_nanos IS NULL AND total_cost_nanos IS NULL) OR
+           (input_cost_nanos IS NOT NULL AND output_cost_nanos IS NOT NULL AND total_cost_nanos = input_cost_nanos + output_cost_nanos)),
     CHECK (
         (execution_generation = 0 AND execution_id IS NULL AND execution_claimed_at IS NULL AND execution_heartbeat_at IS NULL)
         OR
@@ -424,6 +481,7 @@ CREATE INDEX gateway_key_models_model_idx ON gateway_key_models (model_id, gatew
 CREATE INDEX provider_credentials_eligible_idx ON provider_credentials (provider_id, resource_domain, status, cooldown_until);
 CREATE INDEX entitlements_applicable_idx ON entitlements (user_id, resource_domain, expires_at, starts_at);
 CREATE INDEX requests_user_created_idx ON requests (user_id, accepted_at DESC);
+CREATE INDEX model_price_versions_effective_idx ON model_price_versions (model_id, effective_at DESC, created_at DESC);
 CREATE INDEX requests_status_idx ON requests (status, updated_at);
 CREATE INDEX requests_execution_recovery_idx ON requests (execution_heartbeat_at, id)
     WHERE status IN ('dispatching', 'streaming');
@@ -461,6 +519,9 @@ DROP TABLE IF EXISTS config_revisions;
 DROP TABLE IF EXISTS credential_models;
 DROP TABLE IF EXISTS credential_mutations;
 DROP TABLE IF EXISTS provider_credentials;
+DROP TABLE IF EXISTS model_price_mutations;
+DROP TABLE IF EXISTS model_price_versions;
+DROP FUNCTION IF EXISTS reject_model_price_version_mutation();
 DROP TABLE IF EXISTS models;
 DROP TABLE IF EXISTS provider_mutations;
 DROP TABLE IF EXISTS providers;
@@ -468,6 +529,7 @@ DROP TABLE IF EXISTS gateway_key_models;
 DROP TABLE IF EXISTS gateway_key_mutations;
 DROP TABLE IF EXISTS gateway_keys;
 DROP TABLE IF EXISTS sessions;
+DROP TABLE IF EXISTS member_password_reset_mutations;
 DROP TABLE IF EXISTS invitation_mutations;
 DROP TABLE IF EXISTS invitations;
 DROP TABLE IF EXISTS users;

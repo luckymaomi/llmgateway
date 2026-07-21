@@ -12,9 +12,11 @@ import (
 	"github.com/luckymaomi/llmgateway/internal/config"
 	"github.com/luckymaomi/llmgateway/internal/configuration"
 	"github.com/luckymaomi/llmgateway/internal/controlapi"
+	"github.com/luckymaomi/llmgateway/internal/costing"
 	"github.com/luckymaomi/llmgateway/internal/credentialprobe"
 	"github.com/luckymaomi/llmgateway/internal/httpserver"
 	"github.com/luckymaomi/llmgateway/internal/identity"
+	"github.com/luckymaomi/llmgateway/internal/observability"
 	"github.com/luckymaomi/llmgateway/internal/publicapi"
 	"github.com/luckymaomi/llmgateway/internal/quota"
 	"github.com/luckymaomi/llmgateway/internal/registry"
@@ -34,6 +36,7 @@ type Application struct {
 	workflow    *requestflow.Service
 	publicAPI   *publicapi.API
 	server      *http.Server
+	metrics     *observability.RuntimeMetrics
 }
 
 func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Application, error) {
@@ -44,6 +47,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 
 	metricsRegistry := prometheus.NewRegistry()
 	metricsRegistry.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
+	runtimeMetrics := observability.NewRuntimeMetrics(metricsRegistry, logger)
 	identityService, err := identity.NewService(store.NewIdentityRepository(connections.Postgres), cfg.Security.SessionPepper, cfg.Security.APIKeyPepper)
 	if err != nil {
 		connections.Close()
@@ -90,8 +94,13 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 		return nil, fmt.Errorf("initialize quota service: %w", err)
 	}
 	quotaAPI := controlapi.NewQuotaAPI(quotaService, identityService, registryService, logger)
-	controlAPI := controlapi.New(identityService, registryService, configurationService, loginGuard, cfg.Security, logger).WithQuotaAPI(quotaAPI)
-	workflow, err := newRequestWorkflow(cfg, connections, registryService, quotaService)
+	costingService, err := costing.NewService(store.NewCostRepository(connections))
+	if err != nil {
+		return nil, fmt.Errorf("costing service: %w", err)
+	}
+	costingAPI := controlapi.NewCostingAPI(costingService, logger)
+	controlAPI := controlapi.New(identityService, registryService, configurationService, loginGuard, cfg.Security, logger).WithQuotaAPI(quotaAPI).WithCostingAPI(costingAPI)
+	workflow, err := newRequestWorkflow(cfg, connections, registryService, quotaService, runtimeMetrics)
 	if err != nil {
 		connections.Close()
 		return nil, err
@@ -102,6 +111,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 		connections.Close()
 		return nil, fmt.Errorf("initialize response service: %w", err)
 	}
+	responseService.WithObserver(runtimeMetrics)
 	publicAPI := publicapi.New(identityService, workflow, logger, responseService)
 
 	assets, embedded := webassets.Assets()
@@ -117,7 +127,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 		MaxHeaderBytes:    1 << 20,
 	}
 
-	return &Application{config: cfg, logger: logger, connections: connections, workflow: workflow, publicAPI: publicAPI, server: server}, nil
+	return &Application{config: cfg, logger: logger, connections: connections, workflow: workflow, publicAPI: publicAPI, server: server, metrics: runtimeMetrics}, nil
 }
 
 func (a *Application) Run(ctx context.Context) error {
@@ -169,11 +179,13 @@ func (a *Application) runRequestRecovery(ctx context.Context) {
 		staleBefore := time.Now().UTC().Add(-a.config.RequestFlow.ExecutionStaleAfter)
 		result, err := a.workflow.RecoverOnce(ctx, staleBefore, a.config.RequestFlow.RecoveryBatchSize)
 		if err != nil {
-			a.logger.Error("request recovery failed", "error", err)
+			a.metrics.RequestRecoveryFailed()
+			a.logger.Error("request recovery failed", "event", "request.recovery_failed", "error", err)
 			return
 		}
+		a.metrics.RequestRecovery(result)
 		if result.Settled > 0 || result.Released > 0 || result.Uncertain > 0 {
-			a.logger.Info("request recovery completed", "settled", result.Settled, "released", result.Released, "uncertain", result.Uncertain)
+			a.logger.Info("request recovery completed", "event", "request.recovery_completed", "settled", result.Settled, "released", result.Released, "uncertain", result.Uncertain)
 		}
 	}
 	run()

@@ -43,7 +43,9 @@ func PresentStreamEvent(event canonical.StreamEvent) map[string]any {
 		delta["reasoning_content"] = event.ReasoningDelta
 	case canonical.StreamToolCallDelta:
 		if event.ToolCallDelta != nil {
-			delta["tool_calls"] = []map[string]any{{"index": event.ToolCallDelta.Index, "id": event.ToolCallDelta.ID, "type": event.ToolCallDelta.Type, "function": map[string]any{"name": event.ToolCallDelta.FunctionName, "arguments": event.ToolCallDelta.ArgumentsFragment}}}
+			call := map[string]any{"index": event.ToolCallDelta.Index, "id": event.ToolCallDelta.ID, "type": event.ToolCallDelta.Type, "function": map[string]any{"name": event.ToolCallDelta.FunctionName, "arguments": event.ToolCallDelta.ArgumentsFragment}}
+			presentToolCallMetadata(call, event.ToolCallDelta.ProviderMetadata)
+			delta["tool_calls"] = []map[string]any{call}
 		}
 	}
 	choice := map[string]any{"index": event.ChoiceIndex, "delta": delta, "finish_reason": nil}
@@ -95,6 +97,13 @@ func WriteError(w http.ResponseWriter, requestID string, providerError *canonica
 	envelope.Error.Param = providerError.Parameter
 	envelope.Error.Code = providerError.Code
 	w.Header().Set("Content-Type", "application/json")
+	if providerError.RetryAfter != nil {
+		if providerError.RetryAfter.DelaySeconds != nil {
+			w.Header().Set("Retry-After", fmt.Sprintf("%d", *providerError.RetryAfter.DelaySeconds))
+		} else if providerError.RetryAfter.At != nil {
+			w.Header().Set("Retry-After", providerError.RetryAfter.At.UTC().Format(http.TimeFormat))
+		}
+	}
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(envelope)
 }
@@ -107,11 +116,19 @@ func presentMessage(message canonical.Message) map[string]any {
 	if len(message.ToolCalls) > 0 {
 		calls := make([]map[string]any, 0, len(message.ToolCalls))
 		for _, call := range message.ToolCalls {
-			calls = append(calls, map[string]any{"id": call.ID, "type": call.Type, "function": map[string]any{"name": call.Function.Name, "arguments": call.Function.Arguments}})
+			presented := map[string]any{"id": call.ID, "type": call.Type, "function": map[string]any{"name": call.Function.Name, "arguments": call.Function.Arguments}}
+			presentToolCallMetadata(presented, call.ProviderMetadata)
+			calls = append(calls, presented)
 		}
 		result["tool_calls"] = calls
 	}
 	return result
+}
+
+func presentToolCallMetadata(target map[string]any, metadata *canonical.ToolCallProviderMetadata) {
+	if metadata != nil && metadata.GoogleThoughtSignature != "" {
+		target["extra_content"] = map[string]any{"google": map[string]any{"thought_signature": metadata.GoogleThoughtSignature}}
+	}
 }
 
 func messageText(parts []canonical.ContentPart) string {
@@ -160,7 +177,9 @@ func statusForError(kind canonical.ErrorKind) int {
 		return http.StatusServiceUnavailable
 	case canonical.ErrorProviderConfiguration, canonical.ErrorProviderPermanent:
 		return http.StatusBadGateway
-	case canonical.ErrorStreamInterrupted, canonical.ErrorUncertain:
+	case canonical.ErrorUncertain:
+		return http.StatusConflict
+	case canonical.ErrorStreamInterrupted:
 		return http.StatusBadGateway
 	default:
 		return http.StatusInternalServerError

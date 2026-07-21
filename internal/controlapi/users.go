@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/luckymaomi/llmgateway/internal/httpserver"
 	"github.com/luckymaomi/llmgateway/internal/identity"
 )
 
@@ -36,6 +37,10 @@ type invitationView struct {
 type createdInvitationView struct {
 	Invitation invitationView `json:"invitation"`
 	Code       string         `json:"code"`
+}
+
+type sessionRevocationView struct {
+	RevokedSessions int64 `json:"revokedSessions"`
 }
 
 type namedInvitation struct {
@@ -113,6 +118,48 @@ func (a *API) reviewUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeData(w, http.StatusOK, presentUser(user, len(keys)))
+}
+
+func (a *API) resetMemberPassword(w http.ResponseWriter, r *http.Request) {
+	userID, err := uuid.Parse(chi.URLParam(r, "userID"))
+	if err != nil {
+		writeDecodeError(w, r, err)
+		return
+	}
+	var input struct {
+		NewPassword string `json:"newPassword"`
+	}
+	if err := decodeJSON(w, r, &input); err != nil {
+		writeDecodeError(w, r, err)
+		return
+	}
+	mutation, ok := identityMutationRequest(w, r)
+	if !ok {
+		input.NewPassword = ""
+		return
+	}
+	result, err := a.identity.ResetMemberPassword(r.Context(), principalFromContext(r.Context()), userID, input.NewPassword, mutation)
+	input.NewPassword = ""
+	if err != nil {
+		a.writeIdentityError(w, r, err)
+		return
+	}
+	writeData(w, http.StatusOK, sessionRevocationView{RevokedSessions: result.RevokedSessions})
+}
+
+func (a *API) revokeUserSessions(w http.ResponseWriter, r *http.Request) {
+	userID, err := uuid.Parse(chi.URLParam(r, "userID"))
+	if err != nil {
+		writeDecodeError(w, r, err)
+		return
+	}
+	principal := principalFromContext(r.Context())
+	result, err := a.identity.RevokeUserSessions(r.Context(), principal, userID, httpserver.RequestIDFromContext(r.Context()))
+	if err != nil {
+		a.writeIdentityError(w, r, err)
+		return
+	}
+	writeData(w, http.StatusOK, sessionRevocationView{RevokedSessions: result.RevokedSessions})
 }
 
 func (a *API) createInvitation(w http.ResponseWriter, r *http.Request) {

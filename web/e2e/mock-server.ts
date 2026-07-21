@@ -157,6 +157,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   if (path === '/api/control/provider-kinds' && request.method === 'GET') {
     return data(response, [
       { kind: 'agnes', displayName: 'Agnes' },
+      { kind: 'gemini', displayName: 'Google Gemini' },
       { kind: 'openai-compatible', displayName: 'OpenAI-compatible' },
       { kind: 'zhipu', displayName: '智谱 GLM' },
     ])
@@ -241,7 +242,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       createdAt: now,
     }
     state.keys = [key, ...state.keys]
-    return data(response, { key, secret: 'llmg_7F2A_once_secret' }, 201)
+    return data(response, { key, secret: 'test-only' }, 201)
   }
 
   if (path === '/api/control/configuration/revisions' && request.method === 'GET') {
@@ -328,6 +329,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
         alias: 'gpt-main',
         providerName: 'Primary Provider',
         capabilities: ['streaming', 'tools', 'reasoning'],
+        reasoningMode: 'hybrid',
       },
     ])
   }

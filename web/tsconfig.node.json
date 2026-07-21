@@ -19,7 +19,9 @@
     "vitest.config.ts",
     "playwright.config.ts",
     "playwright.real.config.ts",
+    "playwright.deployment.config.ts",
     "e2e/**/*.ts",
-    "e2e-real/**/*.ts"
+    "e2e-real/**/*.ts",
+    "e2e-deployment/**/*.ts"
   ]
 }

@@ -3,9 +3,11 @@ package store
 import (
 	"context"
 	"errors"
+	"math"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/luckymaomi/llmgateway/internal/costing"
 	"github.com/luckymaomi/llmgateway/internal/execution"
 	domainledger "github.com/luckymaomi/llmgateway/internal/ledger"
 	"github.com/luckymaomi/llmgateway/internal/quota"
@@ -84,8 +86,12 @@ func (r *QuotaRepository) resolveOnce(ctx context.Context, command resolutionCom
 	if err != nil {
 		return quota.Resolution{}, err
 	}
+	inputCostNanos, outputCostNanos, totalCostNanos, err := costFor(requestRecord, command)
+	if err != nil {
+		return quota.Resolution{}, err
+	}
 	if reservationRecord.State != db.ReservationStateReserved {
-		if !matchesTerminal(requestRecord, reservationRecord, command, chargeTokens) {
+		if !matchesTerminal(requestRecord, reservationRecord, command, chargeTokens, inputCostNanos, outputCostNanos, totalCostNanos) {
 			return quota.Resolution{}, quota.ErrTerminalConflict
 		}
 		if err := tx.Commit(ctx); err != nil {
@@ -111,7 +117,7 @@ func (r *QuotaRepository) resolveOnce(ctx context.Context, command resolutionCom
 		return quota.Resolution{}, err
 	}
 
-	requestRecord, err = resolveRequestRecord(ctx, queries, requestRecord.ID, command)
+	requestRecord, err = resolveRequestRecord(ctx, queries, requestRecord.ID, command, inputCostNanos, outputCostNanos, totalCostNanos)
 	if err != nil {
 		return quota.Resolution{}, err
 	}
@@ -119,6 +125,22 @@ func (r *QuotaRepository) resolveOnce(ctx context.Context, command resolutionCom
 		return quota.Resolution{}, err
 	}
 	return quota.Resolution{Request: requestFromDB(requestRecord), Reservation: reservationFromDB(reservationRecord)}, nil
+}
+
+func costFor(request db.Request, command resolutionCommand) (*int64, *int64, *int64, error) {
+	if command.state == db.ReservationStateReleased {
+		return nil, nil, nil, nil
+	}
+	inputCost, err := costing.Calculate(command.inputTokens, request.InputRateNanosPerMillion)
+	if err != nil {
+		return nil, nil, nil, quota.ErrInvalidInput
+	}
+	outputCost, err := costing.Calculate(command.outputTokens, request.OutputRateNanosPerMillion)
+	if err != nil || inputCost > math.MaxInt64-outputCost {
+		return nil, nil, nil, quota.ErrInvalidInput
+	}
+	totalCost := inputCost + outputCost
+	return &inputCost, &outputCost, &totalCost, nil
 }
 
 func chargeFor(command resolutionCommand) (int64, error) {
@@ -137,7 +159,7 @@ func chargeFor(command resolutionCommand) (int64, error) {
 	return int64(decision.ChargeTokens), nil
 }
 
-func resolveRequestRecord(ctx context.Context, queries *db.Queries, requestID uuid.UUID, command resolutionCommand) (db.Request, error) {
+func resolveRequestRecord(ctx context.Context, queries *db.Queries, requestID uuid.UUID, command resolutionCommand, inputCostNanos, outputCostNanos, totalCostNanos *int64) (db.Request, error) {
 	inputTokens, outputTokens := command.inputTokens, command.outputTokens
 	var executionID *uuid.UUID
 	var executionGeneration int64
@@ -149,6 +171,7 @@ func resolveRequestRecord(ctx context.Context, queries *db.Queries, requestID uu
 	case db.ReservationStateSettled:
 		return queries.CompleteRequest(ctx, db.CompleteRequestParams{
 			InputTokens: &inputTokens, OutputTokens: &outputTokens, UsageSource: db.UsageSource(command.usageSource),
+			InputCostNanos: inputCostNanos, OutputCostNanos: outputCostNanos, TotalCostNanos: totalCostNanos,
 			ID: requestID, ExecutionID: executionID, ExecutionGeneration: executionGeneration,
 		})
 	case db.ReservationStateReleased:
@@ -161,6 +184,7 @@ func resolveRequestRecord(ctx context.Context, queries *db.Queries, requestID uu
 		errorKind := command.errorKind
 		return queries.FailRequestWithUsage(ctx, db.FailRequestWithUsageParams{
 			InputTokens: &inputTokens, OutputTokens: &outputTokens, UsageSource: db.UsageSource(command.usageSource),
+			InputCostNanos: inputCostNanos, OutputCostNanos: outputCostNanos, TotalCostNanos: totalCostNanos,
 			ErrorKind: &errorKind, ErrorDetail: optionalString(command.errorDetail), ID: requestID,
 			ExecutionID: executionID, ExecutionGeneration: executionGeneration,
 		})
@@ -189,17 +213,19 @@ func validateResolutionFence(request db.Request, reservation db.LedgerReservatio
 	return nil
 }
 
-func matchesTerminal(request db.Request, reservation db.LedgerReservation, command resolutionCommand, chargeTokens int64) bool {
+func matchesTerminal(request db.Request, reservation db.LedgerReservation, command resolutionCommand, chargeTokens int64, inputCostNanos, outputCostNanos, totalCostNanos *int64) bool {
 	if reservation.State != command.state || reservation.ChargedTokens != chargeTokens || reservation.UsageSource != db.UsageSource(command.usageSource) {
 		return false
 	}
 	if command.state == db.ReservationStateSettled {
-		return request.Status == db.RequestStatusCompleted && equalInt64(request.InputTokens, command.inputTokens) && equalInt64(request.OutputTokens, command.outputTokens)
+		return request.Status == db.RequestStatusCompleted && equalInt64(request.InputTokens, command.inputTokens) && equalInt64(request.OutputTokens, command.outputTokens) &&
+			equalInt64Pointers(request.InputCostNanos, inputCostNanos) && equalInt64Pointers(request.OutputCostNanos, outputCostNanos) && equalInt64Pointers(request.TotalCostNanos, totalCostNanos)
 	}
 	if request.Status != db.RequestStatusFailed || !equalString(request.ErrorKind, command.errorKind) || !equalOptionalString(request.ErrorDetail, command.errorDetail) {
 		return false
 	}
-	return command.state == db.ReservationStateReleased || equalInt64(request.InputTokens, command.inputTokens) && equalInt64(request.OutputTokens, command.outputTokens)
+	return command.state == db.ReservationStateReleased || equalInt64(request.InputTokens, command.inputTokens) && equalInt64(request.OutputTokens, command.outputTokens) &&
+		equalInt64Pointers(request.InputCostNanos, inputCostNanos) && equalInt64Pointers(request.OutputCostNanos, outputCostNanos) && equalInt64Pointers(request.TotalCostNanos, totalCostNanos)
 }
 
 func requestFromDB(value db.Request) quota.Request {
@@ -207,6 +233,9 @@ func requestFromDB(value db.Request) quota.Request {
 		ID: value.ID, IdempotencyKey: value.IdempotencyKey, UserID: value.UserID, GatewayKeyID: value.GatewayKeyID,
 		ModelID: value.ModelID, EntitlementID: value.EntitlementID, ConfigRevisionID: value.ConfigRevisionID,
 		ResourceDomain: quota.ResourceDomain(value.ResourceDomain), Status: quota.RequestStatus(value.Status), Stream: value.Stream,
+		PriceVersionID: value.PriceVersionID, CostCurrency: value.CostCurrency,
+		InputRateNanosPerMillion: value.InputRateNanosPerMillion, OutputRateNanosPerMillion: value.OutputRateNanosPerMillion,
+		InputCostNanos: value.InputCostNanos, OutputCostNanos: value.OutputCostNanos, TotalCostNanos: value.TotalCostNanos,
 		InputTokens: value.InputTokens, OutputTokens: value.OutputTokens, UsageSource: quota.UsageSource(value.UsageSource),
 		ErrorKind: value.ErrorKind, ErrorDetail: value.ErrorDetail, AcceptedAt: value.AcceptedAt.Time.UTC(),
 		CompletedAt: timePointer(value.CompletedAt), UpdatedAt: value.UpdatedAt.Time.UTC(),

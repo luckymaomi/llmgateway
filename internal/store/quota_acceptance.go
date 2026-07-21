@@ -70,6 +70,13 @@ func (r *QuotaRepository) acceptRequestOnce(ctx context.Context, input quota.Acc
 	if quota.ResourceDomain(modelDomain) != input.ResourceDomain {
 		return quota.AcceptedRequest{}, quota.ErrResourceDomainMismatch
 	}
+	price, err := queries.GetEffectiveModelPrice(ctx, input.ModelID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return quota.AcceptedRequest{}, quota.ErrCostConfigurationMissing
+	}
+	if err != nil {
+		return quota.AcceptedRequest{}, err
+	}
 
 	modelID := input.ModelID
 	applicable, err := queries.ListApplicableEntitlementsForUpdate(ctx, db.ListApplicableEntitlementsForUpdateParams{
@@ -98,6 +105,8 @@ func (r *QuotaRepository) acceptRequestOnce(ctx context.Context, input quota.Acc
 		ID: requestID, IdempotencyKey: input.IdempotencyKey, RequestDigest: input.RequestDigest, UserID: input.UserID,
 		GatewayKeyID: input.GatewayKeyID, ModelID: input.ModelID, EntitlementID: entitlement.ID,
 		ConfigRevisionID: input.ConfigRevisionID, ResourceDomain: db.ResourceDomain(input.ResourceDomain), Status: db.RequestStatusQueued, Stream: input.Stream,
+		PriceVersionID: price.ID, CostCurrency: price.Currency,
+		InputRateNanosPerMillion: price.InputRateNanosPerMillion, OutputRateNanosPerMillion: price.OutputRateNanosPerMillion,
 	})
 	if err != nil {
 		return quota.AcceptedRequest{}, err

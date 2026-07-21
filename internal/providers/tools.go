@@ -32,6 +32,13 @@ func (a *openAIAdapter) encodeTools(tools []canonical.ToolDefinition) ([]wireToo
 		if !validJSONObject(parameters) {
 			return nil, a.requestError(canonical.ErrorInvalidRequest, "invalid_tool_schema", "tool parameters must be one JSON object", fmt.Sprintf("tools[%d].function.parameters", index))
 		}
+		if a.policy.transformToolSchema != nil {
+			transformed, err := a.policy.transformToolSchema(parameters)
+			if err != nil || !validJSONObject(transformed) {
+				return nil, a.requestError(canonical.ErrorInvalidRequest, "invalid_tool_schema", "tool parameters cannot be represented by the provider", fmt.Sprintf("tools[%d].function.parameters", index))
+			}
+			parameters = transformed
+		}
 		if tool.Strict != nil && !a.policy.capabilities.StrictTools {
 			return nil, a.unsupported(fmt.Sprintf("tools[%d].function.strict", index))
 		}

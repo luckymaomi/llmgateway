@@ -32,10 +32,13 @@ type identityService interface {
 	Logout(context.Context, identity.Principal) error
 	ListUsers(context.Context, identity.Principal, *identity.Status, identity.Page) (identity.UserPage, error)
 	SetUserStatus(context.Context, identity.Principal, uuid.UUID, identity.Status) (identity.User, error)
+	ResetMemberPassword(context.Context, identity.Principal, uuid.UUID, string, identity.MutationRequest) (identity.SessionRevocation, error)
+	RevokeUserSessions(context.Context, identity.Principal, uuid.UUID, string) (identity.SessionRevocation, error)
 	CreateInvitation(context.Context, identity.Principal, time.Time, identity.MutationRequest) (identity.Invitation, error)
 	ListInvitations(context.Context, identity.Principal, identity.Page) ([]identity.Invitation, error)
 	RevokeInvitation(context.Context, identity.Principal, uuid.UUID) error
 	CreateGatewayKey(context.Context, identity.Principal, uuid.UUID, string, []uuid.UUID, *time.Time, identity.MutationRequest) (identity.GatewayKey, error)
+	ReplaceGatewayKey(context.Context, identity.Principal, uuid.UUID, identity.MutationRequest) (identity.GatewayKey, error)
 	ListGatewayKeys(context.Context, identity.Principal, uuid.UUID) ([]identity.GatewayKey, error)
 	RevokeGatewayKey(context.Context, identity.Principal, uuid.UUID) error
 }
@@ -54,7 +57,6 @@ type registryService interface {
 	SetCredentialEnabled(context.Context, identity.Principal, uuid.UUID, bool, time.Time, registry.MutationRequest) (registry.Credential, error)
 	ProbeCredential(context.Context, identity.Principal, uuid.UUID, string) (registry.CredentialProbeExecution, registry.Credential, error)
 	ListCredentials(context.Context, identity.Principal) ([]registry.Credential, error)
-	BindCredentialModel(context.Context, identity.Principal, uuid.UUID, uuid.UUID, int32, int32) error
 }
 
 type configurationService interface {
@@ -84,7 +86,13 @@ type API struct {
 	config        config.Security
 	logger        *slog.Logger
 	quota         *QuotaAPI
+	costing       *CostingAPI
 	playground    playgroundWorkflow
+}
+
+func (a *API) WithCostingAPI(costingAPI *CostingAPI) *API {
+	a.costing = costingAPI
+	return a
 }
 
 func (a *API) WithQuotaAPI(quotaAPI *QuotaAPI) *API {
@@ -127,6 +135,9 @@ func (a *API) Routes() http.Handler {
 			if a.quota != nil {
 				a.quota.RegisterRoutes(authenticated, a.requireAdministrator, a.requireCSRF)
 			}
+			if a.costing != nil {
+				a.costing.RegisterRoutes(authenticated, a.requireAdministrator, a.requireCSRF)
+			}
 			if a.playground != nil {
 				a.registerPlaygroundRoutes(authenticated)
 			}
@@ -138,12 +149,15 @@ func (a *API) Routes() http.Handler {
 func (a *API) registerAccessRoutes(router chi.Router) {
 	router.With(a.requireAdministrator).Get("/users", a.listUsers)
 	router.With(a.requireAdministrator, a.requireCSRF).Post("/users/{userID}/review", a.reviewUser)
+	router.With(a.requireAdministrator, a.requireCSRF).Post("/users/{userID}/password", a.resetMemberPassword)
+	router.With(a.requireAdministrator, a.requireCSRF).Post("/users/{userID}/sessions/revoke", a.revokeUserSessions)
 	router.With(a.requireAdministrator).Get("/invitations", a.listInvitations)
 	router.With(a.requireAdministrator, a.requireCSRF).Post("/invitations", a.createInvitation)
 	router.With(a.requireAdministrator, a.requireCSRF).Post("/invitations/{invitationID}/revoke", a.revokeInvitation)
 	router.Get("/keys", a.listKeys)
 	router.With(a.requireAdministrator, a.requireCSRF).Post("/keys", a.createKey)
 	router.With(a.requireCSRF).Post("/keys/{keyID}/revoke", a.revokeKey)
+	router.With(a.requireCSRF).Post("/keys/{keyID}/replacement", a.replaceKey)
 }
 
 func (a *API) registerRegistryRoutes(router chi.Router) {

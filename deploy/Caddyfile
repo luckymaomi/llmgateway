@@ -1,0 +1,33 @@
+{
+	admin off
+	email {$LLMGATEWAY_ACME_EMAIL}
+}
+
+{$LLMGATEWAY_SITE_ADDRESS} {
+	encode zstd gzip
+	@metrics path /metrics
+	respond @metrics 404
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	reverse_proxy gateway-a:8080 gateway-b:8080 {
+		lb_policy round_robin
+		health_uri /health/ready
+		health_interval 10s
+		health_timeout 3s
+		fail_duration 30s
+		max_fails 2
+		flush_interval -1
+		stream_timeout 24h
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

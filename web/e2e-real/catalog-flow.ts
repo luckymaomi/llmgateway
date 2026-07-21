@@ -27,10 +27,29 @@ export async function completePublishedCatalog(
   const ungrantedModelAlias = 'browser-batch'
   const draftOnlyModelAlias = 'browser-draft-only'
   await page.getByRole('link', { name: '模型', exact: true }).click()
-  const authorizedModelID = await createModel(page, authorizedModelAlias, 'fixture-chat')
+  const authorizedModelID = await createModel(page, authorizedModelAlias, 'fixture-chat', true)
   const ungrantedModelID = await createModel(page, ungrantedModelAlias, 'upstream-browser-batch')
   await expect(page.getByRole('table', { name: '模型列表' })).toContainText(authorizedModelAlias)
   await expect(page.getByRole('table', { name: '模型列表' })).toContainText(ungrantedModelAlias)
+
+  await page.getByRole('link', { name: '用量与账本', exact: true }).click()
+  await page.getByRole('link', { name: '成本', exact: true }).click()
+  await expect(page.getByRole('table', { name: '模型价格版本' })).toContainText(
+    authorizedModelAlias,
+  )
+  await page.getByRole('button', { name: '新增价格' }).click()
+  const priceDialog = page.getByRole('dialog')
+  await priceDialog.getByLabel('模型').selectOption(authorizedModelID)
+  await priceDialog.getByLabel('输入价格 / 百万 Token').fill('1.5')
+  await priceDialog.getByLabel('输出价格 / 百万 Token').fill('4')
+  const priceResponsePromise = page.waitForResponse(
+    (response) =>
+      response.url().endsWith('/api/control/model-prices') &&
+      response.request().method() === 'POST',
+  )
+  await priceDialog.getByRole('button', { name: '保存', exact: true }).click()
+  expect((await priceResponsePromise).status()).toBe(201)
+  await expect(page.getByRole('table', { name: '模型价格版本' })).toContainText('1.5')
 
   const navigation = page.getByRole('complementary', { name: '主导航' })
   await navigation.getByRole('link', { name: '上游凭据池' }).click()
@@ -42,6 +61,10 @@ export async function completePublishedCatalog(
   await credentialDialog.getByLabel('API Key / 凭据').fill(credentialSecret)
   await credentialDialog.getByRole('checkbox', { name: authorizedModelAlias }).check()
   await credentialDialog.getByRole('checkbox', { name: ungrantedModelAlias }).check()
+  await credentialDialog.getByLabel(`${authorizedModelAlias} 优先级`).fill('10')
+  await credentialDialog.getByLabel(`${authorizedModelAlias} 权重`).fill('70')
+  await credentialDialog.getByLabel(`${ungrantedModelAlias} 优先级`).fill('20')
+  await credentialDialog.getByLabel(`${ungrantedModelAlias} 权重`).fill('30')
   await credentialDialog.getByLabel('RPM').fill('60')
   await credentialDialog.getByLabel('TPM').fill('100000')
   await credentialDialog.getByLabel('并发上限').fill('2')
@@ -83,12 +106,14 @@ export async function completePublishedCatalog(
     expect(storedOperation).not.toContain(credentialSecret)
     const storedOperationData = JSON.parse(storedOperation ?? '{}') as {
       label?: unknown
-      authorizedModelIds?: unknown
+      modelBindings?: unknown
     }
     expect(storedOperationData.label).toBe('Browser credential')
-    expect(Array.isArray(storedOperationData.authorizedModelIds)).toBe(true)
-    expect([...(storedOperationData.authorizedModelIds as string[])].sort()).toEqual(
-      [authorizedModelID, ungrantedModelID].sort(),
+    expect(storedOperationData.modelBindings).toEqual(
+      expect.arrayContaining([
+        { modelId: authorizedModelID, priority: 10, weight: 70 },
+        { modelId: ungrantedModelID, priority: 20, weight: 30 },
+      ]),
     )
     await page.reload()
     const reconciliation = page.getByRole('alert')
@@ -134,6 +159,7 @@ export async function completePublishedCatalog(
   await credentialRow.getByRole('button', { name: '编辑凭据' }).click()
   const editDialog = page.getByRole('dialog')
   await editDialog.getByLabel('RPM').fill('75')
+  await editDialog.getByLabel(`${authorizedModelAlias} 权重`).fill('80')
   const updateResponsePromise = page.waitForResponse(
     (response) =>
       new URL(response.url()).pathname === probePath.replace(/\/probe$/, '') &&
@@ -302,13 +328,22 @@ export async function completePublishedCatalog(
   }
 }
 
-async function createModel(page: Page, alias: string, upstreamModelID: string): Promise<string> {
+async function createModel(
+  page: Page,
+  alias: string,
+  upstreamModelID: string,
+  reasoning = false,
+): Promise<string> {
   await page.getByRole('button', { name: '添加模型' }).click()
   const dialog = page.getByRole('dialog')
   await dialog.getByLabel('Provider').selectOption({ label: 'Browser Provider Mobile' })
   await dialog.getByLabel('网关别名').fill(alias)
   await dialog.getByLabel('上游模型 ID').fill(upstreamModelID)
   await dialog.getByLabel('上下文 Token').fill('8192')
+  if (reasoning) {
+    await dialog.getByRole('checkbox', { name: '推理内容' }).check()
+    await dialog.getByLabel('推理控制').selectOption('toggle')
+  }
   const responsePromise = page.waitForResponse(
     (response) =>
       response.url().endsWith('/api/control/models') && response.request().method() === 'POST',
@@ -316,7 +351,26 @@ async function createModel(page: Page, alias: string, upstreamModelID: string): 
   await dialog.getByRole('button', { name: '保存', exact: true }).click()
   const response = await responsePromise
   expect(response.status()).toBe(201)
-  const modelID = dataID(await response.json()) ?? ''
+  const responseBody: unknown = await response.json()
+  const modelID = dataID(responseBody) ?? ''
   expect(modelID).toMatch(uuidPattern)
+  const csrfToken = (await page.context().cookies()).find(
+    (cookie) => cookie.name === 'llmgateway_csrf',
+  )?.value
+  expect(csrfToken).toMatch(/^[A-Za-z0-9_-]+$/)
+  const priceResponse = await page.request.post('/api/control/model-prices', {
+    data: {
+      modelId: modelID,
+      currency: 'USD',
+      inputPricePerMillionTokens: '0',
+      outputPricePerMillionTokens: '0',
+      effectiveAt: new Date(Date.now() - 60_000).toISOString(),
+    },
+    headers: { 'Idempotency-Key': crypto.randomUUID(), 'X-CSRF-Token': csrfToken ?? '' },
+  })
+  expect(priceResponse.status()).toBe(201)
+  if (reasoning) {
+    expect(dataRecord(responseBody)?.reasoningMode).toBe('toggle')
+  }
   return modelID
 }

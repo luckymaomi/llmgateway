@@ -33,26 +33,13 @@ func (s *Service) Stream(ctx context.Context, command ChatCommand, sink StreamSi
 	excluded := make([]routing.CandidateID, 0, len(run.candidates))
 	startedAt := s.clock.Now().UTC()
 	for attemptNumber := 1; ; attemptNumber++ {
-		var candidate Candidate
-		var circuitPermit *resilience.Permit
-		var selectionError *canonical.Error
-		var lease Lease
-		if attemptNumber == 1 {
-			candidate = run.initialCandidate
-			lease = run.initialLease
-			run.initialLease = nil
-			circuitPermit, selectionError = s.acquireCircuit(candidate.ID)
-		} else {
-			candidate, circuitPermit, selectionError = s.candidateDecision(run, excluded)
-		}
+		candidate, circuitPermit, lease, selectionError := s.attemptDecision(ctx, &run, excluded, attemptNumber)
 		if selectionError != nil {
-			if lease != nil {
-				_ = lease.Release(context.WithoutCancel(ctx))
-			}
 			_ = s.accounting.Release(context.WithoutCancel(ctx), run.claim, selectionError.Code, selectionError.Message)
 			return selectionError
 		}
 		committed, attemptError := s.streamAttempt(ctx, run, candidate, circuitPermit, attemptNumber, lease, sink)
+		s.observeAttempt(run.model.ProviderKind, attemptError)
 		if attemptError == nil {
 			return nil
 		}
@@ -65,6 +52,7 @@ func (s *Service) Stream(ctx context.Context, command ChatCommand, sink StreamSi
 			RetryAfter: retryAfter(attemptError.RetryAfter, s.clock.Now().UTC()),
 		})
 		if err != nil || decision.Action != resilience.RetrySchedule {
+			s.ensureClientRetryAfter(attemptError)
 			_ = s.accounting.Release(context.WithoutCancel(ctx), run.claim, attemptError.Code, attemptError.Message)
 			return attemptError
 		}
@@ -120,7 +108,7 @@ func (s *Service) streamAttempt(ctx context.Context, run workflowRun, candidate 
 			return s.finishBrokenStream(ctx, run, attemptID, circuitPermit, streamState{}, providerError)
 		}
 		providerError := adapter.ClassifyError(response.StatusCode, response.Header, body)
-		if response.StatusCode >= http.StatusInternalServerError {
+		if response.StatusCode >= http.StatusInternalServerError && !providerError.ReplaySafe {
 			return s.finishBrokenStream(ctx, run, attemptID, circuitPermit, streamState{}, providerError)
 		}
 		if tripsCircuit(providerError.Kind) {
@@ -244,10 +232,15 @@ func (s *Service) finishBrokenStream(ctx context.Context, run workflowRun, attem
 		providerError.Kind = canonical.ErrorUncertain
 		providerError.Code = "upstream_outcome_uncertain"
 		providerError.Message = "upstream request outcome is uncertain"
+		providerError.HTTPStatus = 0
 	}
 	kind := string(providerError.Kind)
 	detail := providerError.Message
 	completedAt := s.clock.Now().UTC()
+	if !state.committed {
+		retryAt := completedAt.Add(s.config.Circuit.OpenDuration)
+		providerError.RetryAfter = &canonical.RetryAfter{At: &retryAt}
+	}
 	usage := state.usage()
 	update := AttemptUpdate{
 		Status: status, ErrorKind: &kind, FirstByteAt: state.firstByteAt, CompletedAt: &completedAt,
@@ -264,5 +257,9 @@ func (s *Service) finishBrokenStream(ctx context.Context, run workflowRun, attem
 }
 
 func (state streamState) usage() Usage {
-	return Usage{InputTokens: state.inputTokens, OutputTokens: state.outputTokens, Source: state.usageSource}
+	source := state.usageSource
+	if source == "" {
+		source = canonical.UsageUnknown
+	}
+	return Usage{InputTokens: state.inputTokens, OutputTokens: state.outputTokens, Source: source}
 }

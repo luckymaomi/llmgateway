@@ -10,6 +10,9 @@ import { DialogFrame } from '@/components/ui/dialog'
 import { Field, Input, NativeSelect } from '@/components/ui/field'
 import { FormProblem } from '@/features/auth/form-problem'
 
+import { modelBindingsSchema } from './model-binding-form'
+import { ModelBindingsField } from './model-bindings-field'
+
 const optionalPositiveInteger = z
   .number()
   .int()
@@ -20,7 +23,7 @@ const optionalPositiveInteger = z
 const schema = z.object({
   label: z.string().trim().min(2, '请输入凭据名称'),
   resourceDomain: z.enum(['free', 'professional']),
-  authorizedModelIds: z.array(z.string().uuid()).min(1, '请选择至少一个模型'),
+  modelBindings: modelBindingsSchema,
   rpmLimit: optionalPositiveInteger,
   tpmLimit: optionalPositiveInteger,
   concurrencyLimit: optionalPositiveInteger,
@@ -45,6 +48,7 @@ export function CredentialEditForm({
     defaultValues: valuesFrom(credential),
   })
   const resourceDomain = useWatch({ control: form.control, name: 'resourceDomain' })
+  const modelBindings = useWatch({ control: form.control, name: 'modelBindings' })
   const models = useQuery({
     queryKey: ['models', 'credential-edit', credential.providerId, resourceDomain],
     queryFn: ({ signal }) =>
@@ -161,7 +165,7 @@ export function CredentialEditForm({
             id="credential-edit-domain"
             disabled={locked}
             {...form.register('resourceDomain', {
-              onChange: () => form.setValue('authorizedModelIds', []),
+              onChange: () => form.setValue('modelBindings', []),
             })}
           >
             <option value="free">免费资源域</option>
@@ -169,23 +173,20 @@ export function CredentialEditForm({
           </NativeSelect>
         </Field>
         <Field
-          label="授权模型"
+          label="模型路由"
           htmlFor="credential-edit-models"
-          error={form.formState.errors.authorizedModelIds?.message}
+          className="credential-routing-field"
+          error={form.formState.errors.modelBindings?.message}
         >
-          <div id="credential-edit-models" className="check-grid">
-            {models.data?.items.map((model) => (
-              <label key={model.id}>
-                <input
-                  type="checkbox"
-                  value={model.id}
-                  disabled={locked}
-                  {...form.register('authorizedModelIds')}
-                />
-                <span>{model.alias}</span>
-              </label>
-            ))}
-          </div>
+          <ModelBindingsField
+            id="credential-edit-models"
+            models={models.data?.items ?? []}
+            value={modelBindings}
+            disabled={locked}
+            onChange={(bindings) =>
+              form.setValue('modelBindings', bindings, { shouldValidate: true })
+            }
+          />
         </Field>
         <Field
           label="RPM"
@@ -242,7 +243,11 @@ function valuesFrom(credential: Credential): Values {
   return {
     label: credential.label,
     resourceDomain: credential.resourceDomain,
-    authorizedModelIds: credential.authorizedModelIds,
+    modelBindings: credential.modelBindings.map(({ modelId, priority, weight }) => ({
+      modelId,
+      priority,
+      weight,
+    })),
     rpmLimit: credential.rpmLimit,
     tpmLimit: credential.tpmLimit,
     concurrencyLimit: credential.concurrencyLimit,
@@ -253,7 +258,7 @@ function inputFrom(values: Values, expectedUpdatedAt: string): CredentialUpdateI
   return {
     label: values.label.trim(),
     resourceDomain: values.resourceDomain,
-    authorizedModelIds: values.authorizedModelIds,
+    modelBindings: values.modelBindings,
     expectedUpdatedAt,
     ...(values.rpmLimit !== undefined ? { rpmLimit: values.rpmLimit } : {}),
     ...(values.tpmLimit !== undefined ? { tpmLimit: values.tpmLimit } : {}),

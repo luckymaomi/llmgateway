@@ -239,7 +239,33 @@ func (s *Service) CreateGatewayKey(ctx context.Context, actor Principal, userID 
 	if normalizedExpiresAt != nil && !normalizedExpiresAt.After(s.now()) {
 		return GatewayKey{}, ErrInvalidInput
 	}
-	mutation, err := newGatewayKeyMutation(request, userID, name, normalizedModelIDs, normalizedExpiresAt)
+	return s.createGatewayKey(ctx, actor, userID, name, normalizedModelIDs, normalizedExpiresAt, nil, request)
+}
+
+func (s *Service) ReplaceGatewayKey(ctx context.Context, actor Principal, keyID uuid.UUID, request MutationRequest) (GatewayKey, error) {
+	if actor.Status != StatusActive || keyID == uuid.Nil {
+		return GatewayKey{}, ErrForbidden
+	}
+	original, err := s.repository.GatewayKeyForReplacement(ctx, keyID)
+	if err != nil {
+		return GatewayKey{}, err
+	}
+	if actor.Role != RoleAdministrator && (actor.Role != RoleMember || actor.UserID != original.UserID) {
+		return GatewayKey{}, ErrForbidden
+	}
+	nameRunes := []rune(original.Name)
+	suffix := " replacement"
+	if len(nameRunes)+len([]rune(suffix)) > maximumNameRunes {
+		nameRunes = nameRunes[:maximumNameRunes-len([]rune(suffix))]
+	}
+	name := strings.TrimSpace(string(nameRunes)) + suffix
+	modelIDs := append([]uuid.UUID(nil), original.AuthorizedModelIDs...)
+	sort.Slice(modelIDs, func(i, j int) bool { return modelIDs[i].String() < modelIDs[j].String() })
+	return s.createGatewayKey(ctx, actor, original.UserID, name, modelIDs, original.ExpiresAt, &original.ID, request)
+}
+
+func (s *Service) createGatewayKey(ctx context.Context, actor Principal, userID uuid.UUID, name string, normalizedModelIDs []uuid.UUID, normalizedExpiresAt *time.Time, replacesKeyID *uuid.UUID, request MutationRequest) (GatewayKey, error) {
+	mutation, err := newGatewayKeyMutation(request, userID, name, normalizedModelIDs, normalizedExpiresAt, replacesKeyID)
 	if err != nil {
 		return GatewayKey{}, err
 	}
@@ -253,7 +279,7 @@ func (s *Service) CreateGatewayKey(ctx context.Context, actor Principal, userID 
 	}
 	key, err := s.repository.CreateGatewayKey(ctx, NewGatewayKey{
 		UserID: userID, Name: name, Prefix: credentialPrefix(secret), SecretDigest: digest[:],
-		AuthorizedModelIDs: normalizedModelIDs, ExpiresAt: normalizedExpiresAt,
+		AuthorizedModelIDs: normalizedModelIDs, ExpiresAt: normalizedExpiresAt, ReplacesKeyID: replacesKeyID,
 	}, actor.UserID, mutation)
 	if err != nil {
 		return GatewayKey{}, err
@@ -323,6 +349,44 @@ func (s *Service) SetUserStatus(ctx context.Context, actor Principal, userID uui
 	return s.repository.SetUserStatus(ctx, userID, status, actor.UserID)
 }
 
+func (s *Service) ResetMemberPassword(ctx context.Context, actor Principal, userID uuid.UUID, password string, request MutationRequest) (SessionRevocation, error) {
+	if actor.Status != StatusActive || !actor.CanManageUsers() || actor.UserID == userID {
+		return SessionRevocation{}, ErrForbidden
+	}
+	if userID == uuid.Nil || request.IdempotencyKey == uuid.Nil || request.RequestID == "" || len(request.RequestID) > 128 {
+		return SessionRevocation{}, ErrInvalidInput
+	}
+	passwordHash, err := hashPassword(password, s.passwordParams)
+	if err != nil {
+		return SessionRevocation{}, err
+	}
+	fingerprint, err := security.HMACSHA256(s.sessionPepper, []byte("llmgateway:member-password-reset:"+userID.String()+"\x00"+password))
+	password = ""
+	if err != nil {
+		return SessionRevocation{}, err
+	}
+	return s.repository.ResetMemberPassword(ctx, userID, passwordHash, actor.UserID, PasswordResetMutation{
+		IdempotencyKey: request.IdempotencyKey, RequestFingerprint: fingerprint[:], RequestID: request.RequestID,
+	})
+}
+
+func (s *Service) RevokeUserSessions(ctx context.Context, actor Principal, userID uuid.UUID, requestID string) (SessionRevocation, error) {
+	if actor.Status != StatusActive || !actor.CanManageUsers() {
+		return SessionRevocation{}, ErrForbidden
+	}
+	if userID == uuid.Nil || requestID == "" || len(requestID) > 128 {
+		return SessionRevocation{}, ErrInvalidInput
+	}
+	var preservedSessionID *uuid.UUID
+	if actor.UserID == userID {
+		if actor.SessionID == uuid.Nil {
+			return SessionRevocation{}, ErrInvalidInput
+		}
+		preservedSessionID = &actor.SessionID
+	}
+	return s.repository.RevokeUserSessions(ctx, userID, actor.UserID, preservedSessionID, requestID)
+}
+
 func (s *Service) ListInvitations(ctx context.Context, actor Principal, page Page) ([]Invitation, error) {
 	if !actor.CanManageUsers() {
 		return nil, ErrForbidden
@@ -381,10 +445,7 @@ func (s *Service) prepareUser(email, displayName, password string, role Role, st
 	if utf8.RuneCountInString(displayName) < 2 || utf8.RuneCountInString(displayName) > maximumNameRunes {
 		return NewUser{}, ErrInvalidInput
 	}
-	if len(password) < minimumPasswordBytes || len(password) > maximumPasswordBytes || strings.ContainsRune(password, '\x00') {
-		return NewUser{}, ErrInvalidInput
-	}
-	passwordHash, err := security.HashPassword(password, s.passwordParams)
+	passwordHash, err := hashPassword(password, s.passwordParams)
 	if err != nil {
 		return NewUser{}, fmt.Errorf("hash password: %w", err)
 	}

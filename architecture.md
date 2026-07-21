@@ -65,6 +65,8 @@ Public API、Canonical Model 和 Provider Adapter 分别拥有外部合同、内
 
 `providers.Catalog` 是 Provider kind、展示名称和 adapter builder 的唯一注册事实。请求执行、凭据探测、Provider 写入校验和管理端类型列表都从 catalog 读取；Catalog 在构建时固定并随受审查版本发布。
 
+模型的 `capabilities` JSON 同时保存 reasoning 控制 profile。Registry 校验 reasoning 与 profile 必须一致，不可变 revision 原样捕获；`requestflow.ProviderFactory` 只把 `toggle`、`effort`、`hybrid` 投影为 adapter capability。通用 adapter 据此选择 `enable_thinking` 或 `reasoning_effort`，不按 Provider 名称分支。
+
 ## 请求数据流
 
 ```text
@@ -95,6 +97,7 @@ Public API、Canonical Model 和 Provider Adapter 分别拥有外部合同、内
 - `member`：自己的 Key、授权、额度、用量和 Playground。
 - 导航按 capability 生成，不靠隐藏按钮替代服务端授权。
 - 一次性 secret 只在创建/幂等恢复响应中出现，不进入 Query cache、localStorage、sessionStorage、截图或 trace。
+- Runtime metrics 唯一拥有 admission、协调租约、Provider attempt、quota operation、request recovery 和 background Responses 指标；异常终态日志使用稳定 `event`，只含封闭 outcome/operation/Provider kind/resource domain/count。Caddy 拒绝公网 `/metrics`，外部 Prometheus 从 backend 网络逐实例抓取。
 - 管理信息架构只保留：Provider、模型、凭据、发布版本、用户、邀请、额度、Key、用量和 Playground。
 
 ## 持久与恢复边界
@@ -113,7 +116,35 @@ Public API、Canonical Model 和 Provider Adapter 分别拥有外部合同、内
 - cookie、CSRF、权限、资源上限、日志脱敏和 secret canary 进入验证链。
 - 普通日志与审计只记录非正文事实；系统不存储请求或响应正文。
 - 主密钥轮换和 PostgreSQL 备份恢复必须使用显式、可验证、可回滚的运维命令，不能混入普通启动。
+- 成员密码恢复由管理员+CSRF+idempotency mutation 原子更新 hash、撤销成员全部 session 并审计；管理员批量撤销自己的其他 session 时保留当前 session。唯一管理员锁定只由带确认开关与 password file 的离线 dbtool 恢复。
+- Gateway Key replacement 在创建事务内锁定旧 Key，继承 owner、模型范围与到期事实，新旧 Key 形成显式重叠窗口；旧 Key 只在客户端切换确认后走独立幂等撤销。
+- Linux 备份由 root oneshot 每 6 小时生成 PostgreSQL custom dump 与配置快照，再由固定 Restic 镜像写入加密远端 backend；明文 staging 无论成功失败都清理。repository/password/远端凭据与被备份的 `/etc/llmgateway` 分离，保留 7 daily、5 weekly、12 monthly。
+- 灾备只恢复到空目录和新数据库，目标 RPO 6 小时、RTO 2 小时。恢复后的运行 secret 为 `root:65532 0640`，Valkey 固定 UID 999/GID 65532，Gateway 固定 UID/GID 65532；切流前必须重新证明管理员/成员边界、revision、Key、账本和 Provider 解密。
+- Costing 独立拥有不可变 `model_price_versions`、幂等价格 mutation 和管理员聚合；model/adapter/router 不拥有价格。`requests` 在 quota acceptance 同一事务保存价格版本、ISO 币种和 input/output rate snapshot，settle/compensate 以整数 nanos 向上取整并检查溢出，release/uncertain 保持成本为空。价格变更不修改历史请求。
+
+## 容量基线
+
+当前目标 profile 面向 300 个已注册受控用户、约 20%（60 人）持续活跃。正式本机证据运行在 Windows amd64、32 逻辑处理器与 Docker Linux 15.5 GiB 可用内存上，使用两个 Gateway、PostgreSQL 18.4 和 Valkey 9.1.0；它是已验证基线，不是对其他主机、外部网络或真实 Provider 的无条件 SLA。
+
+| 事实 | 已验证结果 |
+| --- | --- |
+| 15 分钟混合稳态 | 80,499/80,499 完成；p50 70 ms、p95 1.056 s、p99 1.060 s、首字节 p95 79 ms |
+| 混合比例 | 65% 短 Chat、15% 短流、10% 约 1 秒流、5% 工具/reasoning、5% background Responses |
+| 长连接 | 60 个独立用户各 600 个 SSE 事件、约 30.36 s，60/60 完成 |
+| 300 人同步突发 | 178 成功、122 个带恢复信息的受控 429；所有用户获得终态 |
+| 资源 | PostgreSQL client pool 为 24+24、观测连接 1；Valkey p95 1.09 ms；Gateway RSS 峰值 260 MiB、最终 140 MiB；goroutine 26→1,074→26 |
+| 崩溃 | 实例一的 128 条已提交流全部中断并恢复为 uncertain hold；实例二先受共享租约阻塞，再在 TTL 到期后恢复流量 |
+
+容量 owner 的默认 RPM 为 global 12,000，resource domain/model/Provider 各 9,000；user 600、Gateway Key 300 和未知 credential 60 保持保守。验收拓扑每实例使用 PostgreSQL `max=24/min=4`、本地 active 256、每用户 active 16、队列 512/30 s、租约 10 s 和 16 个 background worker。真实 credential、entitlement 和管理员配置的 RPM/TPM/并发继续做更窄的硬限制，不能因网关 profile 提高而被绕过。
+
+持续 steady 429、首字节 p95 接近 2 s、普通请求 p99 接近 5 s、Valkey p95 接近 25 ms、RSS 持续超过 512 MiB，或数据库池到顶并同时出现 acquire wait/存储错误时触发扩容或降载。单次突发触发受控 429 不单独表示故障。发布候选可用同一入口把 `DurationSeconds` 提高到 43,200 做 12 小时 soak；当前完成证据为 15 分钟，外部 TLS/跨主机网络和真实 Provider 限额仍需部署及真实 Provider 验收分别证明。
 
 ## 交付拓扑
 
-当前生产形态是一份包含前端静态资源的 Go 二进制，连接受控 PostgreSQL 18 和 Valkey 9，并由反向代理终止公网 TLS。实际声明支持的操作系统、架构和部署目标只以完成过的构建、启动、主旅程、强杀恢复、备份恢复与轮换演练为准。
+正式主拓扑固定为 Linux Docker Compose：Caddy 2.10.2 是唯一公开的 80/443 入口，两个 Gateway 在 edge/backend 网络之间运行，PostgreSQL 18.4 与 Valkey 9.1.0 只加入 internal backend。Gateway scratch 镜像以 UID/GID 65532、只读根文件系统、`cap_drop: ALL`、no-new-privileges 和显式 CPU/内存/PID/日志上限运行；PostgreSQL、Valkey、Caddy 和 Gateway 的生产引用全部要求 `@sha256`。
+
+生产 secret 的唯一配置 owner 接受互斥的 `VAR` 或 `VAR_FILE`；正式部署只使用 file source。Compose secrets 分别挂载数据库 DSN、Valkey password/ACL、主密钥 ring 和三种 pepper/hash secret，环境、进程参数和镜像层只出现文件路径。Gateway `--check-config` 在连接存储前完成类型、长度和生产约束校验；production 默认不自动迁移，`/llmgateway-dbtool -action up` 是独立 migration job。
+
+Caddy 以 readiness 主动检查两个 Gateway，SSE 使用 immediate flush 和 24 小时上限；Gateway 只信任 Caddy 固定内部地址提供的首个 `X-Forwarded-For`。Linux systemd unit 负责 Docker 依赖、自启动与有序停止；Windows amd64 使用同一 `webembed` 二进制的原生 SCM handler、虚拟服务账户、Event Log、延迟自启动和两次有界失败重启。Windows 服务停止映射到既有 30 秒 HTTP graceful shutdown。
+
+升级 owner 先生成并校验 PostgreSQL custom dump、记录 Goose version，再逐实例替换。应用失败且 migration version 未变化时可回到旧 digest；version 已变化时禁止 image-only rollback，必须把 dump 恢复到新库、核验后切换 database URL file。隔离验收使用 Caddy internal CA，只证明 TLS 拓扑和代理合同；正式 DNS、公网证书、生产主机与镜像签名仍由发布环境提供。

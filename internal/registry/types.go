@@ -76,14 +76,23 @@ type Provider struct {
 }
 
 type ModelCapabilities struct {
-	Chat             bool  `json:"chat"`
-	Streaming        bool  `json:"streaming"`
-	Tools            bool  `json:"tools"`
-	Reasoning        bool  `json:"reasoning"`
-	StructuredOutput bool  `json:"structured_output"`
-	ContextTokens    int64 `json:"context_tokens"`
-	OutputTokens     int64 `json:"output_tokens"`
+	Chat             bool          `json:"chat"`
+	Streaming        bool          `json:"streaming"`
+	Tools            bool          `json:"tools"`
+	Reasoning        bool          `json:"reasoning"`
+	ReasoningMode    ReasoningMode `json:"reasoning_mode,omitempty"`
+	StructuredOutput bool          `json:"structured_output"`
+	ContextTokens    int64         `json:"context_tokens"`
+	OutputTokens     int64         `json:"output_tokens"`
 }
+
+type ReasoningMode string
+
+const (
+	ReasoningToggle ReasoningMode = "toggle"
+	ReasoningEffort ReasoningMode = "effort"
+	ReasoningHybrid ReasoningMode = "hybrid"
+)
 
 type Model struct {
 	ID             uuid.UUID         `json:"id"`
@@ -108,41 +117,47 @@ const (
 	CredentialDisabled CredentialStatus = "disabled"
 )
 
+type CredentialModelBinding struct {
+	ModelID   uuid.UUID `json:"model_id"`
+	ModelName string    `json:"model_name,omitempty"`
+	Priority  int32     `json:"priority"`
+	Weight    int32     `json:"weight"`
+}
+
 type Credential struct {
-	ID                  uuid.UUID        `json:"id"`
-	ProviderID          uuid.UUID        `json:"provider_id"`
-	Name                string           `json:"name"`
-	ResourceDomain      ResourceDomain   `json:"resource_domain"`
-	Status              CredentialStatus `json:"status"`
-	RPMLimit            *int32           `json:"rpm_limit,omitempty"`
-	TPMLimit            *int64           `json:"tpm_limit,omitempty"`
-	ConcurrencyLimit    *int32           `json:"concurrency_limit,omitempty"`
-	CooldownUntil       *time.Time       `json:"cooldown_until,omitempty"`
-	ConsecutiveFailures int32            `json:"consecutive_failures"`
-	LastSuccessAt       *time.Time       `json:"last_success_at,omitempty"`
-	LastErrorKind       *string          `json:"last_error_kind,omitempty"`
-	LastProbeAt         *time.Time       `json:"last_probe_at,omitempty"`
-	LastProbeLatencyMs  *int64           `json:"last_probe_latency_ms,omitempty"`
-	LastProbeKind       *string          `json:"last_probe_kind,omitempty"`
-	LastProbeStatus     *string          `json:"last_probe_status,omitempty"`
-	LastProbeErrorKind  *string          `json:"last_probe_error_kind,omitempty"`
-	CreatedAt           time.Time        `json:"created_at"`
-	UpdatedAt           time.Time        `json:"updated_at"`
-	AuthorizedModelIDs  []uuid.UUID      `json:"authorized_model_ids"`
-	AuthorizedModels    []string         `json:"authorized_models"`
+	ID                  uuid.UUID                `json:"id"`
+	ProviderID          uuid.UUID                `json:"provider_id"`
+	Name                string                   `json:"name"`
+	ResourceDomain      ResourceDomain           `json:"resource_domain"`
+	Status              CredentialStatus         `json:"status"`
+	RPMLimit            *int32                   `json:"rpm_limit,omitempty"`
+	TPMLimit            *int64                   `json:"tpm_limit,omitempty"`
+	ConcurrencyLimit    *int32                   `json:"concurrency_limit,omitempty"`
+	CooldownUntil       *time.Time               `json:"cooldown_until,omitempty"`
+	ConsecutiveFailures int32                    `json:"consecutive_failures"`
+	LastSuccessAt       *time.Time               `json:"last_success_at,omitempty"`
+	LastErrorKind       *string                  `json:"last_error_kind,omitempty"`
+	LastProbeAt         *time.Time               `json:"last_probe_at,omitempty"`
+	LastProbeLatencyMs  *int64                   `json:"last_probe_latency_ms,omitempty"`
+	LastProbeKind       *string                  `json:"last_probe_kind,omitempty"`
+	LastProbeStatus     *string                  `json:"last_probe_status,omitempty"`
+	LastProbeErrorKind  *string                  `json:"last_probe_error_kind,omitempty"`
+	CreatedAt           time.Time                `json:"created_at"`
+	UpdatedAt           time.Time                `json:"updated_at"`
+	ModelBindings       []CredentialModelBinding `json:"model_bindings"`
 }
 
 type CredentialChange struct {
-	ID                 uuid.UUID
-	Name               string
-	EncryptedSecret    []byte
-	ReplaceSecret      bool
-	ResourceDomain     ResourceDomain
-	RPMLimit           *int32
-	TPMLimit           *int64
-	ConcurrencyLimit   *int32
-	AuthorizedModelIDs []uuid.UUID
-	ExpectedUpdatedAt  time.Time
+	ID                uuid.UUID
+	Name              string
+	EncryptedSecret   []byte
+	ReplaceSecret     bool
+	ResourceDomain    ResourceDomain
+	RPMLimit          *int32
+	TPMLimit          *int64
+	ConcurrencyLimit  *int32
+	ModelBindings     []CredentialModelBinding
+	ExpectedUpdatedAt time.Time
 }
 
 type CredentialProbeTarget struct {
@@ -165,15 +180,15 @@ type CredentialProbeExecutor interface {
 }
 
 type NewCredential struct {
-	ID                 uuid.UUID
-	ProviderID         uuid.UUID
-	Name               string
-	EncryptedSecret    []byte
-	ResourceDomain     ResourceDomain
-	RPMLimit           *int32
-	TPMLimit           *int64
-	ConcurrencyLimit   *int32
-	AuthorizedModelIDs []uuid.UUID
+	ID               uuid.UUID
+	ProviderID       uuid.UUID
+	Name             string
+	EncryptedSecret  []byte
+	ResourceDomain   ResourceDomain
+	RPMLimit         *int32
+	TPMLimit         *int64
+	ConcurrencyLimit *int32
+	ModelBindings    []CredentialModelBinding
 }
 
 type Repository interface {
@@ -196,5 +211,4 @@ type Repository interface {
 	GetCredential(context.Context, uuid.UUID) (Credential, error)
 	GetEncryptedCredential(context.Context, uuid.UUID) ([]byte, error)
 	RecordCredentialProbe(context.Context, uuid.UUID, time.Time, CredentialProbeExecution, uuid.UUID, string) (Credential, error)
-	BindCredentialModel(context.Context, uuid.UUID, uuid.UUID, int32, int32, uuid.UUID) error
 }

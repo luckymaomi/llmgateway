@@ -15,6 +15,33 @@ SELECT * FROM users WHERE id = sqlc.arg(id);
 -- name: GetUserByEmail :one
 SELECT * FROM users WHERE lower(email) = lower(sqlc.arg(email));
 
+-- name: GetUserForAdministrativeRecovery :one
+SELECT * FROM users WHERE id = sqlc.arg(id) FOR UPDATE;
+
+-- name: UpdateUserPassword :one
+UPDATE users SET password_hash = sqlc.arg(password_hash), updated_at = now()
+WHERE id = sqlc.arg(id)
+RETURNING *;
+
+-- name: ClaimMemberPasswordResetMutation :one
+INSERT INTO member_password_reset_mutations (
+  actor_user_id, idempotency_key, user_id, request_fingerprint, request_id
+) VALUES (
+  sqlc.arg(actor_user_id), sqlc.arg(idempotency_key), sqlc.arg(user_id), sqlc.arg(request_fingerprint), sqlc.arg(request_id)
+)
+ON CONFLICT (actor_user_id, idempotency_key) DO NOTHING
+RETURNING *;
+
+-- name: GetMemberPasswordResetMutation :one
+SELECT * FROM member_password_reset_mutations
+WHERE actor_user_id = sqlc.arg(actor_user_id) AND idempotency_key = sqlc.arg(idempotency_key);
+
+-- name: CompleteMemberPasswordResetMutation :one
+UPDATE member_password_reset_mutations
+SET result = sqlc.arg(result)
+WHERE id = sqlc.arg(id)
+RETURNING *;
+
 -- name: ListUserDisplayNames :many
 SELECT id, display_name
 FROM users
@@ -93,8 +120,12 @@ UPDATE sessions SET last_seen_at = now() WHERE id = sqlc.arg(id) AND revoked_at 
 -- name: RevokeSession :execrows
 UPDATE sessions SET revoked_at = now() WHERE id = sqlc.arg(id) AND revoked_at IS NULL;
 
--- name: RevokeUserSessions :exec
+-- name: RevokeUserSessions :execrows
 UPDATE sessions SET revoked_at = now() WHERE user_id = sqlc.arg(user_id) AND revoked_at IS NULL;
+
+-- name: RevokeUserSessionsExcept :execrows
+UPDATE sessions SET revoked_at = now()
+WHERE user_id = sqlc.arg(user_id) AND id <> sqlc.arg(preserved_session_id) AND revoked_at IS NULL;
 
 -- name: DeleteExpiredSessions :execrows
 DELETE FROM sessions WHERE expires_at < now() - interval '1 day' OR revoked_at < now() - interval '1 day';
@@ -186,6 +217,28 @@ SELECT id, user_id, revoked_at
 FROM gateway_keys
 WHERE id = sqlc.arg(id)
 FOR UPDATE;
+
+-- name: GetGatewayKeyForReplacement :one
+SELECT id, user_id, name, prefix, expires_at, revoked_at, last_used_at, created_at
+FROM gateway_keys
+WHERE id = sqlc.arg(id)
+  AND revoked_at IS NULL
+  AND (expires_at IS NULL OR expires_at > now())
+FOR UPDATE;
+
+-- name: ListGatewayKeyModelBindingsByKey :many
+SELECT gkm.model_id, published.public_name
+FROM gateway_key_models gkm
+JOIN LATERAL (
+  SELECT model.public_name
+  FROM config_revision_models model
+  JOIN config_revisions revision ON revision.id = model.revision_id
+  WHERE model.model_id = gkm.model_id AND revision.published_at IS NOT NULL
+  ORDER BY revision.revision DESC
+  LIMIT 1
+) published ON true
+WHERE gkm.gateway_key_id = sqlc.arg(gateway_key_id)
+ORDER BY published.public_name, gkm.model_id;
 
 -- name: GetGatewayKeyRevocationState :one
 SELECT user_id, revoked_at

@@ -28,9 +28,10 @@ LLMGateway 是服务约 200～300 名受控用户的中小微企业级多 Provid
 ### Provider 与目录
 
 - 管理员创建 Provider、模型和加密凭据，声明模型是否支持流式、工具、reasoning 和结构化输出。
+- reasoning 模型还要声明 `toggle`、`effort` 或 `hybrid` 控制 profile；同一个 OpenAI-compatible adapter 据此表达模型差异，普通请求不会因上游默认 thinking 吞掉全部可见输出预算。
 - 凭据绑定允许的模型、免费/付费资源域、priority、weight、RPM、TPM 和并发。
 - 编辑中的 live registry 不直接影响用户；管理员捕获不可变 revision，校验后发布，数据面只读取当前 active revision。
-- 当前专用 adapter 为智谱 GLM 和 Agnes，同时支持明确能力子集的通用 OpenAI-compatible Provider。
+- 当前专用 adapter 为智谱 GLM、Agnes 和 Google Gemini，同时支持明确能力子集的通用 OpenAI-compatible Provider。
 
 ### 统一 API
 
@@ -66,6 +67,7 @@ Provider catalog 编译进受审查的版本发布，持续更新的同时守住
 - 429、临时 5xx 和超时会更新凭据冷却；只有确认未产生未知副作用时才有限重试。
 - 流已经输出后不拼接第二个 Provider；发送结果未知时记录 `uncertain`，保留额度预留并等待恢复判断。
 - 客户端取消、断连、后台 Responses、进程强杀和重启都有持久状态与幂等恢复 owner。
+- 当前 300 用户 profile 以约 60 人持续活跃为容量基线；稳态流量不得依赖初始令牌桶掩盖不可持续 RPM，300 人同步突发允许按硬并发边界返回带恢复信息的 429。
 
 ## 核心二：用户与管理员
 
@@ -78,8 +80,10 @@ Provider catalog 编译进受审查的版本发布，持续更新的同时守住
 ### 授权与 Key
 
 - 管理员为成员分配模型范围、额度、RPM、TPM、并发和到期时间，并签发或撤销 Gateway Key。
-- 成员只查看自己的授权、余额、usage 和 Key，只能创建或撤销自己的 Key。
+- 成员只查看自己的授权、余额、usage 和 Key，只能更换或撤销自己的 Key。
 - 完整 Gateway Key 和邀请码只在创建或同一幂等操作恢复时展示；数据库只保存摘要和展示前缀。
+- 管理员可幂等重置成员密码并撤销旧会话，也可保留当前会话撤销自己的其他登录；唯一管理员锁定由带确认开关、password file 和 system audit 的离线命令恢复。
+- Key 更换先创建同 owner、授权与到期时间的新 Key，新旧 Key 同时可用；客户端切换确认后再撤销旧 Key。
 
 ### 额度与用量
 
@@ -99,13 +103,15 @@ Provider catalog 编译进受审查的版本发布，持续更新的同时守住
 | 协调 | Valkey 只保存可过期租约与限流计数；不可用时 fail closed |
 | 隐私 | 日志、错误、指标、审计和浏览器持久状态不保存 secret 或请求正文 |
 | 恢复 | 取消、断连、partial stream、强杀、重启和多实例有明确终态与 owner |
-| 运维 | 一个真实部署目标、可演练的 PostgreSQL 备份恢复和受控主密钥轮换 |
+| 运维 | Linux 双 Gateway/Caddy TLS Compose 与 Windows SCM；独立 migration、滚动升级、加密 Restic 备份、空环境整站恢复、恢复库切换和主密钥轮换均有真实演练 |
+| 观测 | 公网不暴露 `/metrics`；backend 逐实例指标、稳定异常事件、Prometheus 阈值规则、Grafana 看板和对应 runbook |
+| 成本 | 管理员维护不可变模型价格版本；请求冻结价格并按 authoritative/estimated usage 结算整数 nanos，按用户、套餐、模型、Provider、资源域和币种聚合；成员不可读取采购价 |
 
 ## 公司如何形成收入
 
 LLMGateway 本身不是收银台。公司通过 B2B 服务合同、团队席位或约定的模型用量套餐向签约客户收费，销售和财务在线下完成合同、开票与收款；管理员再按合同在网关内分配成员、模型权限、额度和期限。
 
-收入来自统一接入、稳定运营、权限治理和模型资源整合所提供的服务价值；成本来自上游模型、基础设施和运维。网关账本记录可审计的使用事实和额度消耗；具体定价、毛利、合同和收款由公司经营流程拥有，不写死在 Provider adapter 或路由代码中。
+收入来自统一接入、稳定运营、权限治理和模型资源整合所提供的服务价值；成本来自上游模型、基础设施和运维。网关账本记录可审计的使用事实、额度消耗和冻结的上游采购成本；客户售价、合同、毛利口径、开票和收款由公司经营流程拥有，不写死在 Provider adapter 或路由代码中。
 
 ## 日常运营闭环
 

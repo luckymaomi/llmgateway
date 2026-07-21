@@ -1,0 +1,16 @@
+.build
+.git
+.github
+.idea
+.vscode
+*.dump
+*.log
+*.pem
+*.key
+key.txt
+node_modules
+ref
+web/dist
+web/node_modules
+web/test-results
+web/playwright-report

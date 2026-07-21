@@ -155,27 +155,8 @@ func (s *Service) CreateCredential(ctx context.Context, actor identity.Principal
 	}
 	input.ID = uuid.New()
 	input.Name = strings.TrimSpace(input.Name)
-	if input.ProviderID == uuid.Nil || input.Name == "" || utf8.RuneCountInString(input.Name) > 80 || len(secret) < 8 || len(secret) > 8192 {
+	if input.ProviderID == uuid.Nil || len(secret) < 8 || len(secret) > 8192 || !validCredentialFields(input.Name, input.ResourceDomain, input.RPMLimit, input.TPMLimit, input.ConcurrencyLimit, input.ModelBindings) {
 		return Credential{}, ErrInvalidInput
-	}
-	if input.ResourceDomain != ResourceFree && input.ResourceDomain != ResourceProfessional {
-		return Credential{}, ErrInvalidInput
-	}
-	if input.RPMLimit != nil && *input.RPMLimit < 1 || input.TPMLimit != nil && *input.TPMLimit < 1 || input.ConcurrencyLimit != nil && *input.ConcurrencyLimit < 1 {
-		return Credential{}, ErrInvalidInput
-	}
-	if len(input.AuthorizedModelIDs) == 0 || len(input.AuthorizedModelIDs) > 100 {
-		return Credential{}, ErrInvalidInput
-	}
-	seenModels := make(map[uuid.UUID]struct{}, len(input.AuthorizedModelIDs))
-	for _, modelID := range input.AuthorizedModelIDs {
-		if modelID == uuid.Nil {
-			return Credential{}, ErrInvalidInput
-		}
-		if _, exists := seenModels[modelID]; exists {
-			return Credential{}, ErrInvalidInput
-		}
-		seenModels[modelID] = struct{}{}
 	}
 	mutation, err := newCredentialMutation(request, input, secret)
 	if err != nil {
@@ -198,7 +179,7 @@ func (s *Service) UpdateCredential(ctx context.Context, actor identity.Principal
 	}
 	input.Name = strings.TrimSpace(input.Name)
 	input.ReplaceSecret = secret != ""
-	if input.ID == uuid.Nil || input.ExpectedUpdatedAt.IsZero() || !validCredentialFields(input.Name, input.ResourceDomain, input.RPMLimit, input.TPMLimit, input.ConcurrencyLimit, input.AuthorizedModelIDs) {
+	if input.ID == uuid.Nil || input.ExpectedUpdatedAt.IsZero() || !validCredentialFields(input.Name, input.ResourceDomain, input.RPMLimit, input.TPMLimit, input.ConcurrencyLimit, input.ModelBindings) {
 		return Credential{}, ErrInvalidInput
 	}
 	if input.ReplaceSecret && (len(secret) < 8 || len(secret) > 8192) {
@@ -291,16 +272,6 @@ func (s *Service) CredentialSecret(ctx context.Context, credentialID uuid.UUID) 
 	return string(plaintext), nil
 }
 
-func (s *Service) BindCredentialModel(ctx context.Context, actor identity.Principal, credentialID, modelID uuid.UUID, priority, weight int32) error {
-	if !actor.CanOperateProviders() {
-		return ErrForbidden
-	}
-	if credentialID == uuid.Nil || modelID == uuid.Nil || priority < 0 || weight < 1 || weight > 10000 {
-		return ErrInvalidInput
-	}
-	return s.repository.BindCredentialModel(ctx, credentialID, modelID, priority, weight, actor.UserID)
-}
-
 func (s *Service) validateProviderDetails(ctx context.Context, provider Provider) error {
 	nameRunes := utf8.RuneCountInString(provider.Name)
 	if nameRunes < 2 || nameRunes > 100 || len(provider.BaseURL) > 2048 {
@@ -359,31 +330,39 @@ func validateModel(model Model) error {
 	if !model.Capabilities.Chat || model.Capabilities.ContextTokens < 1 || model.Capabilities.OutputTokens < 1 || model.Capabilities.OutputTokens > model.Capabilities.ContextTokens {
 		return ErrInvalidInput
 	}
+	if model.Capabilities.Reasoning != (model.Capabilities.ReasoningMode != "") {
+		return ErrInvalidInput
+	}
+	switch model.Capabilities.ReasoningMode {
+	case "", ReasoningToggle, ReasoningEffort, ReasoningHybrid:
+	default:
+		return ErrInvalidInput
+	}
 	if _, err := json.Marshal(model.Capabilities); err != nil {
 		return ErrInvalidInput
 	}
 	return nil
 }
 
-func validCredentialFields(name string, domain ResourceDomain, rpmLimit *int32, tpmLimit *int64, concurrencyLimit *int32, modelIDs []uuid.UUID) bool {
+func validCredentialFields(name string, domain ResourceDomain, rpmLimit *int32, tpmLimit *int64, concurrencyLimit *int32, bindings []CredentialModelBinding) bool {
 	if name == "" || utf8.RuneCountInString(name) > 80 || domain != ResourceFree && domain != ResourceProfessional {
 		return false
 	}
 	if rpmLimit != nil && *rpmLimit < 1 || tpmLimit != nil && *tpmLimit < 1 || concurrencyLimit != nil && *concurrencyLimit < 1 {
 		return false
 	}
-	if len(modelIDs) == 0 || len(modelIDs) > 100 {
+	if len(bindings) == 0 || len(bindings) > 100 {
 		return false
 	}
-	seen := make(map[uuid.UUID]struct{}, len(modelIDs))
-	for _, modelID := range modelIDs {
-		if modelID == uuid.Nil {
+	seen := make(map[uuid.UUID]struct{}, len(bindings))
+	for _, binding := range bindings {
+		if binding.ModelID == uuid.Nil || binding.Priority < 0 || binding.Priority > 1000 || binding.Weight < 1 || binding.Weight > 1000 {
 			return false
 		}
-		if _, exists := seen[modelID]; exists {
+		if _, exists := seen[binding.ModelID]; exists {
 			return false
 		}
-		seen[modelID] = struct{}{}
+		seen[binding.ModelID] = struct{}{}
 	}
 	return true
 }

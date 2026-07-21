@@ -193,13 +193,13 @@ VALUES (sqlc.arg(credential_id), sqlc.arg(model_id), sqlc.arg(priority), sqlc.ar
 ON CONFLICT (credential_id, model_id) DO UPDATE SET priority = excluded.priority, weight = excluded.weight;
 
 -- name: ListCredentialModelBindings :many
-SELECT cm.credential_id, m.id AS model_id, m.public_name
+SELECT cm.credential_id, m.id AS model_id, m.public_name, cm.priority, cm.weight
 FROM credential_models cm
 JOIN models m ON m.id = cm.model_id
 ORDER BY cm.credential_id, m.public_name, m.id;
 
 -- name: ListCredentialModelBindingsForCredential :many
-SELECT cm.credential_id, m.id AS model_id, m.public_name
+SELECT cm.credential_id, m.id AS model_id, m.public_name, cm.priority, cm.weight
 FROM credential_models cm
 JOIN models m ON m.id = cm.model_id
 WHERE cm.credential_id = sqlc.arg(credential_id)

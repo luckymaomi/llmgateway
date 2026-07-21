@@ -1,0 +1,20 @@
+[Unit]
+Description=LLMGateway production Compose stack
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/llmgateway/deploy
+EnvironmentFile=/etc/llmgateway/deployment.env
+ExecStartPre=/usr/bin/docker compose -f compose.production.yaml config --quiet
+ExecStart=/usr/bin/docker compose -f compose.production.yaml up --detach --wait
+ExecReload=/usr/bin/docker compose -f compose.production.yaml up --detach --wait
+ExecStop=/usr/bin/docker compose -f compose.production.yaml stop --timeout 45
+TimeoutStartSec=300
+TimeoutStopSec=180
+
+[Install]
+WantedBy=multi-user.target

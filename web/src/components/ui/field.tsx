@@ -10,14 +10,15 @@ import { cn } from '@/lib/cn'
 interface FieldProps {
   label: string
   htmlFor: string
+  className?: string | undefined
   error?: string | undefined
   hint?: string | undefined
   children: ReactNode
 }
 
-export function Field({ label, htmlFor, error, hint, children }: FieldProps) {
+export function Field({ label, htmlFor, className, error, hint, children }: FieldProps) {
   return (
-    <div className="field">
+    <div className={cn('field', className)}>
       <label className="field__label" htmlFor={htmlFor}>
         {label}
       </label>

@@ -9,6 +9,10 @@ import (
 
 func (a *openAIAdapter) encodeReasoning(reasoning *canonical.ReasoningConfig, request *wireChatRequest) error {
 	if reasoning == nil {
+		if a.policy.reasoning == reasoningWireStandard && a.policy.capabilities.ReasoningToggle {
+			disabled := false
+			request.EnableThinking = &disabled
+		}
 		return nil
 	}
 	if reasoning.Enabled != nil && !a.policy.capabilities.ReasoningToggle {
@@ -32,6 +36,12 @@ func (a *openAIAdapter) encodeReasoning(reasoning *canonical.ReasoningConfig, re
 
 	switch a.policy.reasoning {
 	case reasoningWireStandard:
+		if reasoning.Enabled != nil {
+			request.EnableThinking = reasoning.Enabled
+		} else if a.policy.capabilities.ReasoningToggle {
+			disabled := false
+			request.EnableThinking = &disabled
+		}
 		request.ReasoningEffort = string(reasoning.Effort)
 	case reasoningWireZhipu:
 		if reasoning.Enabled != nil || reasoning.Preserve != nil {
@@ -50,6 +60,8 @@ func (a *openAIAdapter) encodeReasoning(reasoning *canonical.ReasoningConfig, re
 		if reasoning.Enabled != nil {
 			request.ChatTemplateKwargs = &wireChatTemplateKwargs{EnableThinking: *reasoning.Enabled}
 		}
+	case reasoningWireGemini:
+		request.ReasoningEffort = string(reasoning.Effort)
 	}
 	return nil
 }
@@ -57,6 +69,9 @@ func (a *openAIAdapter) encodeReasoning(reasoning *canonical.ReasoningConfig, re
 func (a *openAIAdapter) supportsReasoningEffort(effort canonical.ReasoningEffort) bool {
 	if !validReasoningEffort(effort) {
 		return false
+	}
+	if a.policy.allowedReasoningEfforts != nil {
+		return a.policy.allowedReasoningEfforts[effort]
 	}
 	return true
 }

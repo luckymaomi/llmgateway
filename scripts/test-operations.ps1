@@ -39,6 +39,44 @@ try {
   go run ./cmd/dbtool -action rotate-credentials -confirm-key-rotation
   if ($LASTEXITCODE -ne 0) { throw "Credential rotation command failed." }
 
+  $recoveryEmail = "operations-admin@example.test"
+  $recoveryPassword = "operations-recovery-password-$runID"
+  $recoveryPasswordPath = Join-Path $buildDirectory "administrator-password.txt"
+  $docker = Get-LLMGatewayDockerCommand
+  & $docker exec $postgres.Container psql -v ON_ERROR_STOP=1 -U llmgateway -d $databaseName -c `
+    "INSERT INTO users (email, display_name, password_hash, role, status, approved_at, disabled_at) VALUES ('$recoveryEmail', 'Operations Administrator', 'fixture-hash', 'administrator', 'disabled', now(), now()); INSERT INTO sessions (user_id, token_digest, csrf_digest, expires_at) SELECT id, digest('operations-recovery-session', 'sha256'), digest('operations-recovery-csrf', 'sha256'), now() + interval '1 hour' FROM users WHERE email = '$recoveryEmail';" | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "Could not create the offline recovery fixture." }
+  [IO.File]::WriteAllText($recoveryPasswordPath, $recoveryPassword + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+  $previousErrorActionPreference = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    $rejectedRecoveryOutput = @(& go run ./cmd/dbtool -action recover-administrator -administrator-email $recoveryEmail -password-file $recoveryPasswordPath 2>&1) -join "`n"
+    $rejectedRecoveryExit = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+  }
+  if ($rejectedRecoveryExit -eq 0 -or $rejectedRecoveryOutput -notmatch 'confirm-account-recovery') {
+    throw "Offline recovery without the confirmation flag was not rejected."
+  }
+  $rejectedRecoveryFact = & $docker exec $postgres.Container psql -v ON_ERROR_STOP=1 -U llmgateway -d $databaseName -Atc `
+    "SELECT status::text || '|' || count(*) FILTER (WHERE session.revoked_at IS NULL) FROM users owner LEFT JOIN sessions session ON session.user_id = owner.id WHERE owner.email = '$recoveryEmail' GROUP BY owner.status"
+  if ($LASTEXITCODE -ne 0 -or $rejectedRecoveryFact -ne "disabled|1") {
+    throw "Rejected offline recovery changed the administrator facts: $rejectedRecoveryFact"
+  }
+
+  $recoveryOutput = @(& go run ./cmd/dbtool -action recover-administrator -administrator-email $recoveryEmail -password-file $recoveryPasswordPath -confirm-account-recovery 2>&1) -join "`n"
+  if ($LASTEXITCODE -ne 0 -or $recoveryOutput -notmatch 'revoked_sessions=1' -or $recoveryOutput.Contains($recoveryPassword)) {
+    throw "Confirmed offline administrator recovery failed or exposed its password."
+  }
+  $recoveryPassword = ""
+  Remove-Item -LiteralPath $recoveryPasswordPath -Force
+  $recoveryFact = & $docker exec $postgres.Container psql -v ON_ERROR_STOP=1 -U llmgateway -d $databaseName -Atc `
+    "SELECT owner.status::text || '|' || count(*) FILTER (WHERE session.revoked_at IS NULL) || '|' || (SELECT count(*) FROM audit_events audit WHERE audit.action = 'identity.administrator_recovered' AND audit.target_id = owner.id::text AND audit.actor_user_id IS NULL AND audit.request_id IS NOT NULL) FROM users owner LEFT JOIN sessions session ON session.user_id = owner.id WHERE owner.email = '$recoveryEmail' GROUP BY owner.id, owner.status"
+  if ($LASTEXITCODE -ne 0 -or $recoveryFact -ne "active|0|1") {
+    throw "Offline administrator recovery did not persist activation, session revocation, and system audit facts: $recoveryFact"
+  }
+
   & powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\backup-postgres.ps1 `
     -OutputPath $backupPath -Container $postgres.Container -DatabaseName $databaseName -DatabaseUser llmgateway -AllowIsolatedTestContainer
   if ($LASTEXITCODE -ne 0) { throw "PostgreSQL backup command failed." }
@@ -46,7 +84,6 @@ try {
     -InputPath $backupPath -Container $postgres.Container -TargetDatabase $restoredDatabaseName -DatabaseUser llmgateway -ConfirmRestore -AllowIsolatedTestContainer
   if ($LASTEXITCODE -ne 0) { throw "PostgreSQL restore command failed." }
 
-  $docker = Get-LLMGatewayDockerCommand
   $restoredFacts = & $docker exec $postgres.Container psql -v ON_ERROR_STOP=1 -U llmgateway -d $restoredDatabaseName -Atc `
     "SELECT (SELECT count(*) FROM provider_credentials WHERE name = 'Rotation Credential') || '|' || (SELECT count(*) FROM audit_events WHERE action = 'credential.encryption_rotated') || '|' || (SELECT max(version_id) FROM goose_db_version WHERE is_applied = true)"
   if ($LASTEXITCODE -ne 0 -or $restoredFacts -ne "1|1|1") {
@@ -118,4 +155,4 @@ try {
   if ($cleanupFailures.Count -gt 0) { throw "Operations cleanup failed: $($cleanupFailures -join '; ')" }
 }
 
-Write-Host "Credential master key rotation, PostgreSQL backup/restore, and the Windows amd64 production runtime passed in an isolated environment."
+Write-Host "Credential rotation, offline administrator recovery, PostgreSQL backup/restore, and the Windows amd64 production runtime passed in an isolated environment."

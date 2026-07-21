@@ -4,6 +4,7 @@ export const administratorEmail = 'browser-admin@example.test'
 export const administratorPassword = 'browser-acceptance-password'
 export const memberEmail = 'browser-member@example.test'
 export const memberPassword = 'browser-member-password'
+export const memberReplacementPassword = 'browser-member-replacement-password'
 export const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 
 export function gatewayEndpoint(pathname: string): string {

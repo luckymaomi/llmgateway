@@ -60,3 +60,31 @@ func TestProviderErrorFixturesProduceStableKinds(t *testing.T) {
 		})
 	}
 }
+
+func TestGeminiUsesStructuredQuotaAndRetryFacts(t *testing.T) {
+	t.Parallel()
+
+	classified := NewGemini().ClassifyError(http.StatusTooManyRequests, nil, []byte(`{
+		"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"quota exhausted","details":[
+			{"@type":"type.googleapis.com/google.rpc.QuotaFailure","violations":[{"quotaId":"GenerateRequestsPerMinutePerProjectPerModel-FreeTier"}]},
+			{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"4.250s"}
+		]}
+	}`))
+	if classified.Kind != canonical.ErrorRateLimit || classified.RetryAfter == nil || classified.RetryAfter.DelaySeconds == nil || *classified.RetryAfter.DelaySeconds != 5 {
+		t.Fatalf("classified error = %#v", classified)
+	}
+
+	daily := NewGemini().ClassifyError(http.StatusTooManyRequests, nil, []byte(`{
+		"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"quota exhausted","details":[
+			{"@type":"type.googleapis.com/google.rpc.QuotaFailure","violations":[{"quotaId":"GenerateRequestsPerDayPerProjectPerModel-FreeTier"}]}
+		]}
+	}`))
+	if daily.Kind != canonical.ErrorQuota {
+		t.Fatalf("daily quota error = %#v", daily)
+	}
+
+	unavailable := NewGemini().ClassifyError(http.StatusServiceUnavailable, nil, []byte(`{"error":{"code":503,"status":"UNAVAILABLE","message":"overloaded"}}`))
+	if unavailable.Kind != canonical.ErrorProviderTemporary || !unavailable.ReplaySafe {
+		t.Fatalf("unavailable error = %#v", unavailable)
+	}
+}

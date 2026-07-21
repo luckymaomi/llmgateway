@@ -169,7 +169,7 @@ func insertRequestExecutionFixture(t *testing.T, pool *pgxpool.Pool) requestExec
 	t.Helper()
 	ctx := context.Background()
 	fixture := requestExecutionFixture{userID: uuid.New(), providerID: uuid.New(), requestID: uuid.New(), credentialID: uuid.New()}
-	keyID, modelID, entitlementID, reserveEventID, reservationID := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	keyID, modelID, priceVersionID, entitlementID, reserveEventID, reservationID := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	keyDigest := sha256.Sum256(fixture.userID[:])
 	if _, err := pool.Exec(ctx, `INSERT INTO users (id, email, display_name, password_hash, role, status, approved_at)
 VALUES ($1, $2, 'Execution Test Member', 'fixture-hash', 'member', 'active', now())`, fixture.userID, "execution-"+fixture.userID.String()+"@example.test"); err != nil {
@@ -187,6 +187,11 @@ VALUES ($1, $2, 'Execution Provider', 'openai-compatible', 'https://example.test
 VALUES ($1, $2, $3, 'execution-upstream', 'Execution Model', 'free', '{"chat":true}', true)`, modelID, fixture.providerID, "execution-"+modelID.String()); err != nil {
 		t.Fatalf("insert execution model: %v", err)
 	}
+	if _, err := pool.Exec(ctx, `INSERT INTO model_price_versions
+  (id, model_id, currency, input_rate_nanos_per_million, output_rate_nanos_per_million, effective_at, created_by)
+VALUES ($1, $2, 'USD', 0, 0, now() - interval '1 hour', $3)`, priceVersionID, modelID, fixture.userID); err != nil {
+		t.Fatalf("insert execution model price: %v", err)
+	}
 	if _, err := pool.Exec(ctx, `INSERT INTO provider_credentials (id, provider_id, name, encrypted_secret, resource_domain, status)
 VALUES ($1, $2, 'Execution Credential', $3, 'free', 'active')`, fixture.credentialID, fixture.providerID, []byte("fixture-secret")); err != nil {
 		t.Fatalf("insert execution credential: %v", err)
@@ -195,8 +200,11 @@ VALUES ($1, $2, 'Execution Credential', $3, 'free', 'active')`, fixture.credenti
 VALUES ($1, $2, 'token', 'free', $3, 1000, now() - interval '1 hour', now() + interval '1 day', 1)`, entitlementID, fixture.userID, modelID); err != nil {
 		t.Fatalf("insert execution entitlement: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO requests (id, request_digest, user_id, gateway_key_id, model_id, entitlement_id, resource_domain, status, stream)
-VALUES ($1, $2, $3, $4, $5, $6, 'free', 'queued', false)`, fixture.requestID, make([]byte, 32), fixture.userID, keyID, modelID, entitlementID); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO requests
+  (id, request_digest, user_id, gateway_key_id, model_id, entitlement_id, resource_domain, price_version_id, cost_currency,
+   input_rate_nanos_per_million, output_rate_nanos_per_million, status, stream)
+VALUES ($1, $2, $3, $4, $5, $6, 'free', $7, 'USD', 0, 0, 'queued', false)`,
+		fixture.requestID, make([]byte, 32), fixture.userID, keyID, modelID, entitlementID, priceVersionID); err != nil {
 		t.Fatalf("insert execution request: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO ledger_events (id, user_id, entitlement_id, request_id, reservation_id, kind, token_delta, reserved_tokens, usage_source, source_event_id)
@@ -220,8 +228,6 @@ func cleanupRequestExecutionFixture(t *testing.T, pool *pgxpool.Pool, fixture re
 		{query: "DELETE FROM ledger_reservations WHERE request_id = $1", id: fixture.requestID},
 		{query: "DELETE FROM ledger_events WHERE request_id = $1", id: fixture.requestID},
 		{query: "DELETE FROM requests WHERE id = $1", id: fixture.requestID},
-		{query: "DELETE FROM providers WHERE id = $1", id: fixture.providerID},
-		{query: "DELETE FROM users WHERE id = $1", id: fixture.userID},
 	} {
 		if _, err := pool.Exec(ctx, statement.query, statement.id); err != nil {
 			t.Errorf("cleanup request execution fixture: %v", err)

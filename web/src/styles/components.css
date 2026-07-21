@@ -380,6 +380,72 @@
   gap: 8px;
 }
 
+.credential-routing-field {
+  grid-column: 1 / -1;
+}
+
+.model-bindings {
+  display: grid;
+  gap: 8px;
+}
+
+.model-binding {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) repeat(2, minmax(96px, 120px));
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-subtle);
+}
+
+.model-binding[data-selected='true'] {
+  border-color: var(--border-strong);
+  background: var(--surface);
+}
+
+.model-binding__choice,
+.model-binding__routing,
+.model-binding__routing label {
+  display: flex;
+  align-items: center;
+}
+
+.model-binding__choice {
+  min-width: 0;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.model-binding__choice span {
+  overflow-wrap: anywhere;
+}
+
+.model-binding__routing {
+  grid-column: 2 / -1;
+  gap: 8px;
+}
+
+.model-binding__routing label {
+  min-width: 0;
+  flex: 1 1 0;
+  gap: 5px;
+}
+
+.model-binding__routing label > span {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.model-binding__routing .input {
+  min-width: 0;
+}
+
 input[type='checkbox'] {
   width: 16px;
   height: 16px;
@@ -753,6 +819,14 @@ input[role='switch'] {
   .form-grid,
   .check-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .model-binding {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .model-binding__routing {
+    grid-column: 1;
   }
 
   .provider-conflict__values,

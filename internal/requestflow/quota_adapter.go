@@ -68,6 +68,8 @@ func accountingError(err error) error {
 		return nil
 	case errors.Is(err, quota.ErrQuotaExhausted):
 		return ErrQuotaExhausted
+	case errors.Is(err, quota.ErrCostConfigurationMissing):
+		return ErrCostConfigurationMissing
 	case errors.Is(err, quota.ErrModelNotAuthorized):
 		return ErrModelNotAuthorized
 	case errors.Is(err, quota.ErrConflict):

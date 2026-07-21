@@ -104,6 +104,10 @@ func TestPersistentQuotaLifecycleAndConcurrentReservations(t *testing.T) {
 	if repeatedSettlement.Reservation.TerminalEventID == nil || *repeatedSettlement.Reservation.TerminalEventID != *settled.Reservation.TerminalEventID {
 		t.Fatalf("settlement replay appended a different terminal fact: %#v", repeatedSettlement)
 	}
+	if settled.Request.CostCurrency != "USD" || settled.Request.InputCostNanos == nil || *settled.Request.InputCostNanos != 65_000 ||
+		settled.Request.OutputCostNanos == nil || *settled.Request.OutputCostNanos != 100_000 || settled.Request.TotalCostNanos == nil || *settled.Request.TotalCostNanos != 165_000 {
+		t.Fatalf("settled request cost snapshot = %#v", settled.Request)
+	}
 	if _, err := repository.Compensate(ctx, accepted.Request.ID, claim, 20, 10, quota.UsageAuthoritative, "partial_stream", "already settled"); !errors.Is(err, quota.ErrTerminalConflict) {
 		t.Fatalf("Compensate(after settle) error = %v, want ErrTerminalConflict", err)
 	}
@@ -239,6 +243,13 @@ func seedQuotaFixture(t *testing.T, ctx context.Context, pool *pgxpool.Pool) quo
   ($4, $2, $5, 'professional-upstream', 'Professional Model', 'professional', '{"chat":true}', true)`,
 		fixture.freeModelID, fixture.providerID, "free-model-"+suffix, fixture.professionalModelID, "professional-model-"+suffix); err != nil {
 		t.Fatalf("seed quota models: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO model_price_versions
+  (model_id, currency, input_rate_nanos_per_million, output_rate_nanos_per_million, effective_at, created_by) VALUES
+  ($1, 'USD', 3250000000, 10000000000, now() - interval '1 hour', $3),
+  ($2, 'USD', 5000000000, 15000000000, now() - interval '1 hour', $3)`,
+		fixture.freeModelID, fixture.professionalModelID, fixture.adminID); err != nil {
+		t.Fatalf("seed quota model prices: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO gateway_keys (id, user_id, name, prefix, secret_digest) VALUES
   ($1, $2, 'Quota Key', 'llmg_quota', $3),

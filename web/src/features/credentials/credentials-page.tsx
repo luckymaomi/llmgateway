@@ -3,7 +3,13 @@ import { Edit3, PlugZap, Plus, Power, X } from 'lucide-react'
 import { useMemo, useRef, useState } from 'react'
 import { z } from 'zod'
 
-import { ApiProblem, catalogApi, type Credential, type CredentialProbeResult } from '@/api'
+import {
+  ApiProblem,
+  catalogApi,
+  type Credential,
+  type CredentialModelBinding,
+  type CredentialProbeResult,
+} from '@/api'
 import {
   clearPendingCredentialOperation,
   loadPendingCredentialOperation,
@@ -28,7 +34,15 @@ const pendingCredentialSchema = z.object({
   providerId: z.string().uuid(),
   label: z.string().min(1),
   resourceDomain: z.enum(['free', 'professional']),
-  authorizedModelIds: z.array(z.string().uuid()).min(1),
+  modelBindings: z
+    .array(
+      z.object({
+        modelId: z.string().uuid(),
+        priority: z.number().int().min(0).max(1000),
+        weight: z.number().int().min(1).max(1000),
+      }),
+    )
+    .min(1),
 })
 type PendingCredential = z.infer<typeof pendingCredentialSchema>
 type StatusOperation = {
@@ -112,9 +126,9 @@ export function CredentialsPage() {
         ),
       },
       {
-        accessorKey: 'authorizedModels',
-        header: '授权模型',
-        cell: ({ row }) => `${row.original.authorizedModels.length} 个`,
+        accessorKey: 'modelBindings',
+        header: '模型路由',
+        cell: ({ row }) => `${row.original.modelBindings.length} 个`,
       },
       {
         accessorKey: 'rpmLimit',
@@ -174,7 +188,7 @@ export function CredentialsPage() {
       credential.providerId === pendingOperation?.providerId &&
       credential.label === pendingOperation.label &&
       credential.resourceDomain === pendingOperation.resourceDomain &&
-      equalStringSets(credential.authorizedModelIds, pendingOperation.authorizedModelIds),
+      equalModelBindings(credential.modelBindings, pendingOperation.modelBindings),
   )
 
   return (
@@ -310,7 +324,7 @@ export function CredentialsPage() {
                 {credential.providerName} · {credential.maskedSecret}
               </span>
               <span>
-                {credential.authorizedModels.length} 个模型 · 成功率{' '}
+                {credential.modelBindings.length} 个模型 · 成功率{' '}
                 {formatPercent(credential.recentSuccessRate)}
               </span>
             </div>
@@ -399,8 +413,14 @@ function readPendingCredentialOperation(userId: string): PendingCredential | und
   return undefined
 }
 
-function equalStringSets(left: string[], right: string[]): boolean {
+function equalModelBindings(
+  left: CredentialModelBinding[],
+  right: Array<Omit<CredentialModelBinding, 'modelName'>>,
+): boolean {
   if (left.length !== right.length) return false
-  const expected = new Set(right)
-  return left.every((value) => expected.has(value))
+  const expected = new Map(right.map((binding) => [binding.modelId, binding]))
+  return left.every((binding) => {
+    const other = expected.get(binding.modelId)
+    return other?.priority === binding.priority && other.weight === binding.weight
+  })
 }

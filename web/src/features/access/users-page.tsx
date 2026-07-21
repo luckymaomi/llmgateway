@@ -1,6 +1,6 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Check, Pause, Play } from 'lucide-react'
-import { useMemo } from 'react'
+import { Check, KeyRound, LogOut, Pause, Play } from 'lucide-react'
+import { useMemo, useState } from 'react'
 
 import { accessApi, type UserAccount } from '@/api'
 import { hasCapability, useSession } from '@/app/session'
@@ -9,15 +9,19 @@ import { TableToolbar } from '@/components/data-table/table-toolbar'
 import { Page, PageHeader, PageSection } from '@/components/layout'
 import { StatusBadge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { useListSearch } from '@/hooks/use-list-search'
 import { formatDateTime, formatTokens } from '@/lib/format'
 
 import { AccessTabs } from './access-tabs'
+import { MemberPasswordDialog } from './member-password-dialog'
 
 export function UsersPage() {
   const session = useSession()
   const canWrite = hasCapability(session, 'access:write')
   const { state, setPage, setSearch, setStatus } = useListSearch()
+  const [passwordUser, setPasswordUser] = useState<UserAccount | null>(null)
+  const [sessionUser, setSessionUser] = useState<UserAccount | null>(null)
   const queryClient = useQueryClient()
   const query = useQuery({
     queryKey: ['users', state],
@@ -33,6 +37,10 @@ export function UsersPage() {
       decision: 'approve' | 'suspend' | 'activate'
     }) => accessApi.reviewUser(user.id, decision),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['users'] }),
+  })
+  const revokeSessions = useMutation({
+    mutationFn: (user: UserAccount) => accessApi.revokeUserSessions(user.id),
+    onSuccess: () => setSessionUser(null),
   })
   const columns = useMemo<ColumnDef<UserAccount, unknown>[]>(
     () => [
@@ -103,11 +111,32 @@ export function UsersPage() {
                   启用
                 </Button>
               ) : null}
+              {row.original.role === 'member' && row.original.status !== 'pending_review' ? (
+                <Button
+                  size="sm"
+                  variant="quiet"
+                  icon={<KeyRound size={15} />}
+                  onClick={() => setPasswordUser(row.original)}
+                >
+                  重置密码
+                </Button>
+              ) : null}
+              {row.original.status === 'active' ? (
+                <Button
+                  size="sm"
+                  variant="quiet"
+                  icon={<LogOut size={15} />}
+                  disabled={revokeSessions.isPending}
+                  onClick={() => setSessionUser(row.original)}
+                >
+                  撤销会话
+                </Button>
+              ) : null}
             </div>
           ) : null,
       },
     ],
-    [canWrite, review],
+    [canWrite, review, revokeSessions.isPending],
   )
 
   return (
@@ -134,7 +163,7 @@ export function UsersPage() {
           getRowId={(user) => user.id}
           loading={query.isLoading}
           fetching={query.isFetching}
-          error={query.error ?? review.error}
+          error={query.error ?? review.error ?? revokeSessions.error}
           onRetry={() => void query.refetch()}
           emptyLabel="没有符合条件的用户"
           page={query.data?.page ?? state.page}
@@ -156,6 +185,24 @@ export function UsersPage() {
           )}
         />
       </PageSection>
+      <MemberPasswordDialog
+        user={passwordUser}
+        onOpenChange={(open) => !open && setPasswordUser(null)}
+      />
+      <ConfirmDialog
+        open={sessionUser !== null}
+        onOpenChange={(open) => !open && setSessionUser(null)}
+        title="撤销活动会话"
+        description={
+          sessionUser?.id === session.userId
+            ? '保留当前会话并撤销其他活动会话。'
+            : `撤销 ${sessionUser?.displayName ?? ''} 的全部活动会话。`
+        }
+        confirmLabel="确认撤销"
+        onConfirm={() => sessionUser && revokeSessions.mutate(sessionUser)}
+        pending={revokeSessions.isPending}
+        danger
+      />
     </Page>
   )
 }

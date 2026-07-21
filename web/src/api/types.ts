@@ -56,6 +56,15 @@ export interface ProviderRecord {
 export interface ProviderKind {
   kind: string
   displayName: string
+  contract: {
+    referenceUrl: string
+    contractSnapshot: string
+    verifiedAt: string
+    referenceProvider?: string
+    verifiedModels: string[]
+    liveCapabilities: string[]
+    status: 'verified' | 'degraded'
+  }
 }
 
 export interface Provider extends ProviderRecord {
@@ -78,6 +87,7 @@ export interface ProviderUpdateInput {
 }
 
 export type ModelCapability = 'streaming' | 'tools' | 'reasoning' | 'structured_output'
+export type ReasoningMode = 'toggle' | 'effort' | 'hybrid'
 
 export interface Model {
   id: string
@@ -87,6 +97,7 @@ export interface Model {
   upstreamModelId: string
   resourceDomain: ResourceDomain
   capabilities: ModelCapability[]
+  reasoningMode?: ReasoningMode
   contextTokens: number
   status: EntityStatus
   verifiedAt?: string
@@ -98,6 +109,7 @@ export interface ModelInput {
   upstreamModelId: string
   resourceDomain: ResourceDomain
   capabilities: ModelCapability[]
+  reasoningMode?: ReasoningMode
   contextTokens?: number
 }
 
@@ -141,8 +153,7 @@ export interface Credential {
   maskedSecret: string
   resourceDomain: ResourceDomain
   status: EntityStatus
-  authorizedModelIds: string[]
-  authorizedModels: string[]
+  modelBindings: CredentialModelBinding[]
   rpmLimit?: number
   tpmLimit?: number
   concurrencyLimit?: number
@@ -157,12 +168,19 @@ export interface Credential {
   updatedAt: string
 }
 
+export interface CredentialModelBinding {
+  modelId: string
+  modelName: string
+  priority: number
+  weight: number
+}
+
 export interface CredentialInput {
   providerId: string
   label: string
   secret: string
   resourceDomain: ResourceDomain
-  authorizedModelIds: string[]
+  modelBindings: Array<Omit<CredentialModelBinding, 'modelName'>>
   rpmLimit?: number
   tpmLimit?: number
   concurrencyLimit?: number
@@ -225,6 +243,10 @@ export interface CreatedGatewayKey {
   secret: string
 }
 
+export interface SessionRevocation {
+  revokedSessions: number
+}
+
 export interface UsageRecord {
   id: string
   occurredAt: string
@@ -236,6 +258,44 @@ export interface UsageRecord {
   outputTokens: number
   usageSource: 'authoritative' | 'estimated'
   requestId: string
+}
+
+export interface ModelPriceVersion {
+  id: string
+  modelId: string
+  modelAlias: string
+  currency: string
+  inputPricePerMillionTokens: string
+  outputPricePerMillionTokens: string
+  effectiveAt: string
+  createdAt: string
+}
+
+export interface ModelPriceInput {
+  modelId: string
+  currency: string
+  inputPricePerMillionTokens: string
+  outputPricePerMillionTokens: string
+  effectiveAt: string
+}
+
+export interface CostSummary {
+  userId: string
+  userName: string
+  entitlementId: string
+  plan: 'token' | 'coding'
+  modelId: string
+  modelAlias: string
+  providerId: string
+  providerName: string
+  resourceDomain: ResourceDomain
+  currency: string
+  requestCount: number
+  inputTokens: number
+  outputTokens: number
+  inputCostNanos: string
+  outputCostNanos: string
+  totalCostNanos: string
 }
 
 export interface LedgerEntry {
@@ -331,6 +391,7 @@ export interface PlaygroundModel {
   alias: string
   providerName: string
   capabilities: ModelCapability[]
+  reasoningMode?: ReasoningMode
 }
 
 export interface PlaygroundMessage {
@@ -350,6 +411,7 @@ export interface PlaygroundRunInput {
   stream: boolean
   messages: Array<Pick<PlaygroundMessage, 'role' | 'content'>>
   tools?: Array<{ name: string; description: string; parameters: unknown }>
+  reasoningEnabled?: boolean
   reasoningEffort?: 'low' | 'medium' | 'high'
 }
 

@@ -2,37 +2,56 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"log/slog"
 	"os"
-	"os/signal"
-	"syscall"
 
 	"github.com/luckymaomi/llmgateway/internal/app"
+	"github.com/luckymaomi/llmgateway/internal/buildinfo"
 	"github.com/luckymaomi/llmgateway/internal/config"
 	"github.com/luckymaomi/llmgateway/internal/security"
 )
 
 func main() {
-	cfg, err := config.Load()
-	if err != nil {
-		slog.Error("invalid configuration", "error", err)
+	if len(os.Args) == 2 && os.Args[1] == "--version" {
+		fmt.Fprintln(os.Stdout, buildinfo.JSON())
+		return
+	}
+	if len(os.Args) == 2 && os.Args[1] == "--check-config" {
+		if _, err := config.Load(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Fprintln(os.Stdout, "configuration valid")
+		return
+	}
+	if err := runPlatform(runGateway); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
 
-	logger := slog.New(security.NewRedactingHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel()})))
+type gatewayRunner func(context.Context, io.Writer) error
+
+func runGateway(ctx context.Context, output io.Writer) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("invalid configuration: %w", err)
+	}
+
+	logger := slog.New(security.NewRedactingHandler(slog.NewJSONHandler(output, &slog.HandlerOptions{Level: cfg.LogLevel()})))
 	slog.SetDefault(logger)
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	application, err := app.New(ctx, cfg, logger)
 	if err != nil {
 		logger.Error("application initialization failed", "error", err)
-		os.Exit(1)
+		return err
 	}
 
 	if err := application.Run(ctx); err != nil {
 		logger.Error("application stopped with an error", "error", err)
-		os.Exit(1)
+		return err
 	}
+	return nil
 }

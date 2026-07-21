@@ -10,6 +10,7 @@ import (
 	"github.com/luckymaomi/llmgateway/internal/admission"
 	"github.com/luckymaomi/llmgateway/internal/config"
 	"github.com/luckymaomi/llmgateway/internal/coordination"
+	"github.com/luckymaomi/llmgateway/internal/observability"
 	"github.com/luckymaomi/llmgateway/internal/quota"
 	"github.com/luckymaomi/llmgateway/internal/registry"
 	"github.com/luckymaomi/llmgateway/internal/requestflow"
@@ -28,7 +29,7 @@ type runtimeRandom struct{}
 func (runtimeRandom) Intn(limit int) int       { return rand.IntN(limit) }
 func (runtimeRandom) Int63n(limit int64) int64 { return rand.Int64N(limit) }
 
-func newRequestWorkflow(cfg config.Config, connections *store.Connections, registryService *registry.Service, quotaService *quota.Service) (*requestflow.Service, error) {
+func newRequestWorkflow(cfg config.Config, connections *store.Connections, registryService *registry.Service, quotaService *quota.Service, runtimeMetrics *observability.RuntimeMetrics) (*requestflow.Service, error) {
 	rootCAs, err := providerRootCAs(cfg.Security.ProviderCABundleFile)
 	if err != nil {
 		return nil, fmt.Errorf("load provider CA bundle: %w", err)
@@ -94,7 +95,8 @@ func newRequestWorkflow(cfg config.Config, connections *store.Connections, regis
 		AllowLoopback: cfg.Profile == config.ProfileTest, MaxRedirects: 5, RootCAs: rootCAs,
 	})
 	workflow, err := requestflow.New(
-		store.NewRequestRepository(connections), accounting, registryService, admitter, coordinationAdapter, factory, router, retry, clock,
+		store.NewRequestRepository(connections), runtimeMetrics.ObserveAccounting(accounting), registryService,
+		runtimeMetrics.ObserveAdmitter(admitter), runtimeMetrics.ObserveCoordinator(coordinationAdapter), factory, router, retry, clock,
 		requestflow.Config{
 			MaxResponseBytes:           cfg.RequestFlow.MaxResponseBytes,
 			ExecutionHeartbeatInterval: cfg.RequestFlow.ExecutionHeartbeatInterval,
@@ -107,7 +109,7 @@ func newRequestWorkflow(cfg config.Config, connections *store.Connections, regis
 	if err != nil {
 		return nil, fmt.Errorf("initialize request workflow: %w", err)
 	}
-	return workflow, nil
+	return workflow.WithObserver(runtimeMetrics), nil
 }
 
 func providerRootCAs(path string) (*x509.CertPool, error) {

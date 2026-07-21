@@ -4,11 +4,15 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
+	"github.com/luckymaomi/llmgateway/internal/security"
 )
 
 func TestBootstrapIssuesAuthenticSession(t *testing.T) {
@@ -302,6 +306,91 @@ func TestGatewayKeyCreationRequiresAnActiveAdministrator(t *testing.T) {
 	}
 }
 
+func TestAdministratorResetsMemberPasswordWithStablePepperedMutationIdentity(t *testing.T) {
+	administratorID, memberID, idempotencyKey := uuid.New(), uuid.New(), uuid.New()
+	var firstFingerprint []byte
+	calls := 0
+	repository := &repositoryStub{
+		resetMemberPassword: func(_ context.Context, userID uuid.UUID, passwordHash string, actorID uuid.UUID, mutation PasswordResetMutation) (SessionRevocation, error) {
+			calls++
+			if userID != memberID || actorID != administratorID || mutation.IdempotencyKey != idempotencyKey || mutation.RequestID != "password-reset" {
+				t.Fatalf("password reset command = user %s actor %s mutation %+v", userID, actorID, mutation)
+			}
+			verification, err := security.VerifyPassword("replacement password", passwordHash, security.RecommendedPasswordParameters())
+			if err != nil || !verification.Match {
+				t.Fatalf("replacement password hash did not verify: %+v / %v", verification, err)
+			}
+			if len(mutation.RequestFingerprint) != 32 {
+				t.Fatalf("password reset fingerprint length = %d", len(mutation.RequestFingerprint))
+			}
+			if firstFingerprint == nil {
+				firstFingerprint = append([]byte(nil), mutation.RequestFingerprint...)
+			} else if !bytes.Equal(firstFingerprint, mutation.RequestFingerprint) {
+				t.Fatal("same password reset command changed its fingerprint")
+			}
+			return SessionRevocation{RevokedSessions: 2}, nil
+		},
+	}
+	service := newTestService(t, repository)
+	actor := Principal{UserID: administratorID, Role: RoleAdministrator, Status: StatusActive}
+	request := MutationRequest{IdempotencyKey: idempotencyKey, RequestID: "password-reset"}
+	for range 2 {
+		result, err := service.ResetMemberPassword(context.Background(), actor, memberID, "replacement password", request)
+		if err != nil || result.RevokedSessions != 2 {
+			t.Fatalf("ResetMemberPassword() = %+v, %v", result, err)
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("password reset repository calls = %d, want 2", calls)
+	}
+	if _, err := service.ResetMemberPassword(context.Background(), Principal{UserID: uuid.New(), Role: RoleMember, Status: StatusActive}, memberID, "replacement password", request); err != ErrForbidden {
+		t.Fatalf("member ResetMemberPassword() error = %v, want ErrForbidden", err)
+	}
+}
+
+func TestGatewayKeyReplacementPreservesScopeAndReplaysSecret(t *testing.T) {
+	actorID, ownerID, originalID, replacementID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	modelIDs := []uuid.UUID{uuid.New(), uuid.New()}
+	sort.Slice(modelIDs, func(i, j int) bool { return modelIDs[i].String() < modelIDs[j].String() })
+	lookupModelIDs := []uuid.UUID{modelIDs[1], modelIDs[0]}
+	expiresAt := time.Now().UTC().Add(24 * time.Hour)
+	var firstFingerprint []byte
+	repository := &repositoryStub{
+		gatewayKeyForReplacement: func(_ context.Context, keyID uuid.UUID) (GatewayKey, error) {
+			if keyID != originalID {
+				t.Fatalf("replacement lookup key = %s", keyID)
+			}
+			return GatewayKey{ID: originalID, UserID: ownerID, Name: strings.Repeat("a", maximumNameRunes), AuthorizedModelIDs: lookupModelIDs, ExpiresAt: &expiresAt}, nil
+		},
+		createGatewayKey: func(_ context.Context, input NewGatewayKey, persistedActorID uuid.UUID, mutation GatewayKeyMutation) (GatewayKey, error) {
+			if persistedActorID != actorID || input.ReplacesKeyID == nil || *input.ReplacesKeyID != originalID || input.UserID != ownerID ||
+				!slices.Equal(input.AuthorizedModelIDs, modelIDs) || input.ExpiresAt == nil || !input.ExpiresAt.Equal(expiresAt) || utf8.RuneCountInString(input.Name) > maximumNameRunes {
+				t.Fatalf("replacement persistence facts = actor %s input %+v", persistedActorID, input)
+			}
+			if firstFingerprint == nil {
+				firstFingerprint = append([]byte(nil), mutation.RequestFingerprint...)
+			} else if !bytes.Equal(firstFingerprint, mutation.RequestFingerprint) {
+				t.Fatal("replacement replay changed its fingerprint")
+			}
+			return GatewayKey{ID: replacementID, UserID: ownerID, Name: input.Name, Prefix: input.Prefix, AuthorizedModelIDs: input.AuthorizedModelIDs, ExpiresAt: input.ExpiresAt}, nil
+		},
+	}
+	service := newTestService(t, repository)
+	actor := Principal{UserID: actorID, Role: RoleAdministrator, Status: StatusActive}
+	request := MutationRequest{IdempotencyKey: uuid.New(), RequestID: "key-replacement"}
+	first, err := service.ReplaceGatewayKey(context.Background(), actor, originalID, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.ReplaceGatewayKey(context.Background(), actor, originalID, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID != replacementID || first.Secret == "" || second.Secret != first.Secret {
+		t.Fatalf("replacement replay = first %+v second %+v", first, second)
+	}
+}
+
 func newTestService(t *testing.T, repository Repository) *Service {
 	t.Helper()
 	service, err := NewService(repository, []byte("test-session-pepper-with-32-bytes"), []byte("test-api-key-pepper-with-32-bytes"))
@@ -312,14 +401,17 @@ func newTestService(t *testing.T, repository Repository) *Service {
 }
 
 type repositoryStub struct {
-	bootstrap        func(context.Context, NewUser) (User, error)
-	register         func(context.Context, []byte, NewUser) (User, error)
-	userDisplayNames func(context.Context, []uuid.UUID) (map[uuid.UUID]string, error)
-	createSession    func(context.Context, uuid.UUID, []byte, []byte, time.Time) (Principal, error)
-	replayInvitation func(context.Context, uuid.UUID, InvitationMutation) (Invitation, bool, error)
-	createInvitation func(context.Context, NewInvitation, uuid.UUID, InvitationMutation) (Invitation, error)
-	createGatewayKey func(context.Context, NewGatewayKey, uuid.UUID, GatewayKeyMutation) (GatewayKey, error)
-	revokeGatewayKey func(context.Context, uuid.UUID, uuid.UUID, bool) error
+	bootstrap                func(context.Context, NewUser) (User, error)
+	register                 func(context.Context, []byte, NewUser) (User, error)
+	userDisplayNames         func(context.Context, []uuid.UUID) (map[uuid.UUID]string, error)
+	createSession            func(context.Context, uuid.UUID, []byte, []byte, time.Time) (Principal, error)
+	replayInvitation         func(context.Context, uuid.UUID, InvitationMutation) (Invitation, bool, error)
+	createInvitation         func(context.Context, NewInvitation, uuid.UUID, InvitationMutation) (Invitation, error)
+	createGatewayKey         func(context.Context, NewGatewayKey, uuid.UUID, GatewayKeyMutation) (GatewayKey, error)
+	gatewayKeyForReplacement func(context.Context, uuid.UUID) (GatewayKey, error)
+	resetMemberPassword      func(context.Context, uuid.UUID, string, uuid.UUID, PasswordResetMutation) (SessionRevocation, error)
+	revokeUserSessions       func(context.Context, uuid.UUID, uuid.UUID, *uuid.UUID, string) (SessionRevocation, error)
+	revokeGatewayKey         func(context.Context, uuid.UUID, uuid.UUID, bool) error
 }
 
 func (r *repositoryStub) IsBootstrapped(context.Context) (bool, error) { return false, nil }
@@ -343,6 +435,18 @@ func (r *repositoryStub) ListUsers(context.Context, *Status, Page) (UserPage, er
 }
 func (r *repositoryStub) SetUserStatus(context.Context, uuid.UUID, Status, uuid.UUID) (User, error) {
 	return User{}, nil
+}
+func (r *repositoryStub) ResetMemberPassword(ctx context.Context, userID uuid.UUID, passwordHash string, actorID uuid.UUID, mutation PasswordResetMutation) (SessionRevocation, error) {
+	if r.resetMemberPassword == nil {
+		return SessionRevocation{}, nil
+	}
+	return r.resetMemberPassword(ctx, userID, passwordHash, actorID, mutation)
+}
+func (r *repositoryStub) RevokeUserSessions(ctx context.Context, userID, actorID uuid.UUID, preservedSessionID *uuid.UUID, requestID string) (SessionRevocation, error) {
+	if r.revokeUserSessions == nil {
+		return SessionRevocation{}, nil
+	}
+	return r.revokeUserSessions(ctx, userID, actorID, preservedSessionID, requestID)
 }
 func (r *repositoryStub) CreateSession(ctx context.Context, id uuid.UUID, token, csrf []byte, expires time.Time) (Principal, error) {
 	return r.createSession(ctx, id, token, csrf, expires)
@@ -372,6 +476,12 @@ func (r *repositoryStub) RevokeInvitation(context.Context, uuid.UUID, uuid.UUID)
 }
 func (r *repositoryStub) CreateGatewayKey(ctx context.Context, input NewGatewayKey, actorID uuid.UUID, mutation GatewayKeyMutation) (GatewayKey, error) {
 	return r.createGatewayKey(ctx, input, actorID, mutation)
+}
+func (r *repositoryStub) GatewayKeyForReplacement(ctx context.Context, keyID uuid.UUID) (GatewayKey, error) {
+	if r.gatewayKeyForReplacement == nil {
+		return GatewayKey{}, ErrNotFound
+	}
+	return r.gatewayKeyForReplacement(ctx, keyID)
 }
 func (r *repositoryStub) ListGatewayKeys(context.Context, uuid.UUID) ([]GatewayKey, error) {
 	return []GatewayKey{}, nil

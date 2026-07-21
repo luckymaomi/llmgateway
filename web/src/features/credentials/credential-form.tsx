@@ -15,6 +15,9 @@ import { DialogFrame } from '@/components/ui/dialog'
 import { Field, Input, NativeSelect } from '@/components/ui/field'
 import { FormProblem } from '@/features/auth/form-problem'
 
+import { modelBindingsSchema } from './model-binding-form'
+import { ModelBindingsField } from './model-bindings-field'
+
 const optionalPositiveInteger = z
   .number()
   .int()
@@ -27,7 +30,7 @@ const schema = z.object({
   label: z.string().trim().min(2, '请输入凭据名称'),
   secret: z.string().min(8, '凭据至少需要 8 个字符'),
   resourceDomain: z.enum(['free', 'professional']),
-  authorizedModelIds: z.array(z.string().uuid()).min(1, '请选择至少一个模型'),
+  modelBindings: modelBindingsSchema,
   rpmLimit: optionalPositiveInteger,
   tpmLimit: optionalPositiveInteger,
   concurrencyLimit: optionalPositiveInteger,
@@ -50,6 +53,7 @@ export function CredentialForm({
   const form = useForm<Values>({ resolver: zodResolver(schema), defaultValues: defaultValues() })
   const providerId = useWatch({ control: form.control, name: 'providerId' })
   const resourceDomain = useWatch({ control: form.control, name: 'resourceDomain' })
+  const modelBindings = useWatch({ control: form.control, name: 'modelBindings' })
   const providers = useQuery({
     queryKey: ['providers', 'credential-form'],
     queryFn: ({ signal }) => catalogApi.providers({ page: 1, pageSize: 100 }, signal),
@@ -106,7 +110,7 @@ export function CredentialForm({
         providerId: submission.input.providerId,
         label: submission.input.label,
         resourceDomain: submission.input.resourceDomain,
-        authorizedModelIds: submission.input.authorizedModelIds,
+        modelBindings: submission.input.modelBindings,
       })
     ) {
       setPersistenceFailed(true)
@@ -195,7 +199,7 @@ export function CredentialForm({
             autoFocus
             disabled={controlsLocked}
             {...form.register('providerId', {
-              onChange: () => form.setValue('authorizedModelIds', []),
+              onChange: () => form.setValue('modelBindings', []),
             })}
           >
             <option value="">请选择</option>
@@ -231,7 +235,7 @@ export function CredentialForm({
             id="credential-domain"
             disabled={controlsLocked}
             {...form.register('resourceDomain', {
-              onChange: () => form.setValue('authorizedModelIds', []),
+              onChange: () => form.setValue('modelBindings', []),
             })}
           >
             <option value="free">免费资源域</option>
@@ -239,26 +243,25 @@ export function CredentialForm({
           </NativeSelect>
         </Field>
         <Field
-          label="授权模型"
+          label="模型路由"
           htmlFor="credential-models"
-          error={form.formState.errors.authorizedModelIds?.message}
+          className="credential-routing-field"
+          error={form.formState.errors.modelBindings?.message}
         >
-          <div id="credential-models" className="check-grid">
-            {models.data?.items.map((model) => (
-              <label key={model.id}>
-                <input
-                  type="checkbox"
-                  value={model.id}
-                  disabled={controlsLocked}
-                  {...form.register('authorizedModelIds')}
-                />
-                <span>{model.alias}</span>
-              </label>
-            ))}
+          <>
+            <ModelBindingsField
+              id="credential-models"
+              models={models.data?.items ?? []}
+              value={modelBindings}
+              disabled={controlsLocked}
+              onChange={(bindings) =>
+                form.setValue('modelBindings', bindings, { shouldValidate: true })
+              }
+            />
             {providerId && !models.isLoading && models.data?.items.length === 0 ? (
               <span className="field__hint">该 Provider 与资源域下没有可用模型。</span>
             ) : null}
-          </div>
+          </>
         </Field>
         <Field label="RPM" htmlFor="credential-rpm" error={form.formState.errors.rpmLimit?.message}>
           <Input
@@ -316,7 +319,7 @@ function defaultValues(): Values {
     label: '',
     secret: '',
     resourceDomain: 'free',
-    authorizedModelIds: [],
+    modelBindings: [],
   }
 }
 
@@ -326,7 +329,7 @@ function inputFrom(values: Values): CredentialInput {
     label: values.label.trim(),
     secret: values.secret,
     resourceDomain: values.resourceDomain,
-    authorizedModelIds: values.authorizedModelIds,
+    modelBindings: values.modelBindings,
     ...(values.rpmLimit !== undefined ? { rpmLimit: values.rpmLimit } : {}),
     ...(values.tpmLimit !== undefined ? { tpmLimit: values.tpmLimit } : {}),
     ...(values.concurrencyLimit !== undefined ? { concurrencyLimit: values.concurrencyLimit } : {}),

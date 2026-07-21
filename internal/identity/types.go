@@ -139,6 +139,17 @@ type NewGatewayKey struct {
 	SecretDigest       []byte
 	AuthorizedModelIDs []uuid.UUID
 	ExpiresAt          *time.Time
+	ReplacesKeyID      *uuid.UUID
+}
+
+type SessionRevocation struct {
+	RevokedSessions int64 `json:"revoked_sessions"`
+}
+
+type PasswordResetMutation struct {
+	IdempotencyKey     uuid.UUID
+	RequestFingerprint []byte
+	RequestID          string
 }
 
 type NewUser struct {
@@ -167,6 +178,8 @@ type Repository interface {
 	UserDisplayNames(context.Context, []uuid.UUID) (map[uuid.UUID]string, error)
 	ListUsers(context.Context, *Status, Page) (UserPage, error)
 	SetUserStatus(context.Context, uuid.UUID, Status, uuid.UUID) (User, error)
+	ResetMemberPassword(context.Context, uuid.UUID, string, uuid.UUID, PasswordResetMutation) (SessionRevocation, error)
+	RevokeUserSessions(context.Context, uuid.UUID, uuid.UUID, *uuid.UUID, string) (SessionRevocation, error)
 
 	CreateSession(context.Context, uuid.UUID, []byte, []byte, time.Time) (Principal, error)
 	FindSession(context.Context, []byte) (Principal, error)
@@ -179,6 +192,7 @@ type Repository interface {
 	RevokeInvitation(context.Context, uuid.UUID, uuid.UUID) error
 
 	CreateGatewayKey(context.Context, NewGatewayKey, uuid.UUID, GatewayKeyMutation) (GatewayKey, error)
+	GatewayKeyForReplacement(context.Context, uuid.UUID) (GatewayKey, error)
 	ListGatewayKeys(context.Context, uuid.UUID) ([]GatewayKey, error)
 	RevokeGatewayKey(context.Context, uuid.UUID, uuid.UUID, bool) error
 	FindGatewayPrincipal(context.Context, []byte) (GatewayPrincipal, error)

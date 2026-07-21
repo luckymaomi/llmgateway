@@ -282,7 +282,6 @@ try {
   if ($model.data.alias -ne "core-chat") {
     throw "Model creation did not persist the public alias."
   }
-
   $ungrantedModelBody = @{
     providerId      = $provider.data.id
     alias           = "core-not-granted"
@@ -296,25 +295,40 @@ try {
   if ($ungrantedModel.data.alias -ne "core-not-granted") {
     throw "Second model creation did not persist the public alias."
   }
+  $ungrantedPriceBody = @{
+    modelId = $ungrantedModel.data.id; currency = "USD"; inputPricePerMillionTokens = "0"; outputPricePerMillionTokens = "0"
+    effectiveAt = (Get-Date).ToUniversalTime().AddMinutes(-1).ToString("o")
+  } | ConvertTo-Json
+  $null = Invoke-RestMethod -Method Post -Uri "$baseURL/api/control/model-prices" -WebSession $adminSession `
+    -Headers @{ "X-CSRF-Token" = $adminCSRF; "Idempotency-Key" = [guid]::NewGuid().ToString() } `
+    -ContentType "application/json" -Body $ungrantedPriceBody
 
   $credentialBody = @{
     providerId       = $provider.data.id
     label            = "Core fixture credential"
     secret           = "core-upstream-secret"
     resourceDomain   = "free"
-    authorizedModelIds = @($model.data.id, $ungrantedModel.data.id)
+    modelBindings     = @(
+      @{ modelId = $model.data.id; priority = 10; weight = 70 },
+      @{ modelId = $ungrantedModel.data.id; priority = 20; weight = 30 }
+    )
     rpmLimit         = 60
     tpmLimit         = 100000
     concurrencyLimit = 2
-  } | ConvertTo-Json
+  } | ConvertTo-Json -Depth 5
   $credentialIdempotencyKey = [guid]::NewGuid().ToString()
   $credential = Invoke-RestMethod -Method Post -Uri "$baseURL/api/control/credentials" -WebSession $adminSession `
     -Headers @{ "X-CSRF-Token" = $adminCSRF; "Idempotency-Key" = $credentialIdempotencyKey } `
     -ContentType "application/json" -Body $credentialBody
-  if ($credential.data.authorizedModels.Count -ne 2 -or
-      $credential.data.authorizedModels -notcontains "core-chat" -or
-      $credential.data.authorizedModels -notcontains "core-not-granted") {
-    throw "Credential creation did not atomically persist both model bindings."
+  $credentialBindings = @($credential.data.modelBindings | Sort-Object priority)
+  if ($credentialBindings.Count -ne 2 -or
+      $credentialBindings[0].modelName -ne "core-chat" -or
+      $credentialBindings[0].priority -ne 10 -or
+      $credentialBindings[0].weight -ne 70 -or
+      $credentialBindings[1].modelName -ne "core-not-granted" -or
+      $credentialBindings[1].priority -ne 20 -or
+      $credentialBindings[1].weight -ne 30) {
+    throw "Credential creation did not atomically persist both model routing bindings."
   }
   $credentialReplay = Invoke-RestMethod -Method Post -Uri "$baseURL/api/control/credentials" -WebSession $adminSession `
     -Headers @{ "X-CSRF-Token" = $adminCSRF; "Idempotency-Key" = $credentialIdempotencyKey } `
@@ -327,11 +341,14 @@ try {
     label            = "Different credential input"
     secret           = "core-upstream-secret"
     resourceDomain   = "free"
-    authorizedModelIds = @($model.data.id, $ungrantedModel.data.id)
+    modelBindings     = @(
+      @{ modelId = $model.data.id; priority = 10; weight = 70 },
+      @{ modelId = $ungrantedModel.data.id; priority = 20; weight = 30 }
+    )
     rpmLimit         = 60
     tpmLimit         = 100000
     concurrencyLimit = 2
-  } | ConvertTo-Json
+  } | ConvertTo-Json -Depth 5
   Assert-HTTPFailureStatus -ExpectedStatus 409 -FailureMessage "A reused credential idempotency key accepted different input." -Action {
     Invoke-RestMethod -Method Post -Uri "$baseURL/api/control/credentials" -WebSession $adminSession `
       -Headers @{ "X-CSRF-Token" = $adminCSRF; "Idempotency-Key" = $credentialIdempotencyKey } `
@@ -350,8 +367,8 @@ try {
   }
 
   $credentialFacts = & $docker exec $postgres.Container psql -v ON_ERROR_STOP=1 -U llmgateway -d llmgateway_core -Atc `
-    "SELECT (SELECT count(*) FROM provider_credentials WHERE id = '$($credential.data.id)') || '|' || (SELECT count(*) FROM credential_mutations WHERE credential_id = '$($credential.data.id)') || '|' || (SELECT count(*) FROM credential_models WHERE credential_id = '$($credential.data.id)') || '|' || (SELECT count(*) FROM audit_events WHERE action = 'credential.created' AND target_id = '$($credential.data.id)')"
-  if ($LASTEXITCODE -ne 0 -or $credentialFacts -ne "1|1|2|1") {
+    "SELECT (SELECT count(*) FROM provider_credentials WHERE id = '$($credential.data.id)') || '|' || (SELECT count(*) FROM credential_mutations WHERE credential_id = '$($credential.data.id)') || '|' || (SELECT count(*) FROM credential_models WHERE credential_id = '$($credential.data.id)') || '|' || (SELECT count(*) FROM audit_events WHERE action = 'credential.created' AND target_id = '$($credential.data.id)') || '|' || (SELECT string_agg(priority::text || ':' || weight::text, ',' ORDER BY priority) FROM credential_models WHERE credential_id = '$($credential.data.id)')"
+  if ($LASTEXITCODE -ne 0 -or $credentialFacts -ne "1|1|2|1|10:70,20:30") {
     throw "Credential mutation facts were not atomic and singular: $credentialFacts"
   }
   $eligibleCredentialCount = & $docker exec $postgres.Container psql -v ON_ERROR_STOP=1 -U llmgateway -d llmgateway_core -Atc `
@@ -404,8 +421,8 @@ try {
   }
 
   $configurationFacts = & $docker exec $postgres.Container psql -v ON_ERROR_STOP=1 -U llmgateway -d llmgateway_core -Atc `
-    "SELECT (SELECT count(*) FROM config_revision_providers WHERE revision_id = '$($revision.data.id)') || '|' || (SELECT count(*) FROM config_revision_models WHERE revision_id = '$($revision.data.id)') || '|' || (SELECT count(*) FROM config_revision_credentials WHERE revision_id = '$($revision.data.id)') || '|' || (SELECT count(*) FROM config_revision_routes WHERE revision_id = '$($revision.data.id)') || '|' || (SELECT version FROM active_config WHERE singleton = true AND revision_id = '$($revision.data.id)') || '|' || (SELECT count(*) FROM config_mutations WHERE revision_id = '$($revision.data.id)')"
-  if ($LASTEXITCODE -ne 0 -or $configurationFacts -ne "1|2|1|2|1|2") {
+    "SELECT (SELECT count(*) FROM config_revision_providers WHERE revision_id = '$($revision.data.id)') || '|' || (SELECT count(*) FROM config_revision_models WHERE revision_id = '$($revision.data.id)') || '|' || (SELECT count(*) FROM config_revision_credentials WHERE revision_id = '$($revision.data.id)') || '|' || (SELECT count(*) FROM config_revision_routes WHERE revision_id = '$($revision.data.id)') || '|' || (SELECT version FROM active_config WHERE singleton = true AND revision_id = '$($revision.data.id)') || '|' || (SELECT count(*) FROM config_mutations WHERE revision_id = '$($revision.data.id)') || '|' || (SELECT string_agg(priority::text || ':' || weight::text, ',' ORDER BY priority) FROM config_revision_routes WHERE revision_id = '$($revision.data.id)')"
+  if ($LASTEXITCODE -ne 0 -or $configurationFacts -ne "1|2|1|2|1|2|10:70,20:30") {
     throw "Configuration capture and publication facts were not atomic and singular: $configurationFacts"
   }
 
@@ -598,6 +615,28 @@ try {
     messages              = @(@{ role = "user"; content = "hello from the real core flow" })
     max_completion_tokens = 64
   } | ConvertTo-Json -Depth 8
+  $missingPriceStatsBefore = Invoke-RestMethod -Uri "$providerAdminURL/stats"
+  $missingPriceKey = [guid]::NewGuid().ToString()
+  Assert-HTTPFailureStatus -ExpectedStatus 409 -FailureMessage "A request without an effective model price was not rejected." -Action {
+    Invoke-WebRequest -UseBasicParsing -Method Post -Uri "$baseURL/v1/chat/completions" `
+      -Headers @{ Authorization = "Bearer $gatewayKeySecret"; "Idempotency-Key" = $missingPriceKey } `
+      -ContentType "application/json" -Body $chatBody
+  }
+  $missingPriceStatsAfter = Invoke-RestMethod -Uri "$providerAdminURL/stats"
+  $missingPriceRequestCount = & $docker exec $postgres.Container psql -v ON_ERROR_STOP=1 -U llmgateway -d llmgateway_core -Atc `
+    "SELECT count(*) FROM requests WHERE gateway_key_id = '$($createdKey.data.key.id)' AND idempotency_key = '$missingPriceKey'"
+  if ($missingPriceStatsAfter.completed -ne $missingPriceStatsBefore.completed -or
+      $missingPriceStatsAfter.rate_limited -ne $missingPriceStatsBefore.rate_limited -or
+      $missingPriceRequestCount -ne "0") {
+    throw "A missing model price reached the Provider or persisted a partial request."
+  }
+  $zeroPriceBody = @{
+    modelId = $model.data.id; currency = "USD"; inputPricePerMillionTokens = "3.25"; outputPricePerMillionTokens = "10"
+    effectiveAt = (Get-Date).ToUniversalTime().AddMinutes(-1).ToString("o")
+  } | ConvertTo-Json
+  $zeroPrice = Invoke-RestMethod -Method Post -Uri "$baseURL/api/control/model-prices" -WebSession $adminSession `
+    -Headers @{ "X-CSRF-Token" = $adminCSRF; "Idempotency-Key" = [guid]::NewGuid().ToString() } `
+    -ContentType "application/json" -Body $zeroPriceBody
   $chatResponse = Invoke-WebRequest -UseBasicParsing -Method Post -Uri "$baseURL/v1/chat/completions" `
     -Headers @{ Authorization = "Bearer $gatewayKeySecret"; "Idempotency-Key" = [guid]::NewGuid().ToString() } `
     -ContentType "application/json" -Body $chatBody
@@ -612,9 +651,47 @@ try {
     throw "The public chat completion did not return the canonical fixture response and request identity."
   }
   $completedRequestFacts = & $docker exec $postgres.Container psql -v ON_ERROR_STOP=1 -U llmgateway -d llmgateway_core -Atc `
-    "SELECT request.status || '|' || reservation.state || '|' || reservation.charged_tokens || '|' || reservation.usage_source || '|' || coalesce(request.input_tokens, -1) || '|' || coalesce(request.output_tokens, -1) || '|' || (SELECT count(*) FROM request_attempts attempt WHERE attempt.request_id = request.id AND attempt.status = 'completed') FROM requests request JOIN ledger_reservations reservation ON reservation.request_id = request.id WHERE request.id = '$gatewayRequestID'"
-  if ($LASTEXITCODE -ne 0 -or $completedRequestFacts -ne "completed|settled|6|authoritative|4|2|1") {
+    "SELECT request.status || '|' || reservation.state || '|' || reservation.charged_tokens || '|' || reservation.usage_source || '|' || coalesce(request.input_tokens, -1) || '|' || coalesce(request.output_tokens, -1) || '|' || request.cost_currency || '|' || request.input_cost_nanos || '|' || request.output_cost_nanos || '|' || request.total_cost_nanos || '|' || (SELECT count(*) FROM request_attempts attempt WHERE attempt.request_id = request.id AND attempt.status = 'completed') FROM requests request JOIN ledger_reservations reservation ON reservation.request_id = request.id WHERE request.id = '$gatewayRequestID'"
+  if ($LASTEXITCODE -ne 0 -or $completedRequestFacts -ne "completed|settled|6|authoritative|4|2|USD|13000|20000|33000|1") {
     throw "The successful chat request did not settle one authoritative request/reservation/attempt fact: $completedRequestFacts"
+  }
+  $newPriceEffectiveAt = (Get-Date).ToUniversalTime().AddMilliseconds(-1).ToString("o")
+  $newPriceBody = @{
+    modelId = $model.data.id; currency = "USD"; inputPricePerMillionTokens = "6.5"; outputPricePerMillionTokens = "20"
+    effectiveAt = $newPriceEffectiveAt
+  } | ConvertTo-Json
+  $newPriceIdempotencyKey = [guid]::NewGuid().ToString()
+  $newPrice = Invoke-RestMethod -Method Post -Uri "$baseURL/api/control/model-prices" -WebSession $adminSession `
+    -Headers @{ "X-CSRF-Token" = $adminCSRF; "Idempotency-Key" = $newPriceIdempotencyKey } `
+    -ContentType "application/json" -Body $newPriceBody
+  $replayedPrice = Invoke-RestMethod -Method Post -Uri "$baseURL/api/control/model-prices" -WebSession $adminSession `
+    -Headers @{ "X-CSRF-Token" = $adminCSRF; "Idempotency-Key" = $newPriceIdempotencyKey } `
+    -ContentType "application/json" -Body $newPriceBody
+  if ($replayedPrice.data.id -ne $newPrice.data.id) { throw "Price idempotency replay created another version." }
+  $conflictingPriceBody = @{
+    modelId = $model.data.id; currency = "USD"; inputPricePerMillionTokens = "6.5"; outputPricePerMillionTokens = "21"
+    effectiveAt = $newPriceEffectiveAt
+  } | ConvertTo-Json
+  Assert-HTTPFailureStatus -ExpectedStatus 409 -FailureMessage "A conflicting price idempotency replay was accepted." -Action {
+    Invoke-RestMethod -Method Post -Uri "$baseURL/api/control/model-prices" -WebSession $adminSession `
+      -Headers @{ "X-CSRF-Token" = $adminCSRF; "Idempotency-Key" = $newPriceIdempotencyKey } `
+      -ContentType "application/json" -Body $conflictingPriceBody
+  }
+  $immutablePriceUpdate = Invoke-LLMGatewayNativeProbe {
+    & $docker exec $postgres.Container psql -v ON_ERROR_STOP=1 -U llmgateway -d llmgateway_core -c `
+      "UPDATE model_price_versions SET currency = 'EUR' WHERE id = '$($zeroPrice.data.id)'"
+  }
+  if ($immutablePriceUpdate.ExitCode -eq 0) { throw "PostgreSQL allowed an existing model price version to change." }
+  $historicalCostFacts = & $docker exec $postgres.Container psql -v ON_ERROR_STOP=1 -U llmgateway -d llmgateway_core -Atc `
+    "SELECT cost_currency || '|' || input_rate_nanos_per_million || '|' || output_rate_nanos_per_million || '|' || total_cost_nanos FROM requests WHERE id = '$gatewayRequestID'"
+  if ($historicalCostFacts -ne "USD|3250000000|10000000000|33000") { throw "A later price version changed historical request cost." }
+  $costSummaries = Invoke-RestMethod -Uri "$baseURL/api/control/costs?search=core-chat&page=1&pageSize=20" -WebSession $adminSession
+  $firstCostSummary = @($costSummaries.data.items | Where-Object { $_.modelAlias -eq "core-chat" -and $_.userName -eq "Member" }) | Select-Object -First 1
+  if (-not $firstCostSummary -or $firstCostSummary.currency -ne "USD" -or $firstCostSummary.totalCostNanos -ne "33000") {
+    throw "Administrator cost aggregation did not expose the frozen request cost."
+  }
+  Assert-HTTPFailureStatus -ExpectedStatus 403 -FailureMessage "A member unexpectedly read procurement cost facts." -Action {
+    Invoke-RestMethod -Uri "$baseURL/api/control/costs?page=1&pageSize=20" -WebSession $memberSession
   }
 
   $responseBody = @{
@@ -902,7 +979,7 @@ try {
     messages              = @(@{ role = "user"; content = "drop after read" })
     max_completion_tokens = 64
   } | ConvertTo-Json -Depth 8
-  Assert-HTTPFailureStatus -ExpectedStatus 502 -FailureMessage "A connection drop after the Provider read the request did not return an uncertain upstream error." -Action {
+  Assert-HTTPFailureStatus -ExpectedStatus 409 -FailureMessage "A connection drop after the Provider read the request did not return an uncertain upstream error." -Action {
     Invoke-WebRequest -UseBasicParsing -Method Post -Uri "$baseURL/v1/chat/completions" `
       -Headers @{ Authorization = "Bearer $gatewayKeySecret"; "Idempotency-Key" = $uncertainIdempotencyKey } `
       -ContentType "application/json" -Body $uncertainChatBody
@@ -955,15 +1032,15 @@ try {
   $unknownReserveEventID = [guid]::NewGuid().ToString()
   $recoveryFixtureSQL = @"
 BEGIN;
-INSERT INTO requests (id, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream, updated_at)
-VALUES ('$queuedRequestID', decode(repeat('11', 32), 'hex'), '$($member.id)', '$($createdKey.data.key.id)', '$($model.data.id)', '$($entitlement.data.id)', '$($revision.data.id)', 'free', 'queued', false, now() - interval '2 minutes');
+INSERT INTO requests (id, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, status, stream, updated_at)
+VALUES ('$queuedRequestID', decode(repeat('11', 32), 'hex'), '$($member.id)', '$($createdKey.data.key.id)', '$($model.data.id)', '$($entitlement.data.id)', '$($revision.data.id)', 'free', '$($zeroPrice.data.id)', 'USD', 3250000000, 10000000000, 'queued', false, now() - interval '2 minutes');
 INSERT INTO ledger_events (id, user_id, entitlement_id, request_id, reservation_id, kind, token_delta, reserved_tokens, usage_source, source_event_id)
 VALUES ('$queuedReserveEventID', '$($member.id)', '$($entitlement.data.id)', '$queuedRequestID', '$queuedReservationID', 'reservation', -20, 20, 'estimated', '$queuedReservationID');
 INSERT INTO ledger_reservations (id, entitlement_id, request_id, state, reserved_tokens, reserve_event_id)
 VALUES ('$queuedReservationID', '$($entitlement.data.id)', '$queuedRequestID', 'reserved', 20, '$queuedReserveEventID');
 
-INSERT INTO requests (id, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at)
-VALUES ('$settlementRequestID', decode(repeat('22', 32), 'hex'), '$($member.id)', '$($createdKey.data.key.id)', '$($model.data.id)', '$($entitlement.data.id)', '$($revision.data.id)', 'free', 'dispatching', false, '$settlementExecutionID', 1, now() - interval '2 minutes', now() - interval '2 minutes');
+INSERT INTO requests (id, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at)
+VALUES ('$settlementRequestID', decode(repeat('22', 32), 'hex'), '$($member.id)', '$($createdKey.data.key.id)', '$($model.data.id)', '$($entitlement.data.id)', '$($revision.data.id)', 'free', '$($zeroPrice.data.id)', 'USD', 3250000000, 10000000000, 'dispatching', false, '$settlementExecutionID', 1, now() - interval '2 minutes', now() - interval '2 minutes');
 INSERT INTO request_attempts (id, request_id, execution_id, execution_generation, credential_id, sequence, status, sent_at, completed_at, input_tokens, output_tokens, usage_source)
 VALUES ('$settlementAttemptID', '$settlementRequestID', '$settlementExecutionID', 1, '$($credential.data.id)', 1, 'completed', now() - interval '2 minutes', now() - interval '2 minutes', 5, 3, 'authoritative');
 INSERT INTO ledger_events (id, user_id, entitlement_id, request_id, reservation_id, kind, token_delta, reserved_tokens, usage_source, source_event_id)
@@ -971,8 +1048,8 @@ VALUES ('$settlementReserveEventID', '$($member.id)', '$($entitlement.data.id)',
 INSERT INTO ledger_reservations (id, entitlement_id, request_id, state, reserved_tokens, reserve_event_id)
 VALUES ('$settlementReservationID', '$($entitlement.data.id)', '$settlementRequestID', 'reserved', 20, '$settlementReserveEventID');
 
-INSERT INTO requests (id, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at)
-VALUES ('$unknownRequestID', decode(repeat('33', 32), 'hex'), '$($member.id)', '$($createdKey.data.key.id)', '$($model.data.id)', '$($entitlement.data.id)', '$($revision.data.id)', 'free', 'dispatching', false, '$unknownExecutionID', 1, now() - interval '2 minutes', now() - interval '2 minutes');
+INSERT INTO requests (id, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at)
+VALUES ('$unknownRequestID', decode(repeat('33', 32), 'hex'), '$($member.id)', '$($createdKey.data.key.id)', '$($model.data.id)', '$($entitlement.data.id)', '$($revision.data.id)', 'free', '$($zeroPrice.data.id)', 'USD', 3250000000, 10000000000, 'dispatching', false, '$unknownExecutionID', 1, now() - interval '2 minutes', now() - interval '2 minutes');
 INSERT INTO request_attempts (id, request_id, execution_id, execution_generation, credential_id, sequence, status, sent_at)
 VALUES ('$unknownAttemptID', '$unknownRequestID', '$unknownExecutionID', 1, '$($credential.data.id)', 1, 'sending', now() - interval '2 minutes');
 INSERT INTO ledger_events (id, user_id, entitlement_id, request_id, reservation_id, kind, token_delta, reserved_tokens, usage_source, source_event_id)
@@ -992,13 +1069,13 @@ COMMIT;
   $recoveryDeadline = (Get-Date).AddSeconds(15)
   do {
     $recoveryFacts = & $docker exec $postgres.Container psql -v ON_ERROR_STOP=1 -U llmgateway -d llmgateway_core -Atc `
-      "SELECT (SELECT status::text FROM requests WHERE id = '$queuedRequestID') || '|' || (SELECT state::text FROM ledger_reservations WHERE request_id = '$queuedRequestID') || '|' || (SELECT status::text FROM requests WHERE id = '$settlementRequestID') || '|' || (SELECT state::text FROM ledger_reservations WHERE request_id = '$settlementRequestID') || '|' || (SELECT charged_tokens FROM ledger_reservations WHERE request_id = '$settlementRequestID') || '|' || (SELECT status::text FROM requests WHERE id = '$unknownRequestID') || '|' || (SELECT state::text FROM ledger_reservations WHERE request_id = '$unknownRequestID') || '|' || (SELECT status::text FROM request_attempts WHERE id = '$unknownAttemptID')"
-    if ($recoveryFacts -eq "failed|released|completed|settled|8|uncertain|reserved|uncertain") {
+      "SELECT (SELECT status::text FROM requests WHERE id = '$queuedRequestID') || '|' || (SELECT state::text FROM ledger_reservations WHERE request_id = '$queuedRequestID') || '|' || (SELECT status::text FROM requests WHERE id = '$settlementRequestID') || '|' || (SELECT state::text FROM ledger_reservations WHERE request_id = '$settlementRequestID') || '|' || (SELECT charged_tokens FROM ledger_reservations WHERE request_id = '$settlementRequestID') || '|' || (SELECT total_cost_nanos FROM requests WHERE id = '$settlementRequestID') || '|' || (SELECT status::text FROM requests WHERE id = '$unknownRequestID') || '|' || (SELECT state::text FROM ledger_reservations WHERE request_id = '$unknownRequestID') || '|' || (SELECT status::text FROM request_attempts WHERE id = '$unknownAttemptID') || '|' || (SELECT (total_cost_nanos IS NULL)::text FROM requests WHERE id = '$unknownRequestID')"
+    if ($recoveryFacts -eq "failed|released|completed|settled|8|46250|uncertain|reserved|uncertain|true") {
       break
     }
     Start-Sleep -Milliseconds 100
   } while ((Get-Date) -lt $recoveryDeadline)
-  if ($LASTEXITCODE -ne 0 -or $recoveryFacts -ne "failed|released|completed|settled|8|uncertain|reserved|uncertain") {
+  if ($LASTEXITCODE -ne 0 -or $recoveryFacts -ne "failed|released|completed|settled|8|46250|uncertain|reserved|uncertain|true") {
     throw "Gateway restart did not recover queued, known-usage, and unknown-side-effect facts: $recoveryFacts"
   }
 
@@ -1111,6 +1188,9 @@ COMMIT;
     })
   if ($matchingUsage.Count -ne 1 -or @($memberUsage.data.items | Where-Object { $_.userName -ne "Member" }).Count -ne 0) {
     throw "Member usage did not expose only the authenticated owner's authoritative request facts."
+  }
+  if (@($memberUsage.data.items | Where-Object { $_.PSObject.Properties.Name -contains "totalCostNanos" }).Count -ne 0) {
+    throw "Member usage exposed procurement cost facts."
   }
   $administratorUsage = Invoke-RestMethod -Uri "$baseURL/api/control/usage?search=$gatewayRequestID&page=1&pageSize=20" -WebSession $adminSession
   if ($administratorUsage.data.total -ne 1 -or $administratorUsage.data.items[0].requestId -ne $gatewayRequestID) {

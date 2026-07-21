@@ -72,6 +72,42 @@ func TestAgnesBuildsThinkingToolRequest(t *testing.T) {
 	}`)
 }
 
+func TestGeminiBuildsReasoningToolReplayRequest(t *testing.T) {
+	t.Parallel()
+
+	adapter := NewGemini()
+	request, err := adapter.BuildRequest(context.Background(), Credential{APIKey: "fixture-key"}, canonical.ChatRequest{
+		Model: "gemini-3.5-flash",
+		Messages: []canonical.Message{
+			{Role: canonical.RoleAssistant, ToolCalls: []canonical.ToolCall{{
+				ID: "call_1", Type: "function", Function: canonical.ToolFunctionCall{Name: "lookup", Arguments: `{"city":"Beijing"}`},
+				ProviderMetadata: &canonical.ToolCallProviderMetadata{GoogleThoughtSignature: "signed-thought"},
+			}}},
+			{Role: canonical.RoleTool, ToolCallID: "call_1", Content: canonical.TextContent("sunny")},
+		},
+		Tools: []canonical.ToolDefinition{{
+			Name: "lookup", Parameters: json.RawMessage(`{"type":"object","properties":{"city":{"type":["string","null"]}},"required":["city","unknown"]}`),
+		}},
+		Reasoning: &canonical.ReasoningConfig{Effort: canonical.ReasoningEffortHigh},
+	})
+	if err != nil {
+		t.Fatalf("build Gemini request: %v", err)
+	}
+	if request.URL.String() != "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions" {
+		t.Fatalf("request URL = %q", request.URL.String())
+	}
+	assertRequestJSON(t, request, `{
+		"model":"gemini-3.5-flash",
+		"messages":[
+			{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"city\":\"Beijing\"}"},"extra_content":{"google":{"thought_signature":"signed-thought"}}}]},
+			{"role":"tool","content":"sunny","tool_call_id":"call_1"}
+		],
+		"stream":false,
+		"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object","properties":{"city":{"type":"string","nullable":true}},"required":["city"]}}}],
+		"reasoning_effort":"high"
+	}`)
+}
+
 func TestOpenAICompatibleBuildsDeclaredContractRequest(t *testing.T) {
 	t.Parallel()
 
@@ -99,6 +135,37 @@ func TestOpenAICompatibleBuildsDeclaredContractRequest(t *testing.T) {
 		"stream_options":{"include_usage":true},
 		"reasoning_effort":"medium"
 	}`)
+}
+
+func TestOpenAICompatibleToggleReasoningProfileControlsThinking(t *testing.T) {
+	t.Parallel()
+
+	capabilities := NarrowOpenAICompatibleCapabilities()
+	capabilities.ReasoningEffort = false
+	capabilities.ReasoningToggle = true
+	adapter, err := NewOpenAICompatible(OpenAICompatibleOptions{BaseURL: "https://llm.example/v1", Capabilities: capabilities})
+	if err != nil {
+		t.Fatalf("create adapter: %v", err)
+	}
+	base := canonical.ChatRequest{Model: "thinking-chat", Messages: []canonical.Message{{Role: canonical.RoleUser, Content: canonical.TextContent("Reply")}}}
+	request, err := adapter.BuildRequest(context.Background(), Credential{APIKey: "fixture-key"}, base)
+	if err != nil {
+		t.Fatalf("build default request: %v", err)
+	}
+	assertRequestJSON(t, request, `{"model":"thinking-chat","messages":[{"role":"user","content":"Reply"}],"stream":false,"enable_thinking":false}`)
+
+	enabled := true
+	base.Reasoning = &canonical.ReasoningConfig{Enabled: &enabled}
+	request, err = adapter.BuildRequest(context.Background(), Credential{APIKey: "fixture-key"}, base)
+	if err != nil {
+		t.Fatalf("build thinking request: %v", err)
+	}
+	assertRequestJSON(t, request, `{"model":"thinking-chat","messages":[{"role":"user","content":"Reply"}],"stream":false,"enable_thinking":true}`)
+
+	base.Reasoning = &canonical.ReasoningConfig{Effort: canonical.ReasoningEffortLow}
+	if _, err := adapter.BuildRequest(context.Background(), Credential{APIKey: "fixture-key"}, base); err == nil {
+		t.Fatal("toggle-only reasoning profile accepted reasoning_effort")
+	}
 }
 
 func TestOpenAICompatibleRejectsBaseURLParameters(t *testing.T) {

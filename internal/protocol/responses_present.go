@@ -28,10 +28,12 @@ func PresentResponseWithID(responseID string, response canonical.ChatResponse, r
 			output = append(output, responseMessageItem(itemIdentifier("msg", responseID, choiceIndex), text, "completed"))
 		}
 		for callIndex, call := range choice.Message.ToolCalls {
-			output = append(output, map[string]any{
+			item := map[string]any{
 				"id": itemIdentifier("fc", responseID, choiceIndex*1000+callIndex), "type": "function_call", "status": "completed",
 				"call_id": call.ID, "name": call.Function.Name, "arguments": call.Function.Arguments,
-			})
+			}
+			presentToolCallMetadata(item, call.ProviderMetadata)
+			output = append(output, item)
 		}
 	}
 	result := responseBase(responseID, response.Model, request, "completed")

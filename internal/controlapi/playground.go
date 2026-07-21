@@ -16,23 +16,26 @@ import (
 	"github.com/luckymaomi/llmgateway/internal/httpserver"
 	"github.com/luckymaomi/llmgateway/internal/identity"
 	"github.com/luckymaomi/llmgateway/internal/protocol"
+	"github.com/luckymaomi/llmgateway/internal/registry"
 	"github.com/luckymaomi/llmgateway/internal/requestflow"
 )
 
 type playgroundModelView struct {
-	ID           string   `json:"id"`
-	Alias        string   `json:"alias"`
-	ProviderName string   `json:"providerName"`
-	Capabilities []string `json:"capabilities"`
+	ID            string                 `json:"id"`
+	Alias         string                 `json:"alias"`
+	ProviderName  string                 `json:"providerName"`
+	Capabilities  []string               `json:"capabilities"`
+	ReasoningMode registry.ReasoningMode `json:"reasoningMode,omitempty"`
 }
 
 type playgroundRunInput struct {
-	GatewayKeyID    uuid.UUID           `json:"gatewayKeyId"`
-	Model           string              `json:"model"`
-	Stream          bool                `json:"stream"`
-	Messages        []playgroundMessage `json:"messages"`
-	Tools           []playgroundTool    `json:"tools,omitempty"`
-	ReasoningEffort string              `json:"reasoningEffort,omitempty"`
+	GatewayKeyID     uuid.UUID           `json:"gatewayKeyId"`
+	Model            string              `json:"model"`
+	Stream           bool                `json:"stream"`
+	Messages         []playgroundMessage `json:"messages"`
+	Tools            []playgroundTool    `json:"tools,omitempty"`
+	ReasoningEnabled *bool               `json:"reasoningEnabled,omitempty"`
+	ReasoningEffort  string              `json:"reasoningEffort,omitempty"`
 }
 
 type playgroundMessage struct {
@@ -71,7 +74,7 @@ func (a *API) playgroundModels(w http.ResponseWriter, r *http.Request) {
 	for _, model := range models {
 		views = append(views, playgroundModelView{
 			ID: model.ID.String(), Alias: model.PublicName, ProviderName: model.ProviderSlug,
-			Capabilities: playgroundCapabilities(model),
+			Capabilities: playgroundCapabilities(model), ReasoningMode: model.Capabilities.ReasoningMode,
 		})
 	}
 	writeData(w, http.StatusOK, views)
@@ -233,6 +236,13 @@ func (a *API) playgroundPrincipal(r *http.Request, keyID uuid.UUID) (identity.Ga
 
 func playgroundCommand(r *http.Request, principal identity.GatewayPrincipal, input playgroundRunInput, idempotencyKey string) (requestflow.ChatCommand, *canonical.Error) {
 	wire := map[string]any{"model": input.Model, "stream": input.Stream, "messages": input.Messages}
+	if input.ReasoningEnabled != nil {
+		thinkingType := "disabled"
+		if *input.ReasoningEnabled {
+			thinkingType = "enabled"
+		}
+		wire["thinking"] = map[string]any{"type": thinkingType}
+	}
 	if input.ReasoningEffort != "" {
 		wire["reasoning_effort"] = input.ReasoningEffort
 	}

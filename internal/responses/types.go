@@ -108,3 +108,7 @@ type Repository interface {
 	AttachBackgroundRequest(context.Context, uuid.UUID) error
 	FinalizeRecoveredBackground(context.Context, uuid.UUID, Status, []byte) error
 }
+
+type Observer interface {
+	BackgroundResponse(outcome string)
+}

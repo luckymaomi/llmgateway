@@ -11,28 +11,32 @@ import (
 )
 
 type identityStub struct {
-	principal            identity.Principal
-	credentials          identity.SessionCredentials
-	registered           identity.User
-	users                []identity.User
-	invitations          []identity.Invitation
-	keys                 map[uuid.UUID][]identity.GatewayKey
-	bootstrapped         bool
-	bootstrapEmail       string
-	bootstrapName        string
-	registrationCode     string
-	reviewedUserID       uuid.UUID
-	reviewedStatus       identity.Status
-	createdInvitationAt  time.Time
-	createdInvitationKey identity.MutationRequest
-	createdKeyOwnerID    uuid.UUID
-	createdKeyName       string
-	createdKeyModelIDs   []uuid.UUID
-	createdKeyExpiresAt  *time.Time
-	createdKeyMutation   identity.MutationRequest
-	displayNameCalls     [][]uuid.UUID
-	displayNameError     error
-	loggedOut            bool
+	principal             identity.Principal
+	credentials           identity.SessionCredentials
+	registered            identity.User
+	users                 []identity.User
+	invitations           []identity.Invitation
+	keys                  map[uuid.UUID][]identity.GatewayKey
+	bootstrapped          bool
+	bootstrapEmail        string
+	bootstrapName         string
+	registrationCode      string
+	reviewedUserID        uuid.UUID
+	reviewedStatus        identity.Status
+	resetPasswordUserID   uuid.UUID
+	resetPasswordMutation identity.MutationRequest
+	revokedSessionsUserID uuid.UUID
+	replacedKeyID         uuid.UUID
+	createdInvitationAt   time.Time
+	createdInvitationKey  identity.MutationRequest
+	createdKeyOwnerID     uuid.UUID
+	createdKeyName        string
+	createdKeyModelIDs    []uuid.UUID
+	createdKeyExpiresAt   *time.Time
+	createdKeyMutation    identity.MutationRequest
+	displayNameCalls      [][]uuid.UUID
+	displayNameError      error
+	loggedOut             bool
 }
 
 func (s *identityStub) IsBootstrapped(context.Context) (bool, error) {
@@ -114,6 +118,17 @@ func (s *identityStub) SetUserStatus(_ context.Context, _ identity.Principal, us
 	return identity.User{}, identity.ErrNotFound
 }
 
+func (s *identityStub) ResetMemberPassword(_ context.Context, _ identity.Principal, userID uuid.UUID, _ string, mutation identity.MutationRequest) (identity.SessionRevocation, error) {
+	s.resetPasswordUserID = userID
+	s.resetPasswordMutation = mutation
+	return identity.SessionRevocation{RevokedSessions: 2}, nil
+}
+
+func (s *identityStub) RevokeUserSessions(_ context.Context, _ identity.Principal, userID uuid.UUID, _ string) (identity.SessionRevocation, error) {
+	s.revokedSessionsUserID = userID
+	return identity.SessionRevocation{RevokedSessions: 3}, nil
+}
+
 func (s *identityStub) CreateInvitation(_ context.Context, actor identity.Principal, expiresAt time.Time, mutation identity.MutationRequest) (identity.Invitation, error) {
 	s.createdInvitationAt = expiresAt
 	s.createdInvitationKey = mutation
@@ -168,6 +183,23 @@ func (s *identityStub) CreateGatewayKey(_ context.Context, _ identity.Principal,
 	}
 	s.keys[userID] = append(s.keys[userID], item)
 	return item, nil
+}
+
+func (s *identityStub) ReplaceGatewayKey(_ context.Context, _ identity.Principal, keyID uuid.UUID, _ identity.MutationRequest) (identity.GatewayKey, error) {
+	s.replacedKeyID = keyID
+	for ownerID, keys := range s.keys {
+		for _, key := range keys {
+			if key.ID != keyID {
+				continue
+			}
+			return identity.GatewayKey{
+				ID: uuid.New(), UserID: ownerID, Name: key.Name + " replacement", Prefix: "llmg_replace",
+				Secret: "llmg_replacement_one_time_secret", AuthorizedModelIDs: append([]uuid.UUID(nil), key.AuthorizedModelIDs...),
+				AuthorizedModels: append([]string(nil), key.AuthorizedModels...), ExpiresAt: key.ExpiresAt, CreatedAt: time.Now().UTC(),
+			}, nil
+		}
+	}
+	return identity.GatewayKey{}, identity.ErrNotFound
 }
 
 func (s *identityStub) ListGatewayKeys(_ context.Context, _ identity.Principal, userID uuid.UUID) ([]identity.GatewayKey, error) {
@@ -282,11 +314,11 @@ func (s *registryStub) ListModels(context.Context, identity.Principal) ([]regist
 }
 
 func (s *registryStub) CreateCredential(_ context.Context, _ identity.Principal, input registry.NewCredential, _ string, _ registry.MutationRequest) (registry.Credential, error) {
-	item := registry.Credential{ID: uuid.New(), ProviderID: input.ProviderID, Name: input.Name, ResourceDomain: input.ResourceDomain, Status: registry.CredentialActive, AuthorizedModelIDs: append([]uuid.UUID(nil), input.AuthorizedModelIDs...)}
-	for _, modelID := range input.AuthorizedModelIDs {
+	item := registry.Credential{ID: uuid.New(), ProviderID: input.ProviderID, Name: input.Name, ResourceDomain: input.ResourceDomain, Status: registry.CredentialActive, ModelBindings: append([]registry.CredentialModelBinding(nil), input.ModelBindings...)}
+	for bindingIndex, binding := range item.ModelBindings {
 		for _, model := range s.models {
-			if model.ID == modelID {
-				item.AuthorizedModels = append(item.AuthorizedModels, model.PublicName)
+			if model.ID == binding.ModelID {
+				item.ModelBindings[bindingIndex].ModelName = model.PublicName
 			}
 		}
 	}
@@ -308,7 +340,7 @@ func (s *registryStub) UpdateCredential(_ context.Context, _ identity.Principal,
 		item.RPMLimit = input.RPMLimit
 		item.TPMLimit = input.TPMLimit
 		item.ConcurrencyLimit = input.ConcurrencyLimit
-		item.AuthorizedModelIDs = append([]uuid.UUID(nil), input.AuthorizedModelIDs...)
+		item.ModelBindings = append([]registry.CredentialModelBinding(nil), input.ModelBindings...)
 		item.UpdatedAt = s.nextProviderTime(item.UpdatedAt)
 		s.credentials[index] = item
 		return item, nil
@@ -347,10 +379,6 @@ func (s *registryStub) ProbeCredential(_ context.Context, _ identity.Principal, 
 
 func (s *registryStub) ListCredentials(context.Context, identity.Principal) ([]registry.Credential, error) {
 	return append([]registry.Credential(nil), s.credentials...), nil
-}
-
-func (s *registryStub) BindCredentialModel(context.Context, identity.Principal, uuid.UUID, uuid.UUID, int32, int32) error {
-	return nil
 }
 
 func (s *registryStub) nextProviderTime(current time.Time) time.Time {

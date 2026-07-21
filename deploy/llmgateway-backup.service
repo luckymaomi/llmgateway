@@ -1,0 +1,17 @@
+[Unit]
+Description=LLMGateway encrypted offsite backup
+Requires=docker.service
+After=docker.service llmgateway-compose.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/llmgateway/deploy/backup-linux.sh @@BACKUP_ENVIRONMENT@@
+User=root
+Group=root
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/etc/llmgateway /etc/llmgateway-backup /opt/llmgateway
+ReadWritePaths=/var/lib/llmgateway-backup

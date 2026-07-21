@@ -1,6 +1,11 @@
 package providers
 
-import "github.com/luckymaomi/llmgateway/internal/canonical"
+import (
+	"encoding/json"
+	"net/http"
+
+	"github.com/luckymaomi/llmgateway/internal/canonical"
+)
 
 type reasoningWire string
 
@@ -8,6 +13,7 @@ const (
 	reasoningWireStandard reasoningWire = "standard"
 	reasoningWireZhipu    reasoningWire = "zhipu"
 	reasoningWireAgnes    reasoningWire = "agnes"
+	reasoningWireGemini   reasoningWire = "gemini"
 )
 
 type numberRange struct {
@@ -31,6 +37,7 @@ type wirePolicy struct {
 	includeStreamUsage          bool
 	sendToolStream              bool
 	responseRequestIDBody       bool
+	streamRequestIDBody         bool
 	responseRequestIDHeader     string
 	maxTools                    int
 	maxStops                    int
@@ -40,7 +47,15 @@ type wirePolicy struct {
 	presencePenalty             numberRange
 	frequencyPenalty            numberRange
 	rejectSamplingWithReasoning bool
-	classify                    func(int, string) canonical.ErrorKind
+	allowedReasoningEfforts     map[canonical.ReasoningEffort]bool
+	finishReasons               map[string]canonical.FinishReason
+	finishReasonErrors          map[string]canonical.ErrorKind
+	transformToolSchema         func(json.RawMessage) (json.RawMessage, error)
+	encodeToolCallMetadata      func(*wireToolCall, canonical.ToolCall) error
+	decodeToolCallMetadata      func(wireToolCall) (*canonical.ToolCallProviderMetadata, error)
+	classify                    func(int, *wireError) canonical.ErrorKind
+	retryAfter                  func(http.Header, *wireError) *canonical.RetryAfter
+	replaySafe                  func(int, *wireError) bool
 }
 
 func openAICompatiblePolicy(capabilities Capabilities, requestIDHeader string) wirePolicy {
@@ -60,55 +75,6 @@ func openAICompatiblePolicy(capabilities Capabilities, requestIDHeader string) w
 		presencePenalty:         numberRange{set: true, min: -2, max: 2},
 		frequencyPenalty:        numberRange{set: true, min: -2, max: 2},
 		classify:                classifyHTTPError,
-	}
-}
-
-func zhipuPolicy() wirePolicy {
-	return wirePolicy{
-		kind: KindZhipu,
-		capabilities: Capabilities{
-			Chat:              true,
-			Streaming:         true,
-			Tools:             true,
-			ToolStreaming:     true,
-			ToolChoiceAuto:    true,
-			JSONOutput:        true,
-			ReasoningToggle:   true,
-			ReasoningEffort:   true,
-			ReasoningContent:  true,
-			ReasoningReplay:   true,
-			ResponseUsage:     true,
-			ResponseRequestID: true,
-		},
-		chatPath:              "chat/completions",
-		reasoning:             reasoningWireZhipu,
-		sendToolStream:        true,
-		responseRequestIDBody: true,
-		maxStops:              4,
-		maxOutputTokens:       integerRange{set: true, min: 1, max: 131072},
-		temperature:           numberRange{set: true, min: 0, max: 1},
-		topP:                  numberRange{set: true, min: 0.01, max: 1},
-		classify:              classifyZhipuError,
-	}
-}
-
-func agnesPolicy() wirePolicy {
-	return wirePolicy{
-		kind: KindAgnes,
-		capabilities: Capabilities{
-			Chat:            true,
-			Streaming:       true,
-			Tools:           true,
-			ReasoningToggle: true,
-		},
-		chatPath:         "chat/completions",
-		reasoning:        reasoningWireAgnes,
-		maxStops:         4,
-		maxOutputTokens:  integerRange{set: true, min: 1},
-		temperature:      numberRange{set: true, min: 0, max: 2},
-		topP:             numberRange{set: true, min: 0, max: 1},
-		presencePenalty:  numberRange{set: true, min: -2, max: 2},
-		frequencyPenalty: numberRange{set: true, min: -2, max: 2},
-		classify:         classifyHTTPError,
+		retryAfter:              standardRetryAfter,
 	}
 }

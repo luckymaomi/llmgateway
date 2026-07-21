@@ -34,32 +34,39 @@ type modelView struct {
 	UpstreamModelID string                  `json:"upstreamModelId"`
 	ResourceDomain  registry.ResourceDomain `json:"resourceDomain"`
 	Capabilities    []string                `json:"capabilities"`
+	ReasoningMode   registry.ReasoningMode  `json:"reasoningMode,omitempty"`
 	ContextTokens   *int64                  `json:"contextTokens,omitempty"`
 	Status          string                  `json:"status"`
 }
 
 type credentialView struct {
-	ID                 string                    `json:"id"`
-	ProviderID         string                    `json:"providerId"`
-	ProviderName       string                    `json:"providerName"`
-	Label              string                    `json:"label"`
-	MaskedSecret       string                    `json:"maskedSecret"`
-	ResourceDomain     registry.ResourceDomain   `json:"resourceDomain"`
-	Status             registry.CredentialStatus `json:"status"`
-	AuthorizedModelIDs []string                  `json:"authorizedModelIds"`
-	AuthorizedModels   []string                  `json:"authorizedModels"`
-	RPMLimit           *int32                    `json:"rpmLimit,omitempty"`
-	TPMLimit           *int64                    `json:"tpmLimit,omitempty"`
-	ConcurrencyLimit   *int32                    `json:"concurrencyLimit,omitempty"`
-	CooldownUntil      *time.Time                `json:"cooldownUntil,omitempty"`
-	LastCheckedAt      *time.Time                `json:"lastCheckedAt,omitempty"`
-	RecentSuccessRate  *float64                  `json:"recentSuccessRate,omitempty"`
-	LastProbeAt        *time.Time                `json:"lastProbeAt,omitempty"`
-	LastProbeLatencyMs *int64                    `json:"lastProbeLatencyMs,omitempty"`
-	LastProbeKind      *string                   `json:"lastProbeKind,omitempty"`
-	LastProbeStatus    *string                   `json:"lastProbeStatus,omitempty"`
-	LastProbeErrorKind *string                   `json:"lastProbeErrorKind,omitempty"`
-	UpdatedAt          time.Time                 `json:"updatedAt"`
+	ID                 string                       `json:"id"`
+	ProviderID         string                       `json:"providerId"`
+	ProviderName       string                       `json:"providerName"`
+	Label              string                       `json:"label"`
+	MaskedSecret       string                       `json:"maskedSecret"`
+	ResourceDomain     registry.ResourceDomain      `json:"resourceDomain"`
+	Status             registry.CredentialStatus    `json:"status"`
+	ModelBindings      []credentialModelBindingView `json:"modelBindings"`
+	RPMLimit           *int32                       `json:"rpmLimit,omitempty"`
+	TPMLimit           *int64                       `json:"tpmLimit,omitempty"`
+	ConcurrencyLimit   *int32                       `json:"concurrencyLimit,omitempty"`
+	CooldownUntil      *time.Time                   `json:"cooldownUntil,omitempty"`
+	LastCheckedAt      *time.Time                   `json:"lastCheckedAt,omitempty"`
+	RecentSuccessRate  *float64                     `json:"recentSuccessRate,omitempty"`
+	LastProbeAt        *time.Time                   `json:"lastProbeAt,omitempty"`
+	LastProbeLatencyMs *int64                       `json:"lastProbeLatencyMs,omitempty"`
+	LastProbeKind      *string                      `json:"lastProbeKind,omitempty"`
+	LastProbeStatus    *string                      `json:"lastProbeStatus,omitempty"`
+	LastProbeErrorKind *string                      `json:"lastProbeErrorKind,omitempty"`
+	UpdatedAt          time.Time                    `json:"updatedAt"`
+}
+
+type credentialModelBindingView struct {
+	ModelID   string `json:"modelId"`
+	ModelName string `json:"modelName"`
+	Priority  int32  `json:"priority"`
+	Weight    int32  `json:"weight"`
 }
 
 type credentialProbeView struct {
@@ -172,15 +179,18 @@ func (s registrySnapshot) presentModel(model registry.Model) modelView {
 		UpstreamModelID: model.UpstreamName,
 		ResourceDomain:  model.ResourceDomain,
 		Capabilities:    capabilities,
+		ReasoningMode:   model.Capabilities.ReasoningMode,
 		ContextTokens:   &contextTokens,
 		Status:          status,
 	}
 }
 
 func (s registrySnapshot) presentCredential(credential registry.Credential) credentialView {
-	modelIDs := make([]string, 0, len(credential.AuthorizedModelIDs))
-	for _, modelID := range credential.AuthorizedModelIDs {
-		modelIDs = append(modelIDs, modelID.String())
+	bindings := make([]credentialModelBindingView, 0, len(credential.ModelBindings))
+	for _, binding := range credential.ModelBindings {
+		bindings = append(bindings, credentialModelBindingView{
+			ModelID: binding.ModelID.String(), ModelName: binding.ModelName, Priority: binding.Priority, Weight: binding.Weight,
+		})
 	}
 	return credentialView{
 		ID:                 credential.ID.String(),
@@ -190,8 +200,7 @@ func (s registrySnapshot) presentCredential(credential registry.Credential) cred
 		MaskedSecret:       "********",
 		ResourceDomain:     credential.ResourceDomain,
 		Status:             credential.Status,
-		AuthorizedModelIDs: modelIDs,
-		AuthorizedModels:   append([]string(nil), credential.AuthorizedModels...),
+		ModelBindings:      bindings,
 		RPMLimit:           credential.RPMLimit,
 		TPMLimit:           credential.TPMLimit,
 		ConcurrencyLimit:   credential.ConcurrencyLimit,
@@ -205,8 +214,8 @@ func (s registrySnapshot) presentCredential(credential registry.Credential) cred
 	}
 }
 
-func modelCapabilities(values []string, contextTokens int64) (registry.ModelCapabilities, error) {
-	capabilities := registry.ModelCapabilities{Chat: true, ContextTokens: contextTokens, OutputTokens: contextTokens}
+func modelCapabilities(values []string, reasoningMode registry.ReasoningMode, contextTokens int64) (registry.ModelCapabilities, error) {
+	capabilities := registry.ModelCapabilities{Chat: true, ReasoningMode: reasoningMode, ContextTokens: contextTokens, OutputTokens: contextTokens}
 	for _, value := range values {
 		switch value {
 		case "streaming":
@@ -220,6 +229,14 @@ func modelCapabilities(values []string, contextTokens int64) (registry.ModelCapa
 		default:
 			return registry.ModelCapabilities{}, registry.ErrInvalidInput
 		}
+	}
+	if capabilities.Reasoning != (reasoningMode != "") {
+		return registry.ModelCapabilities{}, registry.ErrInvalidInput
+	}
+	switch reasoningMode {
+	case "", registry.ReasoningToggle, registry.ReasoningEffort, registry.ReasoningHybrid:
+	default:
+		return registry.ModelCapabilities{}, registry.ErrInvalidInput
 	}
 	return capabilities, nil
 }

@@ -694,6 +694,17 @@ type LedgerReservation struct {
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 }
 
+type MemberPasswordResetMutation struct {
+	ID                 uuid.UUID          `json:"id"`
+	ActorUserID        uuid.UUID          `json:"actor_user_id"`
+	IdempotencyKey     uuid.UUID          `json:"idempotency_key"`
+	UserID             uuid.UUID          `json:"user_id"`
+	RequestFingerprint []byte             `json:"request_fingerprint"`
+	RequestID          string             `json:"request_id"`
+	Result             []byte             `json:"result"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+}
+
 type Model struct {
 	ID             uuid.UUID          `json:"id"`
 	ProviderID     uuid.UUID          `json:"provider_id"`
@@ -705,6 +716,27 @@ type Model struct {
 	Enabled        bool               `json:"enabled"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+}
+
+type ModelPriceMutation struct {
+	ID                 uuid.UUID          `json:"id"`
+	ActorUserID        uuid.UUID          `json:"actor_user_id"`
+	IdempotencyKey     uuid.UUID          `json:"idempotency_key"`
+	RequestFingerprint []byte             `json:"request_fingerprint"`
+	RequestID          string             `json:"request_id"`
+	PriceVersionID     *uuid.UUID         `json:"price_version_id"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+}
+
+type ModelPriceVersion struct {
+	ID                        uuid.UUID          `json:"id"`
+	ModelID                   uuid.UUID          `json:"model_id"`
+	Currency                  string             `json:"currency"`
+	InputRateNanosPerMillion  int64              `json:"input_rate_nanos_per_million"`
+	OutputRateNanosPerMillion int64              `json:"output_rate_nanos_per_million"`
+	EffectiveAt               pgtype.Timestamptz `json:"effective_at"`
+	CreatedBy                 uuid.UUID          `json:"created_by"`
+	CreatedAt                 pgtype.Timestamptz `json:"created_at"`
 }
 
 type Provider struct {
@@ -756,29 +788,36 @@ type ProviderMutation struct {
 }
 
 type Request struct {
-	ID                   uuid.UUID          `json:"id"`
-	IdempotencyKey       *string            `json:"idempotency_key"`
-	RequestDigest        []byte             `json:"request_digest"`
-	UserID               uuid.UUID          `json:"user_id"`
-	GatewayKeyID         uuid.UUID          `json:"gateway_key_id"`
-	ModelID              uuid.UUID          `json:"model_id"`
-	EntitlementID        uuid.UUID          `json:"entitlement_id"`
-	ConfigRevisionID     *uuid.UUID         `json:"config_revision_id"`
-	ResourceDomain       ResourceDomain     `json:"resource_domain"`
-	Status               RequestStatus      `json:"status"`
-	Stream               bool               `json:"stream"`
-	ExecutionID          *uuid.UUID         `json:"execution_id"`
-	ExecutionGeneration  int64              `json:"execution_generation"`
-	ExecutionClaimedAt   pgtype.Timestamptz `json:"execution_claimed_at"`
-	ExecutionHeartbeatAt pgtype.Timestamptz `json:"execution_heartbeat_at"`
-	InputTokens          *int64             `json:"input_tokens"`
-	OutputTokens         *int64             `json:"output_tokens"`
-	UsageSource          UsageSource        `json:"usage_source"`
-	ErrorKind            *string            `json:"error_kind"`
-	ErrorDetail          *string            `json:"error_detail"`
-	AcceptedAt           pgtype.Timestamptz `json:"accepted_at"`
-	CompletedAt          pgtype.Timestamptz `json:"completed_at"`
-	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+	ID                        uuid.UUID          `json:"id"`
+	IdempotencyKey            *string            `json:"idempotency_key"`
+	RequestDigest             []byte             `json:"request_digest"`
+	UserID                    uuid.UUID          `json:"user_id"`
+	GatewayKeyID              uuid.UUID          `json:"gateway_key_id"`
+	ModelID                   uuid.UUID          `json:"model_id"`
+	EntitlementID             uuid.UUID          `json:"entitlement_id"`
+	ConfigRevisionID          *uuid.UUID         `json:"config_revision_id"`
+	ResourceDomain            ResourceDomain     `json:"resource_domain"`
+	PriceVersionID            uuid.UUID          `json:"price_version_id"`
+	CostCurrency              string             `json:"cost_currency"`
+	InputRateNanosPerMillion  int64              `json:"input_rate_nanos_per_million"`
+	OutputRateNanosPerMillion int64              `json:"output_rate_nanos_per_million"`
+	InputCostNanos            *int64             `json:"input_cost_nanos"`
+	OutputCostNanos           *int64             `json:"output_cost_nanos"`
+	TotalCostNanos            *int64             `json:"total_cost_nanos"`
+	Status                    RequestStatus      `json:"status"`
+	Stream                    bool               `json:"stream"`
+	ExecutionID               *uuid.UUID         `json:"execution_id"`
+	ExecutionGeneration       int64              `json:"execution_generation"`
+	ExecutionClaimedAt        pgtype.Timestamptz `json:"execution_claimed_at"`
+	ExecutionHeartbeatAt      pgtype.Timestamptz `json:"execution_heartbeat_at"`
+	InputTokens               *int64             `json:"input_tokens"`
+	OutputTokens              *int64             `json:"output_tokens"`
+	UsageSource               UsageSource        `json:"usage_source"`
+	ErrorKind                 *string            `json:"error_kind"`
+	ErrorDetail               *string            `json:"error_detail"`
+	AcceptedAt                pgtype.Timestamptz `json:"accepted_at"`
+	CompletedAt               pgtype.Timestamptz `json:"completed_at"`
+	UpdatedAt                 pgtype.Timestamptz `json:"updated_at"`
 }
 
 type RequestAttempt struct {

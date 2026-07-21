@@ -116,15 +116,14 @@ func (p *chatStreamParser) parseSSEEvents(sseEvents []canonical.SSEEvent) ([]can
 		if usage != nil {
 			events = append(events, p.event(canonical.StreamEvent{Type: canonical.StreamUsage, Usage: usage}))
 		}
-		if len(streamChunk.Choices) == 0 && usage == nil {
-			return nil, p.adapter.contractError("empty_stream_chunk", "provider returned an empty stream chunk", nil)
-		}
+		// Some compatible Providers send metadata-only heartbeat chunks. Metadata
+		// was validated above, so they are safe no-ops rather than contract errors.
 	}
 	return events, nil
 }
 
 func (p *chatStreamParser) acceptMetadata(completionID, requestID, model string, created *int64) error {
-	if completionID == "" || model == "" || created == nil || *created < 0 || (p.adapter.policy.responseRequestIDBody && requestID == "") {
+	if completionID == "" || model == "" || created == nil || *created < 0 || (p.adapter.policy.streamRequestIDBody && requestID == "") {
 		return p.adapter.contractError("incomplete_stream_chunk", "provider stream chunk is missing completion metadata", nil)
 	}
 	if p.completionID != "" && p.completionID != completionID {
@@ -140,7 +139,7 @@ func (p *chatStreamParser) acceptMetadata(completionID, requestID, model string,
 	p.completionID = completionID
 	p.model = model
 	p.createdAt = createdAt
-	if p.adapter.policy.responseRequestIDBody && requestID != "" {
+	if (p.adapter.policy.responseRequestIDBody || p.adapter.policy.streamRequestIDBody) && requestID != "" {
 		if p.requestID != "" && p.requestID != requestID {
 			return p.adapter.contractError("changed_request_id", "provider changed request ID during the stream", nil)
 		}
@@ -153,10 +152,12 @@ func (p *chatStreamParser) parseStreamChoice(choice wireStreamChoice) ([]canonic
 	if choice.Index == nil || *choice.Index < 0 {
 		return nil, p.adapter.contractError("invalid_stream_choice", "provider stream choice is missing its index", nil)
 	}
-	if choice.FinishReason != nil && *choice.FinishReason == "sensitive" && p.adapter.policy.kind == KindZhipu {
-		return []canonical.StreamEvent{p.event(canonical.StreamEvent{
-			Type: canonical.StreamFinish, ChoiceIndex: *choice.Index, FinishReason: canonical.FinishReasonContentFilter,
-		})}, nil
+	if choice.FinishReason != nil {
+		if mapped, found := p.adapter.policy.finishReasons[*choice.FinishReason]; found {
+			return []canonical.StreamEvent{p.event(canonical.StreamEvent{
+				Type: canonical.StreamFinish, ChoiceIndex: *choice.Index, FinishReason: mapped,
+			})}, nil
+		}
 	}
 	var events []canonical.StreamEvent
 	if choice.Delta.Role != nil {
@@ -192,6 +193,13 @@ func (p *chatStreamParser) parseStreamChoice(choice wireStreamChoice) ([]canonic
 				FunctionName: toolCall.Function.Name, ArgumentsFragment: toolCall.Function.Arguments,
 			},
 		}))
+		if toolCall.ExtraContent != nil && p.adapter.policy.decodeToolCallMetadata != nil {
+			metadata, err := p.adapter.policy.decodeToolCallMetadata(wireToolCall{ExtraContent: toolCall.ExtraContent})
+			if err != nil {
+				return nil, err
+			}
+			events[len(events)-1].ToolCallDelta.ProviderMetadata = metadata
+		}
 	}
 	if choice.FinishReason != nil {
 		finishReason, err := p.adapter.parseFinishReason(*choice.FinishReason)
@@ -208,7 +216,8 @@ func (p *chatStreamParser) parseStreamChoice(choice wireStreamChoice) ([]canonic
 		}))
 	}
 	if len(events) == 0 {
-		return nil, p.adapter.contractError("empty_stream_choice", "provider returned an empty stream choice", nil)
+		// A valid indexed choice with an empty delta is a compatibility heartbeat.
+		return nil, nil
 	}
 	return events, nil
 }

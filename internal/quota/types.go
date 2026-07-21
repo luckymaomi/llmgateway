@@ -11,17 +11,18 @@ import (
 )
 
 var (
-	ErrInvalidInput           = errors.New("invalid quota input")
-	ErrForbidden              = errors.New("quota operation forbidden")
-	ErrNotFound               = errors.New("quota record not found")
-	ErrConflict               = errors.New("quota conflict")
-	ErrModelNotAuthorized     = errors.New("model is not authorized")
-	ErrResourceDomainMismatch = errors.New("resource domain does not match the model")
-	ErrQuotaExhausted         = errors.New("quota exhausted")
-	ErrUsageUnknown           = errors.New("usage is unknown")
-	ErrTerminalConflict       = errors.New("reservation has a different terminal result")
-	ErrOutcomeUnknown         = errors.New("quota operation outcome is unknown")
-	ErrInvariant              = errors.New("quota invariant violated")
+	ErrInvalidInput             = errors.New("invalid quota input")
+	ErrForbidden                = errors.New("quota operation forbidden")
+	ErrNotFound                 = errors.New("quota record not found")
+	ErrConflict                 = errors.New("quota conflict")
+	ErrModelNotAuthorized       = errors.New("model is not authorized")
+	ErrResourceDomainMismatch   = errors.New("resource domain does not match the model")
+	ErrQuotaExhausted           = errors.New("quota exhausted")
+	ErrCostConfigurationMissing = errors.New("model cost configuration is missing")
+	ErrUsageUnknown             = errors.New("usage is unknown")
+	ErrTerminalConflict         = errors.New("reservation has a different terminal result")
+	ErrOutcomeUnknown           = errors.New("quota operation outcome is unknown")
+	ErrInvariant                = errors.New("quota invariant violated")
 )
 
 type ResourceDomain string
@@ -161,24 +162,31 @@ type AcceptInput struct {
 }
 
 type Request struct {
-	ID               uuid.UUID      `json:"id"`
-	IdempotencyKey   *string        `json:"idempotency_key,omitempty"`
-	UserID           uuid.UUID      `json:"user_id"`
-	GatewayKeyID     uuid.UUID      `json:"gateway_key_id"`
-	ModelID          uuid.UUID      `json:"model_id"`
-	EntitlementID    uuid.UUID      `json:"entitlement_id"`
-	ConfigRevisionID *uuid.UUID     `json:"config_revision_id,omitempty"`
-	ResourceDomain   ResourceDomain `json:"resource_domain"`
-	Status           RequestStatus  `json:"status"`
-	Stream           bool           `json:"stream"`
-	InputTokens      *int64         `json:"input_tokens,omitempty"`
-	OutputTokens     *int64         `json:"output_tokens,omitempty"`
-	UsageSource      UsageSource    `json:"usage_source"`
-	ErrorKind        *string        `json:"error_kind,omitempty"`
-	ErrorDetail      *string        `json:"error_detail,omitempty"`
-	AcceptedAt       time.Time      `json:"accepted_at"`
-	CompletedAt      *time.Time     `json:"completed_at,omitempty"`
-	UpdatedAt        time.Time      `json:"updated_at"`
+	ID                        uuid.UUID      `json:"id"`
+	IdempotencyKey            *string        `json:"idempotency_key,omitempty"`
+	UserID                    uuid.UUID      `json:"user_id"`
+	GatewayKeyID              uuid.UUID      `json:"gateway_key_id"`
+	ModelID                   uuid.UUID      `json:"model_id"`
+	EntitlementID             uuid.UUID      `json:"entitlement_id"`
+	ConfigRevisionID          *uuid.UUID     `json:"config_revision_id,omitempty"`
+	ResourceDomain            ResourceDomain `json:"resource_domain"`
+	PriceVersionID            uuid.UUID      `json:"price_version_id"`
+	CostCurrency              string         `json:"cost_currency"`
+	InputRateNanosPerMillion  int64          `json:"input_rate_nanos_per_million"`
+	OutputRateNanosPerMillion int64          `json:"output_rate_nanos_per_million"`
+	InputCostNanos            *int64         `json:"input_cost_nanos,omitempty"`
+	OutputCostNanos           *int64         `json:"output_cost_nanos,omitempty"`
+	TotalCostNanos            *int64         `json:"total_cost_nanos,omitempty"`
+	Status                    RequestStatus  `json:"status"`
+	Stream                    bool           `json:"stream"`
+	InputTokens               *int64         `json:"input_tokens,omitempty"`
+	OutputTokens              *int64         `json:"output_tokens,omitempty"`
+	UsageSource               UsageSource    `json:"usage_source"`
+	ErrorKind                 *string        `json:"error_kind,omitempty"`
+	ErrorDetail               *string        `json:"error_detail,omitempty"`
+	AcceptedAt                time.Time      `json:"accepted_at"`
+	CompletedAt               *time.Time     `json:"completed_at,omitempty"`
+	UpdatedAt                 time.Time      `json:"updated_at"`
 }
 
 type Reservation struct {

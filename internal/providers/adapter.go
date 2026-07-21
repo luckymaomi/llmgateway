@@ -13,6 +13,7 @@ const (
 	KindOpenAICompatible Kind = "openai-compatible"
 	KindZhipu            Kind = "zhipu"
 	KindAgnes            Kind = "agnes"
+	KindGemini           Kind = "gemini"
 )
 
 type Credential struct {

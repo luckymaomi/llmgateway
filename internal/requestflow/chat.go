@@ -30,26 +30,13 @@ func (s *Service) Chat(ctx context.Context, command ChatCommand) (ChatResult, *c
 	excluded := make([]routing.CandidateID, 0, len(run.candidates))
 	startedAt := s.clock.Now().UTC()
 	for attemptNumber := 1; ; attemptNumber++ {
-		var candidate Candidate
-		var circuitPermit *resilience.Permit
-		var selectionError *canonical.Error
-		var lease Lease
-		if attemptNumber == 1 {
-			candidate = run.initialCandidate
-			lease = run.initialLease
-			run.initialLease = nil
-			circuitPermit, selectionError = s.acquireCircuit(candidate.ID)
-		} else {
-			candidate, circuitPermit, selectionError = s.candidateDecision(run, excluded)
-		}
+		candidate, circuitPermit, lease, selectionError := s.attemptDecision(ctx, &run, excluded, attemptNumber)
 		if selectionError != nil {
-			if lease != nil {
-				_ = lease.Release(context.WithoutCancel(ctx))
-			}
 			_ = s.accounting.Release(context.WithoutCancel(ctx), run.claim, selectionError.Code, selectionError.Message)
 			return ChatResult{}, selectionError
 		}
 		result, attemptError := s.nonStreamAttempt(ctx, run, candidate, circuitPermit, attemptNumber, lease)
+		s.observeAttempt(run.model.ProviderKind, attemptError)
 		if attemptError == nil {
 			return result, nil
 		}
@@ -62,6 +49,7 @@ func (s *Service) Chat(ctx context.Context, command ChatCommand) (ChatResult, *c
 			RetryAfter: retryAfter(attemptError.RetryAfter, s.clock.Now().UTC()),
 		})
 		if err != nil || decision.Action != resilience.RetrySchedule {
+			s.ensureClientRetryAfter(attemptError)
 			_ = s.accounting.Release(context.WithoutCancel(ctx), run.claim, attemptError.Code, attemptError.Message)
 			return ChatResult{}, attemptError
 		}
@@ -122,7 +110,7 @@ func (s *Service) nonStreamAttempt(ctx context.Context, run workflowRun, candida
 		} else {
 			circuitPermit.Complete(resilience.PermitReleased)
 		}
-		if response.StatusCode >= http.StatusInternalServerError {
+		if response.StatusCode >= http.StatusInternalServerError && !providerError.ReplaySafe {
 			return ChatResult{}, s.markNonStreamUncertain(ctx, run, attemptID, &response.StatusCode, providerError)
 		}
 		_ = s.failAttempt(context.WithoutCancel(ctx), run.claim, attemptID, providerError, &response.StatusCode)
@@ -162,7 +150,11 @@ func (s *Service) nonStreamAttempt(ctx context.Context, run workflowRun, candida
 }
 
 func (s *Service) markNonStreamUncertain(ctx context.Context, run workflowRun, attemptID uuid.UUID, status *int, cause error) *canonical.Error {
-	providerError := &canonical.Error{Kind: canonical.ErrorUncertain, Code: "upstream_outcome_uncertain", Message: "upstream request outcome is uncertain", Cause: cause}
+	retryAt := s.clock.Now().UTC().Add(s.config.Circuit.OpenDuration)
+	providerError := &canonical.Error{
+		Kind: canonical.ErrorUncertain, Code: "upstream_outcome_uncertain", Message: "upstream request outcome is uncertain",
+		RetryAfter: &canonical.RetryAfter{At: &retryAt}, Cause: cause,
+	}
 	kind := string(providerError.Kind)
 	completedAt := s.clock.Now().UTC()
 	stateErr := s.repository.MarkExecutionUncertain(context.WithoutCancel(ctx), run.claim, attemptID, AttemptUpdate{
@@ -199,10 +191,11 @@ func (s *Service) buildUpstream(ctx context.Context, run workflowRun, candidate 
 func (s *Service) failAttempt(ctx context.Context, claim execution.Claim, attemptID uuid.UUID, providerError *canonical.Error, status *int) error {
 	completedAt := s.clock.Now().UTC()
 	kind := string(providerError.Kind)
+	observation := s.credentialFailure(providerError, completedAt, false)
 	return s.repository.UpdateAttempt(ctx, claim, attemptID, AttemptUpdate{
 		Status: "failed", HTTPStatus: status, ErrorKind: &kind,
 		RetryAfterAt: retryAfterAt(providerError.RetryAfter, completedAt), CompletedAt: &completedAt,
-		Credential: s.credentialFailure(providerError, completedAt, false),
+		Credential: observation,
 	})
 }
 
@@ -229,6 +222,17 @@ func (s *Service) credentialFailure(providerError *canonical.Error, observedAt t
 		return nil
 	}
 	return observation
+}
+
+func (s *Service) ensureClientRetryAfter(providerError *canonical.Error) {
+	if providerError == nil || providerError.RetryAfter != nil {
+		return
+	}
+	switch providerError.Kind {
+	case canonical.ErrorRateLimit, canonical.ErrorProviderTemporary:
+		retryAt := s.clock.Now().UTC().Add(s.config.Circuit.OpenDuration)
+		providerError.RetryAfter = &canonical.RetryAfter{At: &retryAt}
+	}
 }
 
 func responseUsage(request canonical.ChatRequest, response canonical.ChatResponse) Usage {

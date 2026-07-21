@@ -45,6 +45,7 @@ export function PlaygroundPage() {
   const [model, setModel] = useState('')
   const [prompt, setPrompt] = useState('')
   const [system, setSystem] = useState('')
+  const [reasoningEnabled, setReasoningEnabled] = useState(false)
   const [reasoningEffort, setReasoningEffort] = useState<'low' | 'medium' | 'high'>('medium')
   const [stream, setStream] = useState(true)
   const [toolJson, setToolJson] = useState('')
@@ -53,7 +54,9 @@ export function PlaygroundPage() {
   const run = usePlaygroundRun()
   const selectedModel = models.data?.find((item) => item.alias === model) ?? models.data?.[0]
   const activeModel = model || selectedModel?.alias || ''
-  const supportsReasoning = selectedModel?.capabilities.includes('reasoning') === true
+  const reasoningMode = selectedModel?.reasoningMode
+  const supportsReasoningToggle = reasoningMode === 'toggle' || reasoningMode === 'hybrid'
+  const supportsReasoningEffort = reasoningMode === 'effort' || reasoningMode === 'hybrid'
   const running = !terminal.includes(run.facts.phase)
 
   const canSubmit = Boolean(activeModel && prompt.trim() && !running)
@@ -87,7 +90,10 @@ export function PlaygroundPage() {
       model: activeModel,
       stream,
       messages,
-      ...(supportsReasoning ? { reasoningEffort } : {}),
+      ...(supportsReasoningToggle ? { reasoningEnabled } : {}),
+      ...(supportsReasoningEffort && (!supportsReasoningToggle || reasoningEnabled)
+        ? { reasoningEffort }
+        : {}),
       ...(tools ? { tools } : {}),
     }
     setPrompt('')
@@ -181,20 +187,33 @@ export function PlaygroundPage() {
                 onChange={(event) => setSystem(event.target.value)}
               />
             </Field>
-            <Field label="推理强度" htmlFor="playground-reasoning">
-              <NativeSelect
-                id="playground-reasoning"
-                value={reasoningEffort}
-                disabled={!supportsReasoning}
-                onChange={(event) =>
-                  setReasoningEffort(event.target.value as typeof reasoningEffort)
-                }
-              >
-                <option value="low">低</option>
-                <option value="medium">中</option>
-                <option value="high">高</option>
-              </NativeSelect>
-            </Field>
+            {supportsReasoningToggle ? (
+              <label className="switch-row">
+                <span>启用推理</span>
+                <input
+                  type="checkbox"
+                  role="switch"
+                  checked={reasoningEnabled}
+                  onChange={(event) => setReasoningEnabled(event.target.checked)}
+                />
+              </label>
+            ) : null}
+            {supportsReasoningEffort ? (
+              <Field label="推理强度" htmlFor="playground-reasoning">
+                <NativeSelect
+                  id="playground-reasoning"
+                  value={reasoningEffort}
+                  disabled={supportsReasoningToggle && !reasoningEnabled}
+                  onChange={(event) =>
+                    setReasoningEffort(event.target.value as typeof reasoningEffort)
+                  }
+                >
+                  <option value="low">低</option>
+                  <option value="medium">中</option>
+                  <option value="high">高</option>
+                </NativeSelect>
+              </Field>
+            ) : null}
             <label className="switch-row">
               <span>流式响应</span>
               <input
@@ -347,7 +366,8 @@ export function PlaygroundPage() {
             <div className="run-facts__protocol">
               <Braces size={15} />
               <span>
-                {stream ? 'SSE' : 'JSON'} · {reasoningEffort}
+                {stream ? 'SSE' : 'JSON'} ·{' '}
+                {reasoningFact(reasoningMode, reasoningEnabled, reasoningEffort)}
               </span>
             </div>
           </aside>
@@ -363,3 +383,14 @@ const capabilityLabel = {
   reasoning: '推理',
   structured_output: '结构化',
 } as const
+
+function reasoningFact(
+  mode: 'toggle' | 'effort' | 'hybrid' | undefined,
+  enabled: boolean,
+  effort: 'low' | 'medium' | 'high',
+) {
+  if (mode === 'effort') return effort
+  if (mode === 'hybrid' && enabled) return effort
+  if (mode === 'toggle' || mode === 'hybrid') return enabled ? '推理开启' : '推理关闭'
+  return '无推理'
+}

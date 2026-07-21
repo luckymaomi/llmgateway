@@ -22,10 +22,22 @@ type wireErrorEnvelope struct {
 }
 
 type wireError struct {
-	Message   string     `json:"message"`
-	Type      string     `json:"type"`
-	Parameter string     `json:"param"`
-	Code      stringCode `json:"code"`
+	Message   string            `json:"message"`
+	Type      string            `json:"type"`
+	Status    string            `json:"status"`
+	Parameter string            `json:"param"`
+	Code      stringCode        `json:"code"`
+	Details   []wireErrorDetail `json:"details"`
+}
+
+type wireErrorDetail struct {
+	Type       string               `json:"@type"`
+	RetryDelay json.RawMessage      `json:"retryDelay"`
+	Violations []wireQuotaViolation `json:"violations"`
+}
+
+type wireQuotaViolation struct {
+	QuotaID string `json:"quotaId"`
 }
 
 type stringCode string
@@ -58,9 +70,9 @@ func (a *openAIAdapter) ClassifyError(statusCode int, headers http.Header, body 
 	var envelope wireErrorEnvelope
 	if err := decodeJSON(body, &envelope); err != nil {
 		return &canonical.Error{
-			Kind: a.policy.classify(statusCode, ""), Code: strconv.Itoa(statusCode),
+			Kind: a.policy.classify(statusCode, nil), Code: strconv.Itoa(statusCode),
 			Message: "provider request failed", Provider: string(a.policy.kind), HTTPStatus: statusCode,
-			RetryAfter: parseRetryAfter(headers),
+			RetryAfter: a.policy.retryAfter(headers, nil),
 		}
 	}
 	providerError := envelope.Error
@@ -72,7 +84,7 @@ func (a *openAIAdapter) ClassifyError(statusCode int, headers http.Header, body 
 
 func (a *openAIAdapter) classifyWireError(statusCode int, headers http.Header, providerError *wireError, requestID string) *canonical.Error {
 	code := string(providerError.Code)
-	kind := a.policy.classify(statusCode, code)
+	kind := a.policy.classify(statusCode, providerError)
 	message := strings.TrimSpace(providerError.Message)
 	if message == "" {
 		message = "provider request failed"
@@ -80,14 +92,18 @@ func (a *openAIAdapter) classifyWireError(statusCode int, headers http.Header, p
 	if requestID == "" && a.policy.responseRequestIDHeader != "" {
 		requestID = headers.Get(a.policy.responseRequestIDHeader)
 	}
+	providerType := providerError.Type
+	if providerType == "" {
+		providerType = providerError.Status
+	}
 	return &canonical.Error{
 		Kind: kind, Code: code, Message: message, Parameter: providerError.Parameter,
-		Provider: string(a.policy.kind), ProviderType: providerError.Type, RequestID: requestID, HTTPStatus: statusCode,
-		RetryAfter: parseRetryAfter(headers),
+		Provider: string(a.policy.kind), ProviderType: providerType, RequestID: requestID, HTTPStatus: statusCode,
+		RetryAfter: a.policy.retryAfter(headers, providerError), ReplaySafe: a.policy.replaySafe != nil && a.policy.replaySafe(statusCode, providerError),
 	}
 }
 
-func classifyHTTPError(statusCode int, _ string) canonical.ErrorKind {
+func classifyHTTPError(statusCode int, _ *wireError) canonical.ErrorKind {
 	switch statusCode {
 	case http.StatusBadRequest, http.StatusUnprocessableEntity:
 		return canonical.ErrorInvalidRequest
@@ -111,29 +127,8 @@ func classifyHTTPError(statusCode int, _ string) canonical.ErrorKind {
 	}
 }
 
-func classifyZhipuError(statusCode int, code string) canonical.ErrorKind {
-	switch code {
-	case "1000", "1001", "1002", "1003", "1004", "1110", "1111", "1112":
-		return canonical.ErrorAuthentication
-	case "1113", "1304", "1308", "1309", "1310":
-		return canonical.ErrorQuota
-	case "1210", "1213", "1214", "1215", "1261":
-		return canonical.ErrorInvalidRequest
-	case "1211", "1221", "1222":
-		return canonical.ErrorProviderConfiguration
-	case "1212":
-		return canonical.ErrorUnsupportedCapability
-	case "1220", "1301", "1311":
-		return canonical.ErrorPermission
-	case "1302":
-		return canonical.ErrorRateLimit
-	case "500", "1120", "1230", "1234", "1305":
-		return canonical.ErrorProviderTemporary
-	case "1121", "1231", "1300":
-		return canonical.ErrorProviderPermanent
-	default:
-		return classifyHTTPError(statusCode, code)
-	}
+func standardRetryAfter(headers http.Header, _ *wireError) *canonical.RetryAfter {
+	return parseRetryAfter(headers)
 }
 
 func parseRetryAfter(headers http.Header) *canonical.RetryAfter {

@@ -51,9 +51,18 @@ type toolFunction struct {
 }
 
 type toolCall struct {
-	ID       string           `json:"id"`
-	Type     string           `json:"type"`
-	Function toolFunctionCall `json:"function"`
+	ID           string                `json:"id"`
+	Type         string                `json:"type"`
+	Function     toolFunctionCall      `json:"function"`
+	ExtraContent *toolCallExtraContent `json:"extra_content,omitempty"`
+}
+
+type toolCallExtraContent struct {
+	Google *googleToolCallMetadata `json:"google,omitempty"`
+}
+
+type googleToolCallMetadata struct {
+	ThoughtSignature string `json:"thought_signature"`
 }
 
 type toolFunctionCall struct {
@@ -178,7 +187,13 @@ func parseMessage(item message) (canonical.Message, *canonical.Error) {
 		if call.ID == "" || call.Type != "function" || call.Function.Name == "" || !json.Valid([]byte(call.Function.Arguments)) {
 			return canonical.Message{}, invalid("invalid_tool_call", "assistant tool call is invalid", "tool_calls", nil)
 		}
-		parsed.ToolCalls = append(parsed.ToolCalls, canonical.ToolCall{ID: call.ID, Type: call.Type, Function: canonical.ToolFunctionCall{Name: call.Function.Name, Arguments: call.Function.Arguments}})
+		parsedCall := canonical.ToolCall{ID: call.ID, Type: call.Type, Function: canonical.ToolFunctionCall{Name: call.Function.Name, Arguments: call.Function.Arguments}}
+		metadata, metadataError := parseToolCallMetadata(call.ExtraContent)
+		if metadataError != nil {
+			return canonical.Message{}, metadataError
+		}
+		parsedCall.ProviderMetadata = metadata
+		parsed.ToolCalls = append(parsed.ToolCalls, parsedCall)
 	}
 	if item.ReasoningContent != "" {
 		parsed.Reasoning = &canonical.ReasoningContent{Text: item.ReasoningContent}
@@ -190,6 +205,17 @@ func parseMessage(item message) (canonical.Message, *canonical.Error) {
 		return canonical.Message{}, invalid("empty_message", "message must contain text, reasoning, or tool calls", "content", nil)
 	}
 	return parsed, nil
+}
+
+func parseToolCallMetadata(extra *toolCallExtraContent) (*canonical.ToolCallProviderMetadata, *canonical.Error) {
+	if extra == nil || extra.Google == nil {
+		return nil, nil
+	}
+	signature := extra.Google.ThoughtSignature
+	if signature == "" || len(signature) > canonical.MaxToolCallProviderMetadataBytes {
+		return nil, invalid("invalid_tool_call_metadata", "Google thought signature is invalid", "extra_content.google.thought_signature", nil)
+	}
+	return &canonical.ToolCallProviderMetadata{GoogleThoughtSignature: signature}, nil
 }
 
 func parseTool(item tool) (canonical.ToolDefinition, *canonical.Error) {

@@ -551,7 +551,7 @@ func (q *Queries) GetProviderMutation(ctx context.Context, arg GetProviderMutati
 }
 
 const listCredentialModelBindings = `-- name: ListCredentialModelBindings :many
-SELECT cm.credential_id, m.id AS model_id, m.public_name
+SELECT cm.credential_id, m.id AS model_id, m.public_name, cm.priority, cm.weight
 FROM credential_models cm
 JOIN models m ON m.id = cm.model_id
 ORDER BY cm.credential_id, m.public_name, m.id
@@ -561,6 +561,8 @@ type ListCredentialModelBindingsRow struct {
 	CredentialID uuid.UUID `json:"credential_id"`
 	ModelID      uuid.UUID `json:"model_id"`
 	PublicName   string    `json:"public_name"`
+	Priority     int32     `json:"priority"`
+	Weight       int32     `json:"weight"`
 }
 
 func (q *Queries) ListCredentialModelBindings(ctx context.Context) ([]ListCredentialModelBindingsRow, error) {
@@ -572,7 +574,13 @@ func (q *Queries) ListCredentialModelBindings(ctx context.Context) ([]ListCreden
 	items := []ListCredentialModelBindingsRow{}
 	for rows.Next() {
 		var i ListCredentialModelBindingsRow
-		if err := rows.Scan(&i.CredentialID, &i.ModelID, &i.PublicName); err != nil {
+		if err := rows.Scan(
+			&i.CredentialID,
+			&i.ModelID,
+			&i.PublicName,
+			&i.Priority,
+			&i.Weight,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -584,7 +592,7 @@ func (q *Queries) ListCredentialModelBindings(ctx context.Context) ([]ListCreden
 }
 
 const listCredentialModelBindingsForCredential = `-- name: ListCredentialModelBindingsForCredential :many
-SELECT cm.credential_id, m.id AS model_id, m.public_name
+SELECT cm.credential_id, m.id AS model_id, m.public_name, cm.priority, cm.weight
 FROM credential_models cm
 JOIN models m ON m.id = cm.model_id
 WHERE cm.credential_id = $1
@@ -595,6 +603,8 @@ type ListCredentialModelBindingsForCredentialRow struct {
 	CredentialID uuid.UUID `json:"credential_id"`
 	ModelID      uuid.UUID `json:"model_id"`
 	PublicName   string    `json:"public_name"`
+	Priority     int32     `json:"priority"`
+	Weight       int32     `json:"weight"`
 }
 
 func (q *Queries) ListCredentialModelBindingsForCredential(ctx context.Context, credentialID uuid.UUID) ([]ListCredentialModelBindingsForCredentialRow, error) {
@@ -606,7 +616,13 @@ func (q *Queries) ListCredentialModelBindingsForCredential(ctx context.Context, 
 	items := []ListCredentialModelBindingsForCredentialRow{}
 	for rows.Next() {
 		var i ListCredentialModelBindingsForCredentialRow
-		if err := rows.Scan(&i.CredentialID, &i.ModelID, &i.PublicName); err != nil {
+		if err := rows.Scan(
+			&i.CredentialID,
+			&i.ModelID,
+			&i.PublicName,
+			&i.Priority,
+			&i.Weight,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

@@ -103,6 +103,23 @@ func TestOpenAICompatibleParsesToolResponseAndDeclaredRequestID(t *testing.T) {
 	}
 }
 
+func TestGeminiPreservesToolCallThoughtSignature(t *testing.T) {
+	t.Parallel()
+
+	response, err := NewGemini().ParseResponse(http.StatusOK, nil, []byte(`{
+		"id":"chat-gemini-1","created":1710000004,"model":"gemini-3.5-flash",
+		"choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"city\":\"Beijing\"}"},"extra_content":{"google":{"thought_signature":"signed-thought"}}}]} ,"finish_reason":"tool_calls"}],
+		"usage":{"prompt_tokens":10,"completion_tokens":6,"total_tokens":16}
+	}`))
+	if err != nil {
+		t.Fatalf("parse Gemini response: %v", err)
+	}
+	metadata := response.Choices[0].Message.ToolCalls[0].ProviderMetadata
+	if metadata == nil || metadata.GoogleThoughtSignature != "signed-thought" {
+		t.Fatalf("tool call metadata = %#v", metadata)
+	}
+}
+
 func TestOpenAICompatibleStreamReassemblesReasoningToolsAndUsage(t *testing.T) {
 	t.Parallel()
 	capabilities := NarrowOpenAICompatibleCapabilities()
@@ -121,9 +138,11 @@ func TestOpenAICompatibleStreamReassemblesReasoningToolsAndUsage(t *testing.T) {
 
 	input := []byte(
 		"data: {\"id\":\"stream-1\",\"created\":1710000100,\"model\":\"reasoning-chat\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"reasoning_content\":\"Need weather.\"},\"finish_reason\":null}]}\r\n\r\n" +
+			"data: {\"id\":\"stream-1\",\"created\":1710000100,\"model\":\"reasoning-chat\",\"choices\":[]}\n\n" +
 			"data: {\"id\":\"stream-1\",\"created\":1710000100,\"model\":\"reasoning-chat\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_weather\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\"}}]},\"finish_reason\":null}]}\n\n" +
 			"data: {\"id\":\"stream-1\",\"created\":1710000100,\"model\":\"reasoning-chat\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"Hangzhou\\\"}\"}}]},\"finish_reason\":null}]}\n\n" +
 			"data: {\"id\":\"stream-1\",\"created\":1710000100,\"model\":\"reasoning-chat\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":8,\"total_tokens\":28}}\n\n" +
+			"data: {\"id\":\"stream-1\",\"created\":1710000100,\"model\":\"reasoning-chat\",\"choices\":[{\"index\":0,\"delta\":{}}]}\n\n" +
 			"data: [DONE]\n\n")
 
 	parser := adapter.ParseStream()
@@ -207,21 +226,27 @@ func TestStreamEOFProducesInterruptedFact(t *testing.T) {
 func TestZhipuStreamCarriesBodyRequestID(t *testing.T) {
 	t.Parallel()
 
-	parser := NewZhipu().ParseStream()
-	events, err := parser.Feed([]byte("data: {\"id\":\"glm-stream-1\",\"request_id\":\"zhipu-request-1\",\"created\":1710000102,\"model\":\"glm-5.2\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Ready\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))
-	if err != nil {
-		t.Fatalf("parse Zhipu stream: %v", err)
-	}
-	if len(events) != 4 {
-		t.Fatalf("events = %#v", events)
-	}
-	for index, event := range events {
-		if event.RequestID != "zhipu-request-1" {
-			t.Fatalf("event %d request ID = %q", index, event.RequestID)
+	for _, requestIDField := range []string{`"request_id":"zhipu-request-1",`, ""} {
+		parser := NewZhipu().ParseStream()
+		events, err := parser.Feed([]byte("data: {\"id\":\"glm-stream-1\"," + requestIDField + "\"created\":1710000102,\"model\":\"glm-5.2\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Ready\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))
+		if err != nil {
+			t.Fatalf("parse Zhipu stream: %v", err)
 		}
-	}
-	if _, err := parser.Close(); err != nil {
-		t.Fatalf("close Zhipu stream: %v", err)
+		if len(events) != 4 {
+			t.Fatalf("events = %#v", events)
+		}
+		wantRequestID := ""
+		if requestIDField != "" {
+			wantRequestID = "zhipu-request-1"
+		}
+		for index, event := range events {
+			if event.RequestID != wantRequestID {
+				t.Fatalf("event %d request ID = %q, want %q", index, event.RequestID, wantRequestID)
+			}
+		}
+		if _, err := parser.Close(); err != nil {
+			t.Fatalf("close Zhipu stream: %v", err)
+		}
 	}
 }
 

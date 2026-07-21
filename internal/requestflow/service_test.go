@@ -155,7 +155,10 @@ func (workflowSecrets) CredentialSecret(context.Context, uuid.UUID) (string, err
 	return "upstream-secret", nil
 }
 
-type workflowLease struct{ context context.Context }
+type workflowLease struct {
+	context  context.Context
+	releases *int
+}
 
 func (l workflowLease) Context() context.Context {
 	if l.context == nil {
@@ -163,12 +166,18 @@ func (l workflowLease) Context() context.Context {
 	}
 	return l.context
 }
-func (workflowLease) Release(context.Context) error { return nil }
+func (l workflowLease) Release(context.Context) error {
+	if l.releases != nil {
+		*l.releases++
+	}
+	return nil
+}
 
 type workflowCoordinator struct {
 	events   *[]string
 	err      error
 	requests *[]LeaseRequest
+	releases *int
 }
 
 func (c workflowCoordinator) Acquire(ctx context.Context, request LeaseRequest) (Lease, time.Duration, error) {
@@ -181,7 +190,7 @@ func (c workflowCoordinator) Acquire(ctx context.Context, request LeaseRequest) 
 	if c.err != nil {
 		return nil, 0, c.err
 	}
-	return workflowLease{context: ctx}, 0, nil
+	return workflowLease{context: ctx, releases: c.releases}, 0, nil
 }
 
 type workflowAdmitter struct {
@@ -213,7 +222,8 @@ func (f workflowFactory) Client(Candidate) (*http.Client, error)   { return f.cl
 
 type fixedClock struct{ now time.Time }
 
-func (c fixedClock) Now() time.Time { return c.now }
+func (c *fixedClock) Now() time.Time              { return c.now }
+func (c *fixedClock) Advance(delta time.Duration) { c.now = c.now.Add(delta) }
 
 type zeroRandom struct{}
 
@@ -292,6 +302,135 @@ func TestChatDoesNotReplayAProviderFiveHundredResponse(t *testing.T) {
 	if accounting.released != 0 || len(accounting.settled) != 0 || len(accounting.compensated) != 0 {
 		t.Fatalf("five hundred response wrote terminal accounting: %#v", accounting)
 	}
+}
+
+func TestChatRetriesGeminiDeclaredSafeUnavailableResponse(t *testing.T) {
+	requests := 0
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		requests++
+		if requests == 1 {
+			return &http.Response{
+				StatusCode: http.StatusServiceUnavailable,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"error":{"code":503,"status":"UNAVAILABLE","message":"overloaded"}}`)),
+			}, nil
+		}
+		return successfulRoundTrip(nil)
+	})}
+	service, repository, accounting := newWorkflowForTest(t, "https://provider.example/v1", client)
+	adapter, err := providers.NewGeminiWithBaseURL("https://provider.example/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.factory = workflowFactory{adapter: adapter, client: client}
+	repository.model.ProviderKind = providers.KindGemini
+	repository.model.UpstreamName = "gemini-3.5-flash"
+
+	result, providerError := service.Chat(context.Background(), chatCommand(false))
+	if providerError != nil {
+		t.Fatalf("Chat returned error: %v", providerError)
+	}
+	if requests != 2 || result.Response.Model != "public-glm" || len(accounting.settled) != 1 {
+		t.Fatalf("requests/result/accounting = %d/%#v/%#v", requests, result, accounting)
+	}
+	if len(repository.attempts) != 4 || repository.attempts[1].Status != "failed" || repository.attempts[3].Status != "completed" {
+		t.Fatalf("attempt lifecycle = %#v", repository.attempts)
+	}
+}
+
+func TestCandidateSelectionPreservesEarliestCredentialCooldown(t *testing.T) {
+	service, repository, _ := newWorkflowForTest(t, "https://provider.example/v1", &http.Client{Transport: roundTripFunc(successfulRoundTrip)})
+	retryAt := time.Unix(200, 0).UTC()
+	repository.candidates[0].CooldownUntil = &retryAt
+	_, providerError := service.selectCandidate(workflowRun{
+		model: repository.model, candidates: repository.candidates, request: chatCommand(false).Request,
+	}, nil)
+	if providerError == nil || providerError.Code != "free_pool_unavailable" || providerError.RetryAfter == nil ||
+		providerError.RetryAfter.At == nil || !providerError.RetryAfter.At.Equal(retryAt) {
+		t.Fatalf("selection error = %#v", providerError)
+	}
+}
+
+func TestChatSkipsAnOpenInitialCircuitWithoutConsumingAnAttempt(t *testing.T) {
+	providerRequests := 0
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		providerRequests++
+		return successfulRoundTrip(request)
+	})}
+	service, repository, accounting := newWorkflowForTest(t, "https://provider.example/v1", client)
+	initialCandidateID := repository.candidates[0].ID
+	repository.candidates = append(repository.candidates, Candidate{ID: uuid.New(), Priority: 20, Weight: 100})
+	openWorkflowCircuit(t, service, initialCandidateID)
+
+	leaseRequests := []LeaseRequest{}
+	leaseReleases := 0
+	service.coordinator = workflowCoordinator{requests: &leaseRequests, releases: &leaseReleases}
+	if _, providerError := service.Chat(context.Background(), chatCommand(false)); providerError != nil {
+		t.Fatalf("Chat returned error: %v", providerError)
+	}
+	if providerRequests != 1 || len(repository.attempts) != 2 {
+		t.Fatalf("provider requests/attempt updates = %d/%d, want 1/2", providerRequests, len(repository.attempts))
+	}
+	if len(leaseRequests) != 2 || leaseRequests[0].CredentialID != initialCandidateID || leaseRequests[1].CredentialID != repository.candidates[1].ID {
+		t.Fatalf("lease requests = %#v", leaseRequests)
+	}
+	if leaseReleases != 2 || accounting.released != 0 || len(accounting.settled) != 1 {
+		t.Fatalf("lease releases/accounting = %d/%#v", leaseReleases, accounting)
+	}
+}
+
+func TestCandidateDecisionReturnsTheEarliestOpenCircuitRecovery(t *testing.T) {
+	service, repository, _ := newWorkflowForTest(t, "https://provider.example/v1", &http.Client{Transport: roundTripFunc(successfulRoundTrip)})
+	secondCandidateID := uuid.New()
+	repository.candidates = append(repository.candidates, Candidate{ID: secondCandidateID, Priority: 20, Weight: 100})
+	firstCircuit := openWorkflowCircuit(t, service, repository.candidates[0].ID)
+	firstRetryAt := firstCircuit.Snapshot().RetryAt
+	service.clock.(*fixedClock).Advance(10 * time.Second)
+	openWorkflowCircuit(t, service, secondCandidateID)
+
+	_, _, providerError := service.candidateDecision(workflowRun{
+		model: repository.model, candidates: repository.candidates, request: chatCommand(false).Request,
+	}, nil)
+	if providerError == nil || providerError.Code != "upstream_circuit_open" || providerError.RetryAfter == nil ||
+		providerError.RetryAfter.At == nil || !providerError.RetryAfter.At.Equal(firstRetryAt) {
+		t.Fatalf("selection error = %#v, want retry at %s", providerError, firstRetryAt)
+	}
+}
+
+func TestCandidateDecisionSkipsASaturatedHalfOpenProbe(t *testing.T) {
+	service, repository, _ := newWorkflowForTest(t, "https://provider.example/v1", &http.Client{Transport: roundTripFunc(successfulRoundTrip)})
+	secondCandidateID := uuid.New()
+	repository.candidates = append(repository.candidates, Candidate{ID: secondCandidateID, Priority: 20, Weight: 100})
+	firstCircuit := openWorkflowCircuit(t, service, repository.candidates[0].ID)
+	service.clock.(*fixedClock).Advance(service.config.Circuit.OpenDuration)
+	probe := firstCircuit.Acquire()
+	if !probe.Allowed || probe.State != resilience.CircuitHalfOpen {
+		t.Fatalf("half-open probe = %#v", probe)
+	}
+	defer probe.Permit.Complete(resilience.PermitReleased)
+
+	candidate, permit, providerError := service.candidateDecision(workflowRun{
+		model: repository.model, candidates: repository.candidates, request: chatCommand(false).Request,
+	}, nil)
+	if providerError != nil || candidate.ID != secondCandidateID || permit == nil {
+		t.Fatalf("candidate/permit/error = %#v/%#v/%#v", candidate, permit, providerError)
+	}
+	permit.Complete(resilience.PermitReleased)
+}
+
+func openWorkflowCircuit(t *testing.T, service *Service, candidateID uuid.UUID) *resilience.Circuit {
+	t.Helper()
+	circuit, err := service.circuit(candidateID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for failure := 0; failure < service.config.Circuit.FailureThreshold; failure++ {
+		acquired := circuit.Acquire()
+		if !acquired.Allowed || acquired.Permit == nil || !acquired.Permit.Complete(resilience.PermitFailed) {
+			t.Fatalf("circuit failure %d could not be recorded: %#v", failure+1, acquired)
+		}
+	}
+	return circuit
 }
 
 func TestChatDoesNotReplayAMalformedSuccessfulResponse(t *testing.T) {
@@ -427,6 +566,10 @@ func TestStreamDoesNotReplayProviderFiveHundredResponse(t *testing.T) {
 	}
 	if accounting.released != 0 || len(accounting.settled) != 0 || strings.Join(repository.statuses, ",") != "dispatching,uncertain" {
 		t.Fatalf("stream five hundred facts = statuses %s accounting %#v", strings.Join(repository.statuses, ","), accounting)
+	}
+	lastAttempt := repository.attempts[len(repository.attempts)-1]
+	if lastAttempt.Usage != nil {
+		t.Fatalf("stream failure before the first event persisted usage = %#v", lastAttempt.Usage)
 	}
 }
 
@@ -611,7 +754,7 @@ func newWorkflowForTest(t *testing.T, baseURL string, client *http.Client) (*Ser
 		model: Model{
 			ConfigRevisionID: revisionID, ID: modelID, PublicName: "public-glm", UpstreamName: "upstream-glm", ProviderID: uuid.New(),
 			ProviderKind: providers.KindOpenAICompatible, ProviderBaseURL: baseURL, ResourceDomain: registry.ResourceFree,
-			Capabilities: registry.ModelCapabilities{Chat: true, Streaming: true, Tools: true, Reasoning: true, StructuredOutput: true, ContextTokens: 8192, OutputTokens: 2048},
+			Capabilities: registry.ModelCapabilities{Chat: true, Streaming: true, Tools: true, Reasoning: true, ReasoningMode: registry.ReasoningHybrid, StructuredOutput: true, ContextTokens: 8192, OutputTokens: 2048},
 		},
 		candidates: []Candidate{{ID: uuid.New(), Priority: 10, Weight: 100}},
 	}
@@ -619,7 +762,7 @@ func newWorkflowForTest(t *testing.T, baseURL string, client *http.Client) (*Ser
 	accounting := &workflowAccounting{accepted: Accepted{
 		ReservationID: uuid.New(), EntitlementID: uuid.New(), EntitlementConcurrency: 2,
 	}, events: &events}
-	clock := fixedClock{now: time.Unix(100, 0).UTC()}
+	clock := &fixedClock{now: time.Unix(100, 0).UTC()}
 	router, err := routing.NewRouter(zeroRandom{})
 	if err != nil {
 		t.Fatal(err)

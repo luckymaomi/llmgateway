@@ -39,6 +39,7 @@ type Error struct {
 	RequestID    string
 	HTTPStatus   int
 	RetryAfter   *RetryAfter
+	ReplaySafe   bool
 	Cause        error
 }
 

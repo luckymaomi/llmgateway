@@ -54,6 +54,7 @@ const EntitlementsPage = lazyRouteComponent(
   () => import('@/features/ledger/entitlements-page'),
   'EntitlementsPage',
 )
+const CostsPage = lazyRouteComponent(() => import('@/features/ledger/costs-page'), 'CostsPage')
 const PlaygroundPage = lazyRouteComponent(
   () => import('@/features/playground/playground-page'),
   'PlaygroundPage',
@@ -207,6 +208,9 @@ const entitlementsRoute = protectedRoute(
   true,
   ['administrator'],
 )
+const costsRoute = protectedRoute('/ledger/costs', 'ledger:write', CostsPage, true, [
+  'administrator',
+])
 const playgroundRoute = protectedRoute('/playground', 'playground:use', PlaygroundPage)
 const forbiddenRoute = createRoute({
   getParentRoute: () => authenticatedLayout,
@@ -240,6 +244,7 @@ const routeTree = rootRoute.addChildren([
     usageRoute,
     entriesRoute,
     entitlementsRoute,
+    costsRoute,
     playgroundRoute,
     forbiddenRoute,
   ]),

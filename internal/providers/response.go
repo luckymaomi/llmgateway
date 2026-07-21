@@ -77,10 +77,11 @@ type wireStreamDelta struct {
 }
 
 type wireToolCallDelta struct {
-	Index    *int                  `json:"index"`
-	ID       string                `json:"id"`
-	Type     string                `json:"type"`
-	Function wireToolFunctionDelta `json:"function"`
+	Index        *int                  `json:"index"`
+	ID           string                `json:"id"`
+	Type         string                `json:"type"`
+	Function     wireToolFunctionDelta `json:"function"`
+	ExtraContent *toolCallExtraContent `json:"extra_content,omitempty"`
 }
 
 type wireToolFunctionDelta struct {
@@ -162,10 +163,18 @@ func (a *openAIAdapter) parseChoice(choice wireResponseChoice) (canonical.ChatCh
 			if toolCall.ID == "" || toolCall.Type != "function" || !toolNamePattern.MatchString(toolCall.Function.Name) {
 				return canonical.ChatChoice{}, a.contractError("invalid_tool_call", "provider returned an invalid tool call", nil)
 			}
-			message.ToolCalls = append(message.ToolCalls, canonical.ToolCall{
+			parsedCall := canonical.ToolCall{
 				ID: toolCall.ID, Type: toolCall.Type,
 				Function: canonical.ToolFunctionCall{Name: toolCall.Function.Name, Arguments: toolCall.Function.Arguments},
-			})
+			}
+			if a.policy.decodeToolCallMetadata != nil {
+				metadata, err := a.policy.decodeToolCallMetadata(toolCall)
+				if err != nil {
+					return canonical.ChatChoice{}, err
+				}
+				parsedCall.ProviderMetadata = metadata
+			}
+			message.ToolCalls = append(message.ToolCalls, parsedCall)
 		}
 	}
 	if len(message.Content) == 0 && len(message.ToolCalls) == 0 && message.Reasoning == nil {
@@ -184,22 +193,13 @@ func (a *openAIAdapter) parseFinishReason(reason string) (canonical.FinishReason
 		return canonical.FinishReasonToolCalls, nil
 	case string(canonical.FinishReasonContentFilter):
 		return canonical.FinishReasonContentFilter, nil
-	case "sensitive":
-		if a.policy.kind == KindZhipu {
-			return canonical.FinishReasonContentFilter, nil
-		}
-		return "", a.finishReasonError(reason, canonical.ErrorProviderPermanent)
-	case "network_error":
-		if a.policy.kind == KindZhipu {
-			return "", a.finishReasonError(reason, canonical.ErrorProviderTemporary)
-		}
-		return "", a.finishReasonError(reason, canonical.ErrorProviderPermanent)
-	case "model_context_window_exceeded":
-		if a.policy.kind == KindZhipu {
-			return "", a.finishReasonError(reason, canonical.ErrorInvalidRequest)
-		}
-		return "", a.finishReasonError(reason, canonical.ErrorProviderPermanent)
 	default:
+		if mapped, found := a.policy.finishReasons[reason]; found {
+			return mapped, nil
+		}
+		if kind, found := a.policy.finishReasonErrors[reason]; found {
+			return "", a.finishReasonError(reason, kind)
+		}
 		return "", a.finishReasonError(reason, canonical.ErrorProviderPermanent)
 	}
 }

@@ -5,6 +5,7 @@ import type {
   Invitation,
   ListQuery,
   Page,
+  SessionRevocation,
   UserAccount,
 } from './types'
 
@@ -38,6 +39,16 @@ export const accessApi = {
       method: 'POST',
       body: { decision },
     }),
+  resetMemberPassword: (id: string, newPassword: string, idempotencyKey: string) =>
+    apiClient.request<SessionRevocation, { newPassword: string }>(`${item('users', id)}/password`, {
+      method: 'POST',
+      body: { newPassword },
+      headers: { 'Idempotency-Key': idempotencyKey },
+    }),
+  revokeUserSessions: (id: string) =>
+    apiClient.request<SessionRevocation>(`${item('users', id)}/sessions/revoke`, {
+      method: 'POST',
+    }),
 
   invitations: (query: ListQuery, signal?: AbortSignal) =>
     apiClient.request<Page<Invitation>>(`${base}/invitations`, {
@@ -66,4 +77,9 @@ export const accessApi = {
     }),
   revokeKey: (id: string) =>
     apiClient.request<GatewayKey>(`${item('keys', id)}/revoke`, { method: 'POST' }),
+  replaceKey: (id: string, idempotencyKey: string) =>
+    apiClient.request<CreatedGatewayKey>(`${item('keys', id)}/replacement`, {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+    }),
 }

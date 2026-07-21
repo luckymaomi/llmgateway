@@ -80,6 +80,7 @@ type Decision struct {
 	Mode                SelectionMode
 	Ranked              []RankedCandidate
 	Evaluations         []Evaluation
+	NextAvailableAt     time.Time
 }
 
 type ErrorKind string

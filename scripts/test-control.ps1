@@ -19,7 +19,7 @@ try {
   $env:LLMGATEWAY_CONTROL_TEST_VALKEY_DATABASE = "0"
   $env:LLMGATEWAY_CONTROL_TEST_REQUIRED = "true"
 
-  & go test ./internal/store -run '^(TestProviderMutation|TestConfigurationPublication|TestGatewayKeyRevocation|TestIdentityRepository|TestInvitationMutation|TestQuotaGrantMutation)' -count=1 -v
+  & go test ./internal/store -run '^(TestAccountRecovery|TestOfflineAdministratorRecovery|TestSessionRevocation|TestProviderMutation|TestConfigurationPublication|TestGatewayKeyRevocation|TestIdentityRepository|TestInvitationMutation|TestQuotaGrantMutation)' -count=1 -v
   if ($LASTEXITCODE -ne 0) {
     throw "Control-plane repository persistence tests failed."
   }

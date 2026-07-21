@@ -21,6 +21,11 @@ func TestRegistryContract(t *testing.T) {
 	if len(kinds) != len(providers.DefaultCatalog().Kinds()) {
 		t.Fatalf("unexpected Provider kind catalog: %+v", kinds)
 	}
+	for _, kind := range kinds {
+		if kind.Contract.ReferenceURL == "" || kind.Contract.VerifiedAt == "" || len(kind.Contract.VerifiedModels) == 0 || len(kind.Contract.LiveCapabilities) == 0 {
+			t.Fatalf("Provider kind contract is incomplete: %+v", kind)
+		}
+	}
 	providerID := uuid.New()
 	fixture.registry.providers = []registry.Provider{{
 		ID: providerID, Slug: "openai", Name: "OpenAI", Kind: providers.KindOpenAICompatible, BaseURL: "https://api.example.test/v1", Enabled: false, CreatedAt: fixture.now, UpdatedAt: fixture.now,
@@ -68,20 +73,24 @@ func TestRegistryContract(t *testing.T) {
 		t.Fatalf("unexpected updated provider: %+v", updatedProvider)
 	}
 
-	modelResponse := request(t, fixture.handler, http.MethodPost, "/api/control/models", map[string]any{
+	modelInput := map[string]any{
 		"providerId":      providerID.String(),
 		"alias":           "reasoning",
 		"upstreamModelId": "reasoning-v2",
 		"resourceDomain":  registry.ResourceProfessional,
 		"capabilities":    []string{"streaming", "tools", "reasoning"},
 		"contextTokens":   65536,
-	}, true, true)
+	}
+	invalidModelResponse := request(t, fixture.handler, http.MethodPost, "/api/control/models", modelInput, true, true)
+	requireStatus(t, invalidModelResponse, http.StatusBadRequest)
+	modelInput["reasoningMode"] = registry.ReasoningEffort
+	modelResponse := request(t, fixture.handler, http.MethodPost, "/api/control/models", modelInput, true, true)
 	requireStatus(t, modelResponse, http.StatusCreated)
 	model := decodeData[modelView](t, modelResponse)
 	if model.Alias != "reasoning" || model.ProviderName != "OpenAI Primary" || model.ContextTokens == nil || *model.ContextTokens != 65536 {
 		t.Fatalf("unexpected model: %+v", model)
 	}
-	if !fixture.registry.savedModel.Capabilities.Chat || !fixture.registry.savedModel.Capabilities.Tools || fixture.registry.savedModel.Capabilities.ContextTokens != 65536 {
+	if !fixture.registry.savedModel.Capabilities.Chat || !fixture.registry.savedModel.Capabilities.Tools || fixture.registry.savedModel.Capabilities.ReasoningMode != registry.ReasoningEffort || fixture.registry.savedModel.Capabilities.ContextTokens != 65536 {
 		t.Fatalf("unexpected persisted capabilities: %+v", fixture.registry.savedModel.Capabilities)
 	}
 

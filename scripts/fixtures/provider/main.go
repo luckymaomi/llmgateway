@@ -26,13 +26,25 @@ import (
 )
 
 type fixture struct {
-	releaseOnce sync.Once
-	release     chan struct{}
-	held        atomic.Int64
-	active      atomic.Int64
-	completed   atomic.Int64
-	canceled    atomic.Int64
-	rateLimited atomic.Int64
+	releaseOnce     sync.Once
+	release         chan struct{}
+	held            atomic.Int64
+	active          atomic.Int64
+	peakActive      atomic.Int64
+	requests        atomic.Int64
+	completed       atomic.Int64
+	canceled        atomic.Int64
+	rateLimited     atomic.Int64
+	rateLimitOnce   atomic.Bool
+	serverErrors    atomic.Int64
+	malformed       atomic.Int64
+	disconnected    atomic.Int64
+	short           atomic.Int64
+	streams         atomic.Int64
+	longStreams     atomic.Int64
+	extendedStreams atomic.Int64
+	background      atomic.Int64
+	toolReason      atomic.Int64
 }
 
 func main() {
@@ -103,12 +115,17 @@ func (f *fixture) providerRoutes() http.Handler {
 			http.Error(w, "invalid request", http.StatusBadRequest)
 			return
 		}
+		finish := f.beginRequest(payload)
+		defer finish()
 		if bytes.Contains(payload, []byte("continue stored response")) &&
 			(!bytes.Contains(payload, []byte("hello from the stored Responses flow")) || !bytes.Contains(payload, []byte("fixture response"))) {
 			http.Error(w, "previous response history is missing", http.StatusBadRequest)
 			return
 		}
-		if bytes.Contains(payload, []byte("drop after read")) {
+		if bytes.Contains(payload, []byte("drop after read")) || bytes.Contains(payload, []byte("capacity transport disconnect")) {
+			if bytes.Contains(payload, []byte("capacity transport disconnect")) {
+				f.disconnected.Add(1)
+			}
 			hijacker, ok := w.(http.Hijacker)
 			if !ok {
 				http.Error(w, "fixture connection cannot be terminated", http.StatusInternalServerError)
@@ -130,10 +147,23 @@ func (f *fixture) providerRoutes() http.Handler {
 			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"type": "rate_limit_error", "code": "fixture_rate_limit", "message": "fixture credential is rate limited"}})
 			return
 		}
+		if bytes.Contains(payload, []byte("capacity rate limit once")) && f.rateLimitOnce.CompareAndSwap(false, true) {
+			f.rateLimited.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"type": "rate_limit_error", "code": "capacity_rate_limit", "message": "capacity fixture rejected the attempt"}})
+			return
+		}
+		if bytes.Contains(payload, []byte("capacity provider 503")) {
+			f.serverErrors.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"type": "server_error", "code": "capacity_unavailable", "message": "capacity fixture is unavailable"}})
+			return
+		}
 		if bytes.Contains(payload, []byte("hold capacity")) || bytes.Contains(payload, []byte("hold background")) {
 			f.held.Add(1)
-			f.active.Add(1)
-			defer f.active.Add(-1)
 			select {
 			case <-f.release:
 			case <-r.Context().Done():
@@ -145,7 +175,11 @@ func (f *fixture) providerRoutes() http.Handler {
 			Stream bool `json:"stream"`
 		}
 		if json.Unmarshal(payload, &requestShape) == nil && requestShape.Stream {
-			f.streamResponse(w, r, bytes.Contains(payload, []byte("hold stream")))
+			f.streamResponse(w, r, bytes.Contains(payload, []byte("hold stream")), bytes.Contains(payload, []byte("capacity long stream")), bytes.Contains(payload, []byte("capacity extended stream")), bytes.Contains(payload, []byte("capacity malformed stream")))
+			return
+		}
+		if !f.waitForScenario(r.Context(), payload) {
+			f.canceled.Add(1)
 			return
 		}
 		f.completed.Add(1)
@@ -159,51 +193,16 @@ func (f *fixture) providerRoutes() http.Handler {
 	return router
 }
 
-func (f *fixture) streamResponse(w http.ResponseWriter, r *http.Request, hold bool) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "streaming is unavailable", http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	write := func(value string) error {
-		if _, err := io.WriteString(w, "data: "+value+"\n\n"); err != nil {
-			return err
-		}
-		flusher.Flush()
-		return nil
-	}
-	if err := write(`{"id":"fixture-stream","request_id":"fixture-request","created":1710000100,"model":"fixture-chat","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`); err != nil {
-		return
-	}
-	if err := write(`{"id":"fixture-stream","request_id":"fixture-request","created":1710000100,"model":"fixture-chat","choices":[{"index":0,"delta":{"content":"fixture stream"},"finish_reason":null}]}`); err != nil {
-		return
-	}
-	if hold {
-		f.held.Add(1)
-		select {
-		case <-f.release:
-		case <-r.Context().Done():
-			f.canceled.Add(1)
-			return
-		}
-	}
-	if err := write(`{"id":"fixture-stream","request_id":"fixture-request","created":1710000100,"model":"fixture-chat","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6}}`); err != nil {
-		return
-	}
-	if err := write("[DONE]"); err != nil {
-		return
-	}
-	f.completed.Add(1)
-}
-
 func (f *fixture) adminRoutes() http.Handler {
 	router := http.NewServeMux()
 	router.HandleFunc("/stats", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]int64{
-			"held": f.held.Load(), "active": f.active.Load(), "completed": f.completed.Load(),
-			"canceled": f.canceled.Load(), "rate_limited": f.rateLimited.Load(),
+			"held": f.held.Load(), "active": f.active.Load(), "peak_active": f.peakActive.Load(), "requests": f.requests.Load(),
+			"completed": f.completed.Load(), "canceled": f.canceled.Load(), "rate_limited": f.rateLimited.Load(),
+			"server_errors": f.serverErrors.Load(), "malformed": f.malformed.Load(), "disconnected": f.disconnected.Load(),
+			"short": f.short.Load(), "streams": f.streams.Load(), "long_streams": f.longStreams.Load(),
+			"extended_streams": f.extendedStreams.Load(),
+			"background":       f.background.Load(), "tool_reasoning": f.toolReason.Load(),
 		})
 	})
 	router.HandleFunc("/release", func(w http.ResponseWriter, r *http.Request) {

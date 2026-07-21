@@ -37,6 +37,10 @@ func (r *Router) Select(requirements Requirements, candidates []Candidate) (Deci
 		seen[candidate.ID] = struct{}{}
 		reasons := evaluateEligibility(requirements, candidate, excluded)
 		decision.Evaluations = append(decision.Evaluations, Evaluation{CandidateID: candidate.ID, Eligible: len(reasons) == 0, Exclusions: reasons})
+		if len(reasons) == 1 && reasons[0].Reason == ExcludeCredentialCooling &&
+			(decision.NextAvailableAt.IsZero() || reasons[0].AvailableAt.Before(decision.NextAvailableAt)) {
+			decision.NextAvailableAt = reasons[0].AvailableAt
+		}
 		if len(reasons) == 0 {
 			decision.Ranked = append(decision.Ranked, RankedCandidate{CandidateID: candidate.ID, Priority: candidate.AdminPriority, Weight: candidate.Weight})
 		}

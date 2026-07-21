@@ -12,15 +12,30 @@ import (
 )
 
 type providerKindView struct {
-	Kind        providers.Kind `json:"kind"`
-	DisplayName string         `json:"displayName"`
+	Kind        providers.Kind           `json:"kind"`
+	DisplayName string                   `json:"displayName"`
+	Contract    providerKindContractView `json:"contract"`
+}
+
+type providerKindContractView struct {
+	ReferenceURL      string                       `json:"referenceUrl"`
+	ContractSnapshot  string                       `json:"contractSnapshot"`
+	VerifiedAt        string                       `json:"verifiedAt"`
+	ReferenceProvider string                       `json:"referenceProvider,omitempty"`
+	VerifiedModels    []string                     `json:"verifiedModels"`
+	LiveCapabilities  []string                     `json:"liveCapabilities"`
+	Status            providers.VerificationStatus `json:"status"`
 }
 
 func (a *API) listProviderKinds(w http.ResponseWriter, r *http.Request) {
 	kinds := providers.DefaultCatalog().Kinds()
 	views := make([]providerKindView, 0, len(kinds))
 	for _, kind := range kinds {
-		views = append(views, providerKindView{Kind: kind.Kind, DisplayName: kind.DisplayName})
+		views = append(views, providerKindView{Kind: kind.Kind, DisplayName: kind.DisplayName, Contract: providerKindContractView{
+			ReferenceURL: kind.Contract.ReferenceURL, ContractSnapshot: kind.Contract.ContractSnapshot, VerifiedAt: kind.Contract.VerifiedAt,
+			ReferenceProvider: kind.Contract.ReferenceProvider, VerifiedModels: kind.Contract.VerifiedModels,
+			LiveCapabilities: kind.Contract.LiveCapabilities, Status: kind.Contract.Status,
+		}})
 	}
 	writeData(w, http.StatusOK, views)
 }
@@ -200,6 +215,7 @@ func (a *API) writeModel(w http.ResponseWriter, r *http.Request, id uuid.UUID) {
 		UpstreamModelID string                  `json:"upstreamModelId"`
 		ResourceDomain  registry.ResourceDomain `json:"resourceDomain"`
 		Capabilities    []string                `json:"capabilities"`
+		ReasoningMode   registry.ReasoningMode  `json:"reasoningMode"`
 		ContextTokens   *int64                  `json:"contextTokens"`
 	}
 	if err := decodeJSON(w, r, &input); err != nil {
@@ -210,7 +226,7 @@ func (a *API) writeModel(w http.ResponseWriter, r *http.Request, id uuid.UUID) {
 		writeProblem(w, r, problem{Status: http.StatusBadRequest, Code: "invalid_request", Message: "contextTokens is required by the model registry.", Stage: "registry", FieldErrors: map[string]string{"contextTokens": "A positive context token limit is required."}})
 		return
 	}
-	capabilities, err := modelCapabilities(input.Capabilities, *input.ContextTokens)
+	capabilities, err := modelCapabilities(input.Capabilities, input.ReasoningMode, *input.ContextTokens)
 	if err != nil {
 		a.writeRegistryError(w, r, err)
 		return
@@ -270,16 +286,30 @@ func (a *API) listCredentials(w http.ResponseWriter, r *http.Request) {
 	writeData(w, http.StatusOK, paginate(views, query))
 }
 
+type credentialModelBindingInput struct {
+	ModelID  uuid.UUID `json:"modelId"`
+	Priority int32     `json:"priority"`
+	Weight   int32     `json:"weight"`
+}
+
+func registryCredentialBindings(inputs []credentialModelBindingInput) []registry.CredentialModelBinding {
+	bindings := make([]registry.CredentialModelBinding, len(inputs))
+	for index, input := range inputs {
+		bindings[index] = registry.CredentialModelBinding{ModelID: input.ModelID, Priority: input.Priority, Weight: input.Weight}
+	}
+	return bindings
+}
+
 func (a *API) createCredential(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		ProviderID         uuid.UUID               `json:"providerId"`
-		Label              string                  `json:"label"`
-		Secret             string                  `json:"secret"`
-		ResourceDomain     registry.ResourceDomain `json:"resourceDomain"`
-		AuthorizedModelIDs []uuid.UUID             `json:"authorizedModelIds"`
-		RPMLimit           *int32                  `json:"rpmLimit"`
-		TPMLimit           *int64                  `json:"tpmLimit"`
-		ConcurrencyLimit   *int32                  `json:"concurrencyLimit"`
+		ProviderID       uuid.UUID                     `json:"providerId"`
+		Label            string                        `json:"label"`
+		Secret           string                        `json:"secret"`
+		ResourceDomain   registry.ResourceDomain       `json:"resourceDomain"`
+		ModelBindings    []credentialModelBindingInput `json:"modelBindings"`
+		RPMLimit         *int32                        `json:"rpmLimit"`
+		TPMLimit         *int64                        `json:"tpmLimit"`
+		ConcurrencyLimit *int32                        `json:"concurrencyLimit"`
 	}
 	if err := decodeJSON(w, r, &input); err != nil {
 		writeDecodeError(w, r, err)
@@ -295,13 +325,13 @@ func (a *API) createCredential(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	created, err := a.registry.CreateCredential(r.Context(), principalFromContext(r.Context()), registry.NewCredential{
-		ProviderID:         input.ProviderID,
-		Name:               input.Label,
-		ResourceDomain:     input.ResourceDomain,
-		RPMLimit:           input.RPMLimit,
-		TPMLimit:           input.TPMLimit,
-		ConcurrencyLimit:   input.ConcurrencyLimit,
-		AuthorizedModelIDs: input.AuthorizedModelIDs,
+		ProviderID:       input.ProviderID,
+		Name:             input.Label,
+		ResourceDomain:   input.ResourceDomain,
+		RPMLimit:         input.RPMLimit,
+		TPMLimit:         input.TPMLimit,
+		ConcurrencyLimit: input.ConcurrencyLimit,
+		ModelBindings:    registryCredentialBindings(input.ModelBindings),
 	}, input.Secret, mutation)
 	if err != nil {
 		a.writeRegistryError(w, r, err)
@@ -318,14 +348,14 @@ func (a *API) updateCredential(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		Label              string                  `json:"label"`
-		Secret             string                  `json:"secret"`
-		ResourceDomain     registry.ResourceDomain `json:"resourceDomain"`
-		AuthorizedModelIDs []uuid.UUID             `json:"authorizedModelIds"`
-		RPMLimit           *int32                  `json:"rpmLimit"`
-		TPMLimit           *int64                  `json:"tpmLimit"`
-		ConcurrencyLimit   *int32                  `json:"concurrencyLimit"`
-		ExpectedUpdatedAt  time.Time               `json:"expectedUpdatedAt"`
+		Label             string                        `json:"label"`
+		Secret            string                        `json:"secret"`
+		ResourceDomain    registry.ResourceDomain       `json:"resourceDomain"`
+		ModelBindings     []credentialModelBindingInput `json:"modelBindings"`
+		RPMLimit          *int32                        `json:"rpmLimit"`
+		TPMLimit          *int64                        `json:"tpmLimit"`
+		ConcurrencyLimit  *int32                        `json:"concurrencyLimit"`
+		ExpectedUpdatedAt time.Time                     `json:"expectedUpdatedAt"`
 	}
 	if err := decodeJSON(w, r, &input); err != nil {
 		writeDecodeError(w, r, err)
@@ -343,7 +373,7 @@ func (a *API) updateCredential(w http.ResponseWriter, r *http.Request) {
 	updated, err := a.registry.UpdateCredential(r.Context(), principalFromContext(r.Context()), registry.CredentialChange{
 		ID: credentialID, Name: input.Label, ResourceDomain: input.ResourceDomain,
 		RPMLimit: input.RPMLimit, TPMLimit: input.TPMLimit, ConcurrencyLimit: input.ConcurrencyLimit,
-		AuthorizedModelIDs: input.AuthorizedModelIDs, ExpectedUpdatedAt: input.ExpectedUpdatedAt,
+		ModelBindings: registryCredentialBindings(input.ModelBindings), ExpectedUpdatedAt: input.ExpectedUpdatedAt,
 	}, input.Secret, mutation)
 	if err != nil {
 		a.writeRegistryError(w, r, err)

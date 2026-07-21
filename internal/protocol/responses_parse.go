@@ -49,13 +49,14 @@ type responseTool struct {
 }
 
 type responseInputItem struct {
-	Type      string          `json:"type,omitempty"`
-	Role      string          `json:"role,omitempty"`
-	Content   json.RawMessage `json:"content,omitempty"`
-	CallID    string          `json:"call_id,omitempty"`
-	Name      string          `json:"name,omitempty"`
-	Arguments string          `json:"arguments,omitempty"`
-	Output    json.RawMessage `json:"output,omitempty"`
+	Type         string                `json:"type,omitempty"`
+	Role         string                `json:"role,omitempty"`
+	Content      json.RawMessage       `json:"content,omitempty"`
+	CallID       string                `json:"call_id,omitempty"`
+	Name         string                `json:"name,omitempty"`
+	Arguments    string                `json:"arguments,omitempty"`
+	Output       json.RawMessage       `json:"output,omitempty"`
+	ExtraContent *toolCallExtraContent `json:"extra_content,omitempty"`
 }
 
 type responseContentPart struct {
@@ -130,12 +131,13 @@ func StoredResponseMessages(input, output json.RawMessage) ([]canonical.Message,
 	}
 	var response struct {
 		Output []struct {
-			Type      string `json:"type"`
-			Role      string `json:"role"`
-			CallID    string `json:"call_id"`
-			Name      string `json:"name"`
-			Arguments string `json:"arguments"`
-			Content   []struct {
+			Type         string                `json:"type"`
+			Role         string                `json:"role"`
+			CallID       string                `json:"call_id"`
+			Name         string                `json:"name"`
+			Arguments    string                `json:"arguments"`
+			ExtraContent *toolCallExtraContent `json:"extra_content"`
+			Content      []struct {
 				Type string `json:"type"`
 				Text string `json:"text"`
 			} `json:"content"`
@@ -171,7 +173,11 @@ func StoredResponseMessages(input, output json.RawMessage) ([]canonical.Message,
 			}
 		case "function_call":
 			if item.CallID != "" && item.Name != "" && json.Valid([]byte(item.Arguments)) {
-				assistant.ToolCalls = append(assistant.ToolCalls, canonical.ToolCall{ID: item.CallID, Type: "function", Function: canonical.ToolFunctionCall{Name: item.Name, Arguments: item.Arguments}})
+				metadata, metadataError := parseToolCallMetadata(item.ExtraContent)
+				if metadataError != nil {
+					return nil, metadataError
+				}
+				assistant.ToolCalls = append(assistant.ToolCalls, canonical.ToolCall{ID: item.CallID, Type: "function", Function: canonical.ToolFunctionCall{Name: item.Name, Arguments: item.Arguments}, ProviderMetadata: metadata})
 			}
 		}
 	}
@@ -224,7 +230,11 @@ func parseResponseInputItem(item responseInputItem) (canonical.Message, *canonic
 		if item.CallID == "" || item.Name == "" || !json.Valid([]byte(item.Arguments)) {
 			return canonical.Message{}, invalid("invalid_function_call", "function call replay is invalid", "", nil)
 		}
-		return canonical.Message{Role: canonical.RoleAssistant, ToolCalls: []canonical.ToolCall{{ID: item.CallID, Type: "function", Function: canonical.ToolFunctionCall{Name: item.Name, Arguments: item.Arguments}}}}, nil
+		metadata, metadataError := parseToolCallMetadata(item.ExtraContent)
+		if metadataError != nil {
+			return canonical.Message{}, metadataError
+		}
+		return canonical.Message{Role: canonical.RoleAssistant, ToolCalls: []canonical.ToolCall{{ID: item.CallID, Type: "function", Function: canonical.ToolFunctionCall{Name: item.Name, Arguments: item.Arguments}, ProviderMetadata: metadata}}}, nil
 	case "function_call_output":
 		if item.CallID == "" {
 			return canonical.Message{}, invalid("invalid_function_output", "function output requires call_id", "call_id", nil)

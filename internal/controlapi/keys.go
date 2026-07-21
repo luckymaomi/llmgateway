@@ -129,6 +129,41 @@ func (a *API) revokeKey(w http.ResponseWriter, r *http.Request) {
 	writeData(w, http.StatusOK, presentGatewayKey(selected.Key, selected.OwnerName, "revoked"))
 }
 
+func (a *API) replaceKey(w http.ResponseWriter, r *http.Request) {
+	keyID, err := uuid.Parse(chi.URLParam(r, "keyID"))
+	if err != nil {
+		writeDecodeError(w, r, err)
+		return
+	}
+	mutation, ok := identityMutationRequest(w, r)
+	if !ok {
+		return
+	}
+	items, err := a.collectKeys(r)
+	if err != nil {
+		a.writeIdentityError(w, r, err)
+		return
+	}
+	ownerName := ""
+	for _, item := range items {
+		if item.Key.ID == keyID {
+			ownerName = item.OwnerName
+			break
+		}
+	}
+	if ownerName == "" {
+		a.writeIdentityError(w, r, identity.ErrNotFound)
+		return
+	}
+	key, err := a.identity.ReplaceGatewayKey(r.Context(), principalFromContext(r.Context()), keyID, mutation)
+	if err != nil {
+		a.writeIdentityError(w, r, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeData(w, http.StatusCreated, createdGatewayKeyView{Key: presentGatewayKey(key, ownerName, ""), Secret: key.Secret})
+}
+
 func (a *API) collectKeys(r *http.Request) ([]ownedGatewayKey, error) {
 	principal := principalFromContext(r.Context())
 	if principal.Role != identity.RoleAdministrator {

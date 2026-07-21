@@ -1,0 +1,62 @@
+{
+  "title": "LLMGateway Operations",
+  "uid": "llmgateway-operations",
+  "schemaVersion": 41,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "HTTP request rate by status",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum by (status) (rate(llmgateway_http_requests_total[5m]))", "legendFormat": "{{status}}" }],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Admission outcomes",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum by (outcome) (rate(llmgateway_admission_requests_total[5m]))", "legendFormat": "{{outcome}}" }],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Provider attempt outcomes",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum by (provider_kind, outcome) (rate(llmgateway_provider_attempts_total[5m]))", "legendFormat": "{{provider_kind}} {{outcome}}" }],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Coordination active leases",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum by (resource_domain) (llmgateway_coordination_active_leases)", "legendFormat": "{{resource_domain}}" }],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Quota operations",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum by (operation, outcome) (rate(llmgateway_quota_operations_total[5m]))", "legendFormat": "{{operation}} {{outcome}}" }],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Recovery and background terminal outcomes",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "sum by (outcome) (rate(llmgateway_request_recovery_results_total[5m]))", "legendFormat": "request {{outcome}}" },
+        { "refId": "B", "expr": "sum by (outcome) (rate(llmgateway_background_responses_total[5m]))", "legendFormat": "background {{outcome}}" }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 }
+    }
+  ]
+}

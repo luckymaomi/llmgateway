@@ -98,6 +98,28 @@ func TestRouterExcludesPreviousAttemptAndResourceDomain(t *testing.T) {
 	}
 }
 
+func TestRouterReportsEarliestCandidateAvailableOnlyForPureCooldown(t *testing.T) {
+	router, err := NewRouter(fixedRandom(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	later := testCandidate("later")
+	later.CooldownUntil = routingTestTime.Add(2 * time.Minute)
+	sooner := testCandidate("sooner")
+	sooner.CooldownUntil = routingTestTime.Add(time.Minute)
+	permanent := testCandidate("permanent")
+	permanent.CredentialActive = false
+	permanent.CooldownUntil = routingTestTime.Add(30 * time.Second)
+
+	decision, err := router.Select(testRequirements(), []Candidate{later, permanent, sooner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.SelectedCandidateID != "" || !decision.NextAvailableAt.Equal(sooner.CooldownUntil) {
+		t.Fatalf("decision = %#v", decision)
+	}
+}
+
 func evaluationFor(t *testing.T, decision Decision, candidateID CandidateID) Evaluation {
 	t.Helper()
 	for _, evaluation := range decision.Evaluations {

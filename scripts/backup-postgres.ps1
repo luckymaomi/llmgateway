@@ -3,6 +3,7 @@ param(
   [string] $Container = "llmgateway-postgres",
   [string] $DatabaseName = "",
   [string] $DatabaseUser = "",
+  [string] $ExpectedComposeProject = "",
   [switch] $Force,
   [switch] $AllowIsolatedTestContainer
 )
@@ -15,7 +16,11 @@ function Get-ContainerFacts {
   $docker = Get-LLMGatewayDockerCommand
   $labels = (& $docker inspect --format '{{json .Config.Labels}}' $Name | ConvertFrom-Json)
   if ($LASTEXITCODE -ne 0) { throw "Could not inspect PostgreSQL container $Name." }
-  $owned = $labels.'com.docker.compose.project' -eq 'llmgateway' -and $labels.'com.docker.compose.service' -eq 'postgres'
+  if ($ExpectedComposeProject -and $ExpectedComposeProject -notmatch '^[a-z0-9][a-z0-9_-]{1,62}$') {
+    throw "Expected Compose project name is invalid."
+  }
+  $allowedProjects = if ($ExpectedComposeProject) { @($ExpectedComposeProject) } else { @('llmgateway', 'llmgateway-production') }
+  $owned = $labels.'com.docker.compose.project' -in $allowedProjects -and $labels.'com.docker.compose.service' -eq 'postgres'
   $isolated = $AllowIsolatedTestContainer -and $labels.'llmgateway.test.owner' -eq 'llmgateway-isolated-tests'
   if (-not $owned -and -not $isolated) { throw "Refusing to back up a PostgreSQL container not owned by LLMGateway." }
   $values = @{}

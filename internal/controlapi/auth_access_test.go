@@ -165,6 +165,47 @@ func TestGatewayKeyMutationRequiresIdempotencyKey(t *testing.T) {
 	}
 }
 
+func TestAccountRecoveryAndGatewayKeyReplacementContracts(t *testing.T) {
+	fixture := newControlFixture(t)
+	originalKeyID := uuid.New()
+	fixture.identity.keys[fixture.memberID] = []identity.GatewayKey{{
+		ID: originalKeyID, UserID: fixture.memberID, Name: "Member automation", Prefix: "llmg_original",
+		AuthorizedModelIDs: []uuid.UUID{fixture.activeModelID}, AuthorizedModels: []string{"fast"}, CreatedAt: fixture.now,
+	}}
+
+	missingIdempotency := requestWithIdempotencyKey(t, fixture.handler, http.MethodPost, "/api/control/users/"+fixture.memberID.String()+"/password", map[string]string{"newPassword": "replacement password"}, true, true, "")
+	requireStatus(t, missingIdempotency, http.StatusBadRequest)
+	if fixture.identity.resetPasswordUserID != uuid.Nil {
+		t.Fatal("password reset without idempotency key reached identity service")
+	}
+
+	idempotencyKey := uuid.New()
+	resetResponse := requestWithIdempotencyKey(t, fixture.handler, http.MethodPost, "/api/control/users/"+fixture.memberID.String()+"/password", map[string]string{"newPassword": "replacement password"}, true, true, idempotencyKey.String())
+	requireStatus(t, resetResponse, http.StatusOK)
+	reset := decodeData[sessionRevocationView](t, resetResponse)
+	if reset.RevokedSessions != 2 || fixture.identity.resetPasswordUserID != fixture.memberID || fixture.identity.resetPasswordMutation.IdempotencyKey != idempotencyKey || fixture.identity.resetPasswordMutation.RequestID == "" {
+		t.Fatalf("password reset contract = response %+v user %s mutation %+v", reset, fixture.identity.resetPasswordUserID, fixture.identity.resetPasswordMutation)
+	}
+
+	revokeSessionsResponse := request(t, fixture.handler, http.MethodPost, "/api/control/users/"+fixture.memberID.String()+"/sessions/revoke", nil, true, true)
+	requireStatus(t, revokeSessionsResponse, http.StatusOK)
+	revoked := decodeData[sessionRevocationView](t, revokeSessionsResponse)
+	if revoked.RevokedSessions != 3 || fixture.identity.revokedSessionsUserID != fixture.memberID {
+		t.Fatalf("session revocation contract = response %+v user %s", revoked, fixture.identity.revokedSessionsUserID)
+	}
+
+	replacementKey := uuid.New()
+	replacementResponse := requestWithIdempotencyKey(t, fixture.handler, http.MethodPost, "/api/control/keys/"+originalKeyID.String()+"/replacement", nil, true, true, replacementKey.String())
+	requireStatus(t, replacementResponse, http.StatusCreated)
+	replacement := decodeData[createdGatewayKeyView](t, replacementResponse)
+	if fixture.identity.replacedKeyID != originalKeyID || replacement.Secret != "llmg_replacement_one_time_secret" || replacement.Key.OwnerID != fixture.memberID.String() || replacement.Key.Status != "active" || replacementResponse.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("gateway key replacement contract = command %s response %+v cache %q", fixture.identity.replacedKeyID, replacement, replacementResponse.Header().Get("Cache-Control"))
+	}
+	if fixture.identity.keys[fixture.memberID][0].RevokedAt != nil {
+		t.Fatal("gateway key replacement revoked the original key")
+	}
+}
+
 func TestGatewayKeyRevocationHTTPIsReplayableAndHidesForeignKeys(t *testing.T) {
 	fixture := newControlFixture(t)
 	fixture.identity.principal.UserID = fixture.memberID

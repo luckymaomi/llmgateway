@@ -14,14 +14,26 @@ import (
 type Service struct {
 	repository Repository
 	envelope   *security.EnvelopeCipher
+	observer   Observer
 }
 
 func NewService(repository Repository, envelope *security.EnvelopeCipher) (*Service, error) {
 	if repository == nil || envelope == nil {
 		return nil, ErrInvalidInput
 	}
-	return &Service{repository: repository, envelope: envelope}, nil
+	return &Service{repository: repository, envelope: envelope, observer: noopObserver{}}, nil
 }
+
+func (s *Service) WithObserver(observer Observer) *Service {
+	if observer != nil {
+		s.observer = observer
+	}
+	return s
+}
+
+type noopObserver struct{}
+
+func (noopObserver) BackgroundResponse(string) {}
 
 func (s *Service) Begin(ctx context.Context, responseID, requestID, gatewayKeyID uuid.UUID, previousResponseID *uuid.UUID, input json.RawMessage) error {
 	record, err := s.encryptRecord(Record{ID: responseID, RequestID: &requestID, GatewayKeyID: gatewayKeyID, PreviousResponseID: previousResponseID, Status: StatusInProgress, Input: input})
@@ -50,6 +62,7 @@ func (s *Service) Enqueue(ctx context.Context, responseID, gatewayKeyID uuid.UUI
 	if err != nil {
 		return Record{}, err
 	}
+	s.observer.BackgroundResponse("queued")
 	return s.decryptRecord(created)
 }
 
@@ -69,6 +82,7 @@ func (s *Service) ClaimNext(ctx context.Context, executionID uuid.UUID, staleBef
 	if !claim.Valid() || !record.Background || len(record.Request) == 0 {
 		return Claim{}, Record{}, ErrConflict
 	}
+	s.observer.BackgroundResponse("claimed")
 	return claim, record, nil
 }
 
@@ -101,7 +115,11 @@ func (s *Service) CompleteClaim(ctx context.Context, claim Claim, requestID uuid
 	if !claim.Valid() || requestID == uuid.Nil {
 		return ErrInvalidInput
 	}
-	return s.repository.CompleteBackground(ctx, claim, requestID)
+	err := s.repository.CompleteBackground(ctx, claim, requestID)
+	if err == nil {
+		s.observer.BackgroundResponse("completed")
+	}
+	return err
 }
 
 func (s *Service) TerminateClaim(ctx context.Context, claim Claim, requestID *uuid.UUID, status Status, responseError json.RawMessage) error {
@@ -112,7 +130,11 @@ func (s *Service) TerminateClaim(ctx context.Context, claim Claim, requestID *uu
 	if err != nil {
 		return err
 	}
-	return s.repository.TerminateBackground(ctx, claim, requestID, status, encrypted)
+	err = s.repository.TerminateBackground(ctx, claim, requestID, status, encrypted)
+	if err == nil {
+		s.observer.BackgroundResponse(string(status))
+	}
+	return err
 }
 
 func (s *Service) RecoverOnce(ctx context.Context, batchSize int32) (int, error) {
@@ -126,7 +148,10 @@ func (s *Service) RecoverOnce(ctx context.Context, batchSize int32) (int, error)
 	completed := 0
 	var recoveryErrors []error
 	for _, recovery := range recoveries {
-		if err := s.repository.AttachBackgroundRequest(ctx, recovery.ResponseID); err != nil && !errors.Is(err, ErrConflict) {
+		if err := s.repository.AttachBackgroundRequest(ctx, recovery.ResponseID); err != nil {
+			if recoveryOwnershipLost(err) {
+				continue
+			}
 			recoveryErrors = append(recoveryErrors, err)
 			continue
 		}
@@ -157,13 +182,21 @@ func (s *Service) RecoverOnce(ctx context.Context, batchSize int32) (int, error)
 				continue
 			}
 		}
-		if err := s.repository.FinalizeRecoveredBackground(ctx, recovery.ResponseID, status, encryptedError); err != nil && !errors.Is(err, ErrConflict) {
+		if err := s.repository.FinalizeRecoveredBackground(ctx, recovery.ResponseID, status, encryptedError); err != nil {
+			if recoveryOwnershipLost(err) {
+				continue
+			}
 			recoveryErrors = append(recoveryErrors, err)
 			continue
 		}
+		s.observer.BackgroundResponse("recovered_" + string(status))
 		completed++
 	}
 	return completed, errors.Join(recoveryErrors...)
+}
+
+func recoveryOwnershipLost(err error) bool {
+	return errors.Is(err, ErrConflict) || errors.Is(err, ErrNotFound)
 }
 
 func (s *Service) Complete(ctx context.Context, responseID uuid.UUID, output json.RawMessage) error {

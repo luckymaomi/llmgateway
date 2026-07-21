@@ -1,0 +1,202 @@
+name: llmgateway-production
+
+x-gateway: &gateway
+  image: ${LLMGATEWAY_GATEWAY_IMAGE:?set LLMGATEWAY_GATEWAY_IMAGE to an immutable image reference}
+  restart: unless-stopped
+  stop_grace_period: 45s
+  read_only: true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,size=64m
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  pids_limit: 512
+  mem_limit: 1g
+  cpus: 2.0
+  environment: &gateway-environment
+    LLMGATEWAY_PROFILE: production
+    LLMGATEWAY_HTTP_ADDRESS: 0.0.0.0:8080
+    LLMGATEWAY_DATABASE_URL_FILE: /run/secrets/database_url
+    LLMGATEWAY_DATABASE_MIGRATE_ON_START: "false"
+    LLMGATEWAY_DATABASE_MIN_CONNECTIONS: "4"
+    LLMGATEWAY_DATABASE_MAX_CONNECTIONS: "24"
+    LLMGATEWAY_VALKEY_ADDRESS: valkey:6379
+    LLMGATEWAY_VALKEY_PASSWORD_FILE: /run/secrets/valkey_password
+    LLMGATEWAY_MASTER_KEYS_FILE: /run/secrets/master_keys
+    LLMGATEWAY_ACTIVE_MASTER_KEY_VERSION: ${LLMGATEWAY_ACTIVE_MASTER_KEY_VERSION:?set the active master key version}
+    LLMGATEWAY_SESSION_PEPPER_FILE: /run/secrets/session_pepper
+    LLMGATEWAY_API_KEY_PEPPER_FILE: /run/secrets/api_key_pepper
+    LLMGATEWAY_COORDINATION_KEY_HASH_SECRET_FILE: /run/secrets/coordination_key_hash_secret
+    LLMGATEWAY_COOKIE_SECURE: "true"
+    LLMGATEWAY_TRUSTED_PROXY: 172.30.0.10
+    LLMGATEWAY_LOG_LEVEL: ${LLMGATEWAY_LOG_LEVEL:-info}
+  secrets: &gateway-secrets
+    - database_url
+    - valkey_password
+    - master_keys
+    - session_pepper
+    - api_key_pepper
+    - coordination_key_hash_secret
+  healthcheck:
+    test: ["CMD", "/llmgateway-healthcheck"]
+    interval: 10s
+    timeout: 4s
+    retries: 6
+    start_period: 20s
+  depends_on:
+    postgres:
+      condition: service_healthy
+    valkey:
+      condition: service_healthy
+  networks:
+    backend: {}
+    edge: {}
+  logging: &service-logging
+    driver: local
+    options:
+      max-size: 20m
+      max-file: "5"
+
+services:
+  postgres:
+    image: ${LLMGATEWAY_POSTGRES_IMAGE:?set an immutable PostgreSQL image reference}
+    restart: unless-stopped
+    stop_grace_period: 60s
+    environment:
+      POSTGRES_DB: ${LLMGATEWAY_POSTGRES_DB:-llmgateway}
+      POSTGRES_USER: ${LLMGATEWAY_POSTGRES_USER:-llmgateway}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 512
+    mem_limit: 4g
+    cpus: 4.0
+    networks:
+      - backend
+    logging: *service-logging
+
+  valkey:
+    image: ${LLMGATEWAY_VALKEY_IMAGE:?set an immutable Valkey image reference}
+    user: "999:65532"
+    restart: unless-stopped
+    stop_grace_period: 30s
+    command: ["valkey-server", "--appendonly", "yes", "--aclfile", "/run/secrets/valkey_acl"]
+    secrets:
+      - valkey_acl
+    volumes:
+      - valkey_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "test \"$$(valkey-cli --raw ping 2>/dev/null)\" = 'NOAUTH Authentication required.'"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 1g
+    cpus: 2.0
+    networks:
+      - backend
+    logging: *service-logging
+
+  migrate:
+    image: ${LLMGATEWAY_GATEWAY_IMAGE:?set LLMGATEWAY_GATEWAY_IMAGE to an immutable image reference}
+    profiles: ["migration"]
+    entrypoint: ["/llmgateway-dbtool"]
+    command: ["-action", "up"]
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment: *gateway-environment
+    secrets: *gateway-secrets
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - backend
+    logging: *service-logging
+
+  gateway-a:
+    <<: *gateway
+
+  gateway-b:
+    <<: *gateway
+
+  caddy:
+    image: ${LLMGATEWAY_CADDY_IMAGE:?set an immutable Caddy image reference}
+    restart: unless-stopped
+    stop_grace_period: 30s
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    environment:
+      LLMGATEWAY_SITE_ADDRESS: ${LLMGATEWAY_SITE_ADDRESS:?set the public HTTPS site address}
+      LLMGATEWAY_ACME_EMAIL: ${LLMGATEWAY_ACME_EMAIL:?set the ACME account email}
+    ports:
+      - "${LLMGATEWAY_HTTP_PORT:-80}:80"
+      - "${LLMGATEWAY_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      gateway-a:
+        condition: service_healthy
+      gateway-b:
+        condition: service_healthy
+    networks:
+      edge:
+        ipv4_address: 172.30.0.10
+    logging: *service-logging
+
+networks:
+  backend:
+    internal: true
+  edge:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+volumes:
+  postgres_data: {}
+  valkey_data: {}
+  caddy_data: {}
+  caddy_config: {}
+
+secrets:
+  postgres_password:
+    file: ${LLMGATEWAY_POSTGRES_PASSWORD_FILE:?set the PostgreSQL password file}
+  database_url:
+    file: ${LLMGATEWAY_DATABASE_URL_FILE:?set the PostgreSQL DSN file}
+  valkey_password:
+    file: ${LLMGATEWAY_VALKEY_PASSWORD_FILE:?set the Valkey password file}
+  valkey_acl:
+    file: ${LLMGATEWAY_VALKEY_ACL_FILE:?set the Valkey ACL file}
+  master_keys:
+    file: ${LLMGATEWAY_MASTER_KEYS_FILE:?set the master key ring file}
+  session_pepper:
+    file: ${LLMGATEWAY_SESSION_PEPPER_FILE:?set the session pepper file}
+  api_key_pepper:
+    file: ${LLMGATEWAY_API_KEY_PEPPER_FILE:?set the API key pepper file}
+  coordination_key_hash_secret:
+    file: ${LLMGATEWAY_COORDINATION_KEY_HASH_SECRET_FILE:?set the coordination hash secret file}

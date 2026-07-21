@@ -96,6 +96,8 @@ function displayValue(field: ProviderEditableField, value: string): string {
       return '智谱 GLM'
     case 'agnes':
       return 'Agnes'
+    case 'gemini':
+      return 'Google Gemini'
     default:
       return value
   }

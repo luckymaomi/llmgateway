@@ -37,6 +37,7 @@ type wireChatRequest struct {
 	StreamOptions      *wireStreamOptions      `json:"stream_options,omitempty"`
 	Thinking           *wireThinking           `json:"thinking,omitempty"`
 	ReasoningEffort    string                  `json:"reasoning_effort,omitempty"`
+	EnableThinking     *bool                   `json:"enable_thinking,omitempty"`
 	ToolStream         *bool                   `json:"tool_stream,omitempty"`
 	RequestID          string                  `json:"request_id,omitempty"`
 	ChatTemplateKwargs *wireChatTemplateKwargs `json:"chat_template_kwargs,omitempty"`
@@ -75,9 +76,18 @@ type wireToolFunction struct {
 }
 
 type wireToolCall struct {
-	ID       string           `json:"id"`
-	Type     string           `json:"type"`
-	Function wireFunctionCall `json:"function"`
+	ID           string                `json:"id"`
+	Type         string                `json:"type"`
+	Function     wireFunctionCall      `json:"function"`
+	ExtraContent *toolCallExtraContent `json:"extra_content,omitempty"`
+}
+
+type toolCallExtraContent struct {
+	Google *googleToolCallMetadata `json:"google,omitempty"`
+}
+
+type googleToolCallMetadata struct {
+	ThoughtSignature string `json:"thought_signature"`
 }
 
 type wireFunctionCall struct {
@@ -119,22 +129,6 @@ func NewOpenAICompatible(options OpenAICompatibleOptions) (Adapter, error) {
 		options.Capabilities.ResponseRequestID = true
 	}
 	return newAdapter(options.BaseURL, openAICompatiblePolicy(options.Capabilities, options.RequestIDHeader))
-}
-
-func NewZhipu() Adapter {
-	return mustNewAdapter("https://open.bigmodel.cn/api/paas/v4", zhipuPolicy())
-}
-
-func NewZhipuWithBaseURL(baseURL string) (Adapter, error) {
-	return newAdapter(baseURL, zhipuPolicy())
-}
-
-func NewAgnes() Adapter {
-	return mustNewAdapter("https://apihub.agnes-ai.com/v1", agnesPolicy())
-}
-
-func NewAgnesWithBaseURL(baseURL string) (Adapter, error) {
-	return newAdapter(baseURL, agnesPolicy())
 }
 
 func mustNewAdapter(baseURL string, policy wirePolicy) Adapter {

@@ -97,8 +97,10 @@ WHERE (sqlc.narg(user_id)::uuid IS NULL OR user_id = sqlc.narg(user_id))
 ORDER BY created_at DESC, id LIMIT sqlc.arg(page_size) OFFSET sqlc.arg(page_offset);
 
 -- name: CreateRequest :one
-INSERT INTO requests (id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream)
-VALUES (sqlc.arg(id), sqlc.narg(idempotency_key), sqlc.arg(request_digest), sqlc.arg(user_id), sqlc.arg(gateway_key_id), sqlc.arg(model_id), sqlc.arg(entitlement_id), sqlc.narg(config_revision_id), sqlc.arg(resource_domain), sqlc.arg(status), sqlc.arg(stream))
+INSERT INTO requests (id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain,
+                      price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, status, stream)
+VALUES (sqlc.arg(id), sqlc.narg(idempotency_key), sqlc.arg(request_digest), sqlc.arg(user_id), sqlc.arg(gateway_key_id), sqlc.arg(model_id), sqlc.arg(entitlement_id), sqlc.narg(config_revision_id), sqlc.arg(resource_domain),
+        sqlc.arg(price_version_id), sqlc.arg(cost_currency), sqlc.arg(input_rate_nanos_per_million), sqlc.arg(output_rate_nanos_per_million), sqlc.arg(status), sqlc.arg(stream))
 RETURNING *;
 
 -- name: GetRequestByIdempotencyKey :one
@@ -237,7 +239,9 @@ ORDER BY request.updated_at, request.id
 LIMIT sqlc.arg(batch_size);
 
 -- name: CompleteRequest :one
-UPDATE requests SET status = 'completed', input_tokens = sqlc.arg(input_tokens), output_tokens = sqlc.arg(output_tokens), usage_source = sqlc.arg(usage_source), error_kind = NULL, error_detail = NULL, completed_at = now(), updated_at = now()
+UPDATE requests SET status = 'completed', input_tokens = sqlc.arg(input_tokens), output_tokens = sqlc.arg(output_tokens), usage_source = sqlc.arg(usage_source),
+    input_cost_nanos = sqlc.arg(input_cost_nanos), output_cost_nanos = sqlc.arg(output_cost_nanos), total_cost_nanos = sqlc.arg(total_cost_nanos),
+    error_kind = NULL, error_detail = NULL, completed_at = now(), updated_at = now()
 WHERE id = sqlc.arg(id)
   AND execution_id = sqlc.arg(execution_id)
   AND execution_generation = sqlc.arg(execution_generation)
@@ -259,6 +263,7 @@ RETURNING *;
 -- name: FailRequestWithUsage :one
 UPDATE requests
 SET status = 'failed', input_tokens = sqlc.arg(input_tokens), output_tokens = sqlc.arg(output_tokens), usage_source = sqlc.arg(usage_source),
+    input_cost_nanos = sqlc.arg(input_cost_nanos), output_cost_nanos = sqlc.arg(output_cost_nanos), total_cost_nanos = sqlc.arg(total_cost_nanos),
     error_kind = sqlc.arg(error_kind), error_detail = sqlc.narg(error_detail), completed_at = now(), updated_at = now()
 WHERE id = sqlc.arg(id)
   AND execution_id = sqlc.arg(execution_id)

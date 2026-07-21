@@ -34,6 +34,7 @@ type Service struct {
 	retry       *resilience.RetryPolicy
 	clock       Clock
 	config      Config
+	observer    Observer
 
 	circuitMu sync.Mutex
 	circuits  map[uuid.UUID]*resilience.Circuit
@@ -55,8 +56,31 @@ func New(repository Repository, accounting Accounting, secrets SecretResolver, a
 	return &Service{
 		repository: repository, accounting: accounting, secrets: secrets, admitter: admitter, coordinator: coordinator,
 		factory: factory, router: router, retry: retry, clock: clock, config: config,
-		circuits: make(map[uuid.UUID]*resilience.Circuit),
+		observer: noopObserver{}, circuits: make(map[uuid.UUID]*resilience.Circuit),
 	}, nil
+}
+
+func (s *Service) WithObserver(observer Observer) *Service {
+	if observer != nil {
+		s.observer = observer
+	}
+	return s
+}
+
+type noopObserver struct{}
+
+func (noopObserver) ProviderAttempt(providers.Kind, string, string) {}
+
+func (s *Service) observeAttempt(kind providers.Kind, err *canonical.Error) {
+	if err == nil {
+		s.observer.ProviderAttempt(kind, "succeeded", "none")
+		return
+	}
+	outcome := "failed"
+	if err.Kind == canonical.ErrorUncertain || err.Kind == canonical.ErrorStreamInterrupted {
+		outcome = "uncertain"
+	}
+	s.observer.ProviderAttempt(kind, outcome, string(err.Kind))
 }
 
 func (s *Service) Models(ctx context.Context, gatewayKeyID uuid.UUID) ([]Model, error) {
@@ -208,15 +232,83 @@ func validateCapabilities(model Model, request canonical.ChatRequest) *canonical
 }
 
 func (s *Service) candidateDecision(run workflowRun, excluded []routing.CandidateID) (Candidate, *resilience.Permit, *canonical.Error) {
-	candidate, selectionError := s.selectCandidate(run, excluded)
-	if selectionError != nil {
-		return Candidate{}, nil, selectionError
+	selectionExcluded := append([]routing.CandidateID(nil), excluded...)
+	var earliestRetryAt *time.Time
+	circuitUnavailable := false
+	for {
+		candidate, selectionError := s.selectCandidate(run, selectionExcluded)
+		if selectionError != nil {
+			if !circuitUnavailable {
+				return Candidate{}, nil, selectionError
+			}
+			earliestRetryAt = earlierRetryAt(earliestRetryAt, retryAfterAt(selectionError.RetryAfter, s.clock.Now().UTC()))
+			return Candidate{}, nil, circuitUnavailableError(earliestRetryAt)
+		}
+		permit, circuitError := s.acquireCircuit(candidate.ID)
+		if circuitError == nil {
+			return candidate, permit, nil
+		}
+		if circuitError.Code != "upstream_circuit_open" {
+			return Candidate{}, nil, circuitError
+		}
+		circuitUnavailable = true
+		earliestRetryAt = earlierRetryAt(earliestRetryAt, retryAfterAt(circuitError.RetryAfter, s.clock.Now().UTC()))
+		selectionExcluded = append(selectionExcluded, routing.CandidateID(candidate.ID.String()))
 	}
-	permit, err := s.acquireCircuit(candidate.ID)
-	if err != nil {
-		return Candidate{}, nil, err
+}
+
+func (s *Service) attemptDecision(ctx context.Context, run *workflowRun, excluded []routing.CandidateID, attemptNumber int) (Candidate, *resilience.Permit, Lease, *canonical.Error) {
+	if attemptNumber != 1 {
+		candidate, permit, selectionError := s.candidateDecision(*run, excluded)
+		return candidate, permit, nil, selectionError
 	}
-	return candidate, permit, nil
+
+	candidate := run.initialCandidate
+	lease := run.initialLease
+	run.initialLease = nil
+	permit, circuitError := s.acquireCircuit(candidate.ID)
+	if circuitError == nil {
+		return candidate, permit, lease, nil
+	}
+	if lease != nil {
+		_ = lease.Release(context.WithoutCancel(ctx))
+	}
+	if circuitError.Code != "upstream_circuit_open" {
+		return Candidate{}, nil, nil, circuitError
+	}
+
+	selectionExcluded := append([]routing.CandidateID(nil), excluded...)
+	selectionExcluded = append(selectionExcluded, routing.CandidateID(candidate.ID.String()))
+	nextCandidate, nextPermit, selectionError := s.candidateDecision(*run, selectionExcluded)
+	if selectionError == nil {
+		return nextCandidate, nextPermit, nil, nil
+	}
+	retryAt := earlierRetryAt(
+		retryAfterAt(circuitError.RetryAfter, s.clock.Now().UTC()),
+		retryAfterAt(selectionError.RetryAfter, s.clock.Now().UTC()),
+	)
+	return Candidate{}, nil, nil, circuitUnavailableError(retryAt)
+}
+
+func circuitUnavailableError(retryAt *time.Time) *canonical.Error {
+	providerError := &canonical.Error{
+		Kind: canonical.ErrorProviderTemporary, Code: "upstream_circuit_open", Message: "all eligible upstream credentials are cooling down",
+	}
+	if retryAt != nil && !retryAt.IsZero() {
+		at := retryAt.UTC()
+		providerError.RetryAfter = &canonical.RetryAfter{At: &at}
+	}
+	return providerError
+}
+
+func earlierRetryAt(left, right *time.Time) *time.Time {
+	if left == nil || left.IsZero() {
+		return right
+	}
+	if right == nil || right.IsZero() || left.Before(*right) {
+		return left
+	}
+	return right
 }
 
 func (s *Service) selectCandidate(run workflowRun, excluded []routing.CandidateID) (Candidate, *canonical.Error) {
@@ -242,7 +334,12 @@ func (s *Service) selectCandidate(run workflowRun, excluded []routing.CandidateI
 		return Candidate{}, &canonical.Error{Kind: canonical.ErrorInternalInvariant, Code: "routing_failed", Message: "upstream routing failed", Cause: err}
 	}
 	if decision.SelectedCandidateID == "" {
-		return Candidate{}, &canonical.Error{Kind: canonical.ErrorProviderTemporary, Code: domainUnavailableCode(run.model), Message: "no eligible upstream credential is available"}
+		providerError := &canonical.Error{Kind: canonical.ErrorProviderTemporary, Code: domainUnavailableCode(run.model), Message: "no eligible upstream credential is available"}
+		if !decision.NextAvailableAt.IsZero() {
+			retryAt := decision.NextAvailableAt.UTC()
+			providerError.RetryAfter = &canonical.RetryAfter{At: &retryAt}
+		}
+		return Candidate{}, providerError
 	}
 	candidate := byID[decision.SelectedCandidateID]
 	return candidate, nil
@@ -255,7 +352,12 @@ func (s *Service) acquireCircuit(candidateID uuid.UUID) (*resilience.Permit, *ca
 	}
 	acquired := circuit.Acquire()
 	if !acquired.Allowed {
-		return nil, &canonical.Error{Kind: canonical.ErrorProviderTemporary, Code: "upstream_circuit_open", Message: "upstream credential is cooling down", RetryAfter: &canonical.RetryAfter{At: &acquired.RetryAt}}
+		providerError := &canonical.Error{Kind: canonical.ErrorProviderTemporary, Code: "upstream_circuit_open", Message: "upstream credential is cooling down"}
+		if !acquired.RetryAt.IsZero() {
+			retryAt := acquired.RetryAt.UTC()
+			providerError.RetryAfter = &canonical.RetryAfter{At: &retryAt}
+		}
+		return nil, providerError
 	}
 	return acquired.Permit, nil
 }
@@ -344,6 +446,8 @@ func workflowError(err error) *canonical.Error {
 		return &canonical.Error{Kind: canonical.ErrorInvalidRequest, Code: "idempotency_conflict", Message: "idempotency key was reused with a different request", HTTPStatus: http.StatusConflict}
 	case errors.Is(err, ErrQuotaExhausted):
 		return &canonical.Error{Kind: canonical.ErrorQuota, Code: "quota_exhausted", Message: "no applicable entitlement has enough remaining tokens", HTTPStatus: http.StatusPaymentRequired}
+	case errors.Is(err, ErrCostConfigurationMissing):
+		return &canonical.Error{Kind: canonical.ErrorInvalidRequest, Code: "cost_configuration_missing", Message: "the model has no effective cost configuration", Parameter: "model", HTTPStatus: http.StatusConflict}
 	case errors.Is(err, ErrInvalidAccounting):
 		return &canonical.Error{Kind: canonical.ErrorInvalidRequest, Code: "invalid_accounting_request", Message: "request cannot be reserved", HTTPStatus: http.StatusBadRequest}
 	default:

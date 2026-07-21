@@ -17,7 +17,7 @@ export async function editProvider(
   page: Page,
   name: string,
   baseURL: string,
-  kind?: 'openai-compatible' | 'zhipu' | 'agnes',
+  kind?: 'openai-compatible' | 'zhipu' | 'agnes' | 'gemini',
 ): Promise<void> {
   await page.getByRole('button', { name: '编辑 Provider' }).click()
   const dialog = page.getByRole('dialog')

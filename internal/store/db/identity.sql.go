@@ -116,6 +116,46 @@ func (q *Queries) ClaimInvitationMutation(ctx context.Context, arg ClaimInvitati
 	return i, err
 }
 
+const claimMemberPasswordResetMutation = `-- name: ClaimMemberPasswordResetMutation :one
+INSERT INTO member_password_reset_mutations (
+  actor_user_id, idempotency_key, user_id, request_fingerprint, request_id
+) VALUES (
+  $1, $2, $3, $4, $5
+)
+ON CONFLICT (actor_user_id, idempotency_key) DO NOTHING
+RETURNING id, actor_user_id, idempotency_key, user_id, request_fingerprint, request_id, result, created_at
+`
+
+type ClaimMemberPasswordResetMutationParams struct {
+	ActorUserID        uuid.UUID `json:"actor_user_id"`
+	IdempotencyKey     uuid.UUID `json:"idempotency_key"`
+	UserID             uuid.UUID `json:"user_id"`
+	RequestFingerprint []byte    `json:"request_fingerprint"`
+	RequestID          string    `json:"request_id"`
+}
+
+func (q *Queries) ClaimMemberPasswordResetMutation(ctx context.Context, arg ClaimMemberPasswordResetMutationParams) (MemberPasswordResetMutation, error) {
+	row := q.db.QueryRow(ctx, claimMemberPasswordResetMutation,
+		arg.ActorUserID,
+		arg.IdempotencyKey,
+		arg.UserID,
+		arg.RequestFingerprint,
+		arg.RequestID,
+	)
+	var i MemberPasswordResetMutation
+	err := row.Scan(
+		&i.ID,
+		&i.ActorUserID,
+		&i.IdempotencyKey,
+		&i.UserID,
+		&i.RequestFingerprint,
+		&i.RequestID,
+		&i.Result,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const completeGatewayKeyMutation = `-- name: CompleteGatewayKeyMutation :one
 UPDATE gateway_key_mutations
 SET gateway_key_id = $1, result = $2
@@ -168,6 +208,34 @@ func (q *Queries) CompleteInvitationMutation(ctx context.Context, arg CompleteIn
 		&i.RequestFingerprint,
 		&i.RequestID,
 		&i.InvitationID,
+		&i.Result,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const completeMemberPasswordResetMutation = `-- name: CompleteMemberPasswordResetMutation :one
+UPDATE member_password_reset_mutations
+SET result = $1
+WHERE id = $2
+RETURNING id, actor_user_id, idempotency_key, user_id, request_fingerprint, request_id, result, created_at
+`
+
+type CompleteMemberPasswordResetMutationParams struct {
+	Result []byte    `json:"result"`
+	ID     uuid.UUID `json:"id"`
+}
+
+func (q *Queries) CompleteMemberPasswordResetMutation(ctx context.Context, arg CompleteMemberPasswordResetMutationParams) (MemberPasswordResetMutation, error) {
+	row := q.db.QueryRow(ctx, completeMemberPasswordResetMutation, arg.Result, arg.ID)
+	var i MemberPasswordResetMutation
+	err := row.Scan(
+		&i.ID,
+		&i.ActorUserID,
+		&i.IdempotencyKey,
+		&i.UserID,
+		&i.RequestFingerprint,
+		&i.RequestID,
 		&i.Result,
 		&i.CreatedAt,
 	)
@@ -385,6 +453,42 @@ func (q *Queries) GetGatewayKeyByDigest(ctx context.Context, secretDigest []byte
 	return i, err
 }
 
+const getGatewayKeyForReplacement = `-- name: GetGatewayKeyForReplacement :one
+SELECT id, user_id, name, prefix, expires_at, revoked_at, last_used_at, created_at
+FROM gateway_keys
+WHERE id = $1
+  AND revoked_at IS NULL
+  AND (expires_at IS NULL OR expires_at > now())
+FOR UPDATE
+`
+
+type GetGatewayKeyForReplacementRow struct {
+	ID         uuid.UUID          `json:"id"`
+	UserID     uuid.UUID          `json:"user_id"`
+	Name       string             `json:"name"`
+	Prefix     string             `json:"prefix"`
+	ExpiresAt  pgtype.Timestamptz `json:"expires_at"`
+	RevokedAt  pgtype.Timestamptz `json:"revoked_at"`
+	LastUsedAt pgtype.Timestamptz `json:"last_used_at"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+}
+
+func (q *Queries) GetGatewayKeyForReplacement(ctx context.Context, id uuid.UUID) (GetGatewayKeyForReplacementRow, error) {
+	row := q.db.QueryRow(ctx, getGatewayKeyForReplacement, id)
+	var i GetGatewayKeyForReplacementRow
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Name,
+		&i.Prefix,
+		&i.ExpiresAt,
+		&i.RevokedAt,
+		&i.LastUsedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getGatewayKeyForRevocation = `-- name: GetGatewayKeyForRevocation :one
 SELECT id, user_id, revoked_at
 FROM gateway_keys
@@ -538,6 +642,32 @@ func (q *Queries) GetInvitationMutation(ctx context.Context, arg GetInvitationMu
 	return i, err
 }
 
+const getMemberPasswordResetMutation = `-- name: GetMemberPasswordResetMutation :one
+SELECT id, actor_user_id, idempotency_key, user_id, request_fingerprint, request_id, result, created_at FROM member_password_reset_mutations
+WHERE actor_user_id = $1 AND idempotency_key = $2
+`
+
+type GetMemberPasswordResetMutationParams struct {
+	ActorUserID    uuid.UUID `json:"actor_user_id"`
+	IdempotencyKey uuid.UUID `json:"idempotency_key"`
+}
+
+func (q *Queries) GetMemberPasswordResetMutation(ctx context.Context, arg GetMemberPasswordResetMutationParams) (MemberPasswordResetMutation, error) {
+	row := q.db.QueryRow(ctx, getMemberPasswordResetMutation, arg.ActorUserID, arg.IdempotencyKey)
+	var i MemberPasswordResetMutation
+	err := row.Scan(
+		&i.ID,
+		&i.ActorUserID,
+		&i.IdempotencyKey,
+		&i.UserID,
+		&i.RequestFingerprint,
+		&i.RequestID,
+		&i.Result,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getModelForGatewayKeyBinding = `-- name: GetModelForGatewayKeyBinding :one
 SELECT model.model_id AS id, model.public_name
 FROM active_config active
@@ -652,6 +782,28 @@ func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
 	return i, err
 }
 
+const getUserForAdministrativeRecovery = `-- name: GetUserForAdministrativeRecovery :one
+SELECT id, email, display_name, password_hash, role, status, approved_at, disabled_at, created_at, updated_at FROM users WHERE id = $1 FOR UPDATE
+`
+
+func (q *Queries) GetUserForAdministrativeRecovery(ctx context.Context, id uuid.UUID) (User, error) {
+	row := q.db.QueryRow(ctx, getUserForAdministrativeRecovery, id)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.DisplayName,
+		&i.PasswordHash,
+		&i.Role,
+		&i.Status,
+		&i.ApprovedAt,
+		&i.DisabledAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getUserForGatewayKeyCreation = `-- name: GetUserForGatewayKeyCreation :one
 SELECT id, email, display_name, password_hash, role, status, approved_at, disabled_at, created_at, updated_at FROM users WHERE id = $1 FOR SHARE
 `
@@ -702,6 +854,46 @@ func (q *Queries) IsGatewayKeyAuthorizedForModel(ctx context.Context, arg IsGate
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const listGatewayKeyModelBindingsByKey = `-- name: ListGatewayKeyModelBindingsByKey :many
+SELECT gkm.model_id, published.public_name
+FROM gateway_key_models gkm
+JOIN LATERAL (
+  SELECT model.public_name
+  FROM config_revision_models model
+  JOIN config_revisions revision ON revision.id = model.revision_id
+  WHERE model.model_id = gkm.model_id AND revision.published_at IS NOT NULL
+  ORDER BY revision.revision DESC
+  LIMIT 1
+) published ON true
+WHERE gkm.gateway_key_id = $1
+ORDER BY published.public_name, gkm.model_id
+`
+
+type ListGatewayKeyModelBindingsByKeyRow struct {
+	ModelID    uuid.UUID `json:"model_id"`
+	PublicName string    `json:"public_name"`
+}
+
+func (q *Queries) ListGatewayKeyModelBindingsByKey(ctx context.Context, gatewayKeyID uuid.UUID) ([]ListGatewayKeyModelBindingsByKeyRow, error) {
+	rows, err := q.db.Query(ctx, listGatewayKeyModelBindingsByKey, gatewayKeyID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListGatewayKeyModelBindingsByKeyRow{}
+	for rows.Next() {
+		var i ListGatewayKeyModelBindingsByKeyRow
+		if err := rows.Scan(&i.ModelID, &i.PublicName); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listGatewayKeyModelBindingsByUser = `-- name: ListGatewayKeyModelBindingsByUser :many
@@ -954,13 +1146,34 @@ func (q *Queries) RevokeSession(ctx context.Context, id uuid.UUID) (int64, error
 	return result.RowsAffected(), nil
 }
 
-const revokeUserSessions = `-- name: RevokeUserSessions :exec
+const revokeUserSessions = `-- name: RevokeUserSessions :execrows
 UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL
 `
 
-func (q *Queries) RevokeUserSessions(ctx context.Context, userID uuid.UUID) error {
-	_, err := q.db.Exec(ctx, revokeUserSessions, userID)
-	return err
+func (q *Queries) RevokeUserSessions(ctx context.Context, userID uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, revokeUserSessions, userID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const revokeUserSessionsExcept = `-- name: RevokeUserSessionsExcept :execrows
+UPDATE sessions SET revoked_at = now()
+WHERE user_id = $1 AND id <> $2 AND revoked_at IS NULL
+`
+
+type RevokeUserSessionsExceptParams struct {
+	UserID             uuid.UUID `json:"user_id"`
+	PreservedSessionID uuid.UUID `json:"preserved_session_id"`
+}
+
+func (q *Queries) RevokeUserSessionsExcept(ctx context.Context, arg RevokeUserSessionsExceptParams) (int64, error) {
+	result, err := q.db.Exec(ctx, revokeUserSessionsExcept, arg.UserID, arg.PreservedSessionID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const touchGatewayKey = `-- name: TouchGatewayKey :exec
@@ -979,6 +1192,35 @@ UPDATE sessions SET last_seen_at = now() WHERE id = $1 AND revoked_at IS NULL
 func (q *Queries) TouchSession(ctx context.Context, id uuid.UUID) error {
 	_, err := q.db.Exec(ctx, touchSession, id)
 	return err
+}
+
+const updateUserPassword = `-- name: UpdateUserPassword :one
+UPDATE users SET password_hash = $1, updated_at = now()
+WHERE id = $2
+RETURNING id, email, display_name, password_hash, role, status, approved_at, disabled_at, created_at, updated_at
+`
+
+type UpdateUserPasswordParams struct {
+	PasswordHash string    `json:"password_hash"`
+	ID           uuid.UUID `json:"id"`
+}
+
+func (q *Queries) UpdateUserPassword(ctx context.Context, arg UpdateUserPasswordParams) (User, error) {
+	row := q.db.QueryRow(ctx, updateUserPassword, arg.PasswordHash, arg.ID)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.DisplayName,
+		&i.PasswordHash,
+		&i.Role,
+		&i.Status,
+		&i.ApprovedAt,
+		&i.DisabledAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const updateUserStatus = `-- name: UpdateUserStatus :one
