@@ -1,145 +1,212 @@
-# LLMGateway 双核心生产收口计划
+# LLMGateway 生产发布与运营闭环计划
 
 ## 需求文档
 
-LLMGateway 面向约 200～300 名受控用户，交付两个核心和最低生产地基：管理员运营多 Provider、模型、凭据与发布目录，成员使用一个 Gateway Key 调用统一 LLM API；管理员同时运营邀请、审核、用户状态、模型权限、额度、RPM、TPM、并发和 Key，成员只管理自己的 Key 与用量。
+LLMGateway 的双核心与最低生产地基已经闭合。下一阶段把当前可验证产品交付为创业公司能够长期运营、升级、排障和对客户负责的正式生产服务：真实 Provider 合同经过现场核验，200～300 名受控用户的容量有数据依据，部署、升级、回滚、备份、灾备、安全供应链、发布物、账号恢复、成本归集和支持文档形成完整闭环。
 
-Provider 是持续扩展面。新增接入必须复用统一公共协议、canonical、调度、账本和恢复边界，通过唯一 Provider catalog 进入请求、探测、校验和管理端。
+产品仍围绕多 Provider 统一 API 与管理员/成员系统演进。新增工作必须服务真实接入、生产运行或公司经营，不建立独立于双核心的第三条产品主线。
 
 ## 当前事实
 
-- `administrator/member` 身份、邀请审核、额度、Gateway Key 与所有权边界已经接线。
-- PostgreSQL baseline、不可变 catalog revision、active version、原子额度账本、请求/attempt/usage/审计和恢复状态已经接线。
-- Valkey 承担跨实例 RPM/TPM、并发和短期租约；本地 admission 保证每用户 FIFO、用户轮转和用户并发上限。
-- 路由执行硬资格过滤、最小管理员 priority 和同级正 weight；冷却、熔断和有限重试消费稳定错误类别。
-- Models、Chat Completions、Responses、流式、工具、reasoning、usage 和 Playground 已接线。
-- 凭据使用版本化 AEAD；Gateway Key、邀请、会话与 CSRF 使用摘要；日志脱敏、SSRF 和资源上限已接线。
-- Provider catalog 集中拥有 kind、展示名称和 adapter builder，请求执行、凭据探测、Provider 校验和管理端类型列表消费同一事实。
-- 已提供显式凭据主密钥轮换、PostgreSQL custom-format 备份、恢复到新数据库和隔离运维演练。
-- Windows amd64 嵌入式生产二进制连接 PostgreSQL 18、Valkey 9 与恢复数据库后已通过启动、readiness 和前端交付验证。
+- 当前提交 `d4b3e2c` 已通过唯一完整验证：Go、sqlc、前端、mock/真实有头 Chromium、migration、控制面、核心链、跨实例/强杀恢复、主密钥轮换、PostgreSQL 备份恢复、Windows amd64 生产运行和构建矩阵。
+- 公共 API 已覆盖 Models、Chat Completions、Responses、非流、流式、工具、reasoning、usage 和后台 Responses。
+- 管理员/成员、邀请审核、模型权限、额度、RPM/TPM/并发和 Gateway Key 已闭环。
+- Provider catalog 已集中拥有 kind、展示名称和 adapter builder，并被请求、探测、校验和管理端消费。
+- 当前 Provider 行为主要由官方资料研究、单元 wire fixture 和隔离 TLS Provider 证明，没有使用真实 GLM/Agnes 生产凭据完成本轮现场验收。
+- 当前验证证明功能正确性与关键并发边界，没有代表 200～300 名用户真实流量分布的容量、长流稳态和资源基线。
+- 当前生产目标只验证 Windows amd64 二进制的启动与前端交付，没有可安装服务、反向代理配置、升级/回滚演练和正式环境拓扑清单。
+- 当前有 HTTP/Go 进程指标、结构化日志和 readiness，没有 admission、Provider、额度、恢复和后台任务的完整领域指标与运行手册。
+- 当前 CI 执行 Linux/Windows 验证和 race，没有依赖漏洞、secret、许可证、SBOM、镜像、制品签名和发布 provenance 门槛。
+- 当前有显式备份、恢复和主密钥轮换命令，没有定时备份、异地保留、恢复周期、RPO/RTO 和整站灾备演练。
+- 当前成员可以登录、注销和被停用，没有管理员驱动的密码恢复、管理员锁定恢复和会话批量撤销运维流程。
+- 当前账本记录 token 与 usage 来源，没有 Provider 价格版本、请求成本快照、客户合同额度对账和毛利所需的只读经营事实。
 
 ## 失败证据
 
-当前没有已知核心产品失败。最新 Provider catalog、运维闭环和全部消费者已经通过唯一完整验证。
+- 无真实 Provider 凭据时，无法证明当前 adapter 与供应商当日生产 wire、限额和错误完全一致。
+- 无容量与长流测试时，无法给出 200～300 名用户下的并发、连接池、队列等待、数据库、Valkey、内存和文件描述符配置基线。
+- 无可安装服务与升级演练时，无法复现正式主机重启、自启动、滚动升级、migration 前置、回滚和日志归档流程。
+- 无供应链与发布门槛时，构建成功不能证明依赖、镜像、secret、许可证和发布制品满足正式发布要求。
+- 无定时异地备份与 RPO/RTO 演练时，单次本机 restore 不能证明主机或卷损坏后的业务恢复能力。
+- 无账号恢复流程时，遗忘密码或唯一管理员锁定需要临时数据库操作，不能作为长期支持边界。
+- 无成本快照时，usage 能说明消耗量，但不能稳定解释某次请求使用了哪个价格版本和产生了多少成本。
 
 ## 最终目标
 
-- 管理员能从真实浏览器完成 Provider、模型、凭据、探测、发布、邀请、审核、授权、额度和 Key 全旅程。
-- 成员能用一个 Key 稳定调用已授权 Models、Chat Completions 和 Responses，并使用流式、工具、reasoning 与 usage。
-- 排队、限流、错误、取消、断连、刷新、重登、强杀、重启、多实例和协调故障都产生可理解且可恢复的结果。
-- Provider 扩展通过单一 catalog 与 Adapter 合同闭环，不让厂商差异扩散到调度、账本和公共协议。
-- 备份恢复、主密钥轮换和 Windows amd64 生产运行具有可复现命令与隔离演练证据。
-- 代码、schema、API、UI、测试和事实文档表达同一当前产品。
+- 智谱 GLM、Agnes 与至少一个通用 OpenAI-compatible 上游通过真实凭据、官方 SDK/标准 SDK 和隔离 canary 验收，形成可维护兼容矩阵。
+- 以代表性聊天、Responses、工具、reasoning、短流和长流流量证明 200～300 名受控用户的容量基线、限流、公平、恢复和资源上限。
+- 交付一个可安装、可自启动、可升级、可回滚、可备份和可排障的正式部署目标，并完成 staging 到 production 的演练。
+- 关键领域状态具有低基数指标、结构化日志、运行看板和可行动阈值，支持值班人员定位 Provider、容量、额度和恢复故障。
+- CI 与发布链生成经过漏洞、secret、许可证和 SBOM 检查的确定性制品，并附校验和、签名/provenance 与发布说明。
+- 备份按计划加密并异地保留，恢复演练满足明确 RPO/RTO；主密钥、数据库和整站恢复顺序有可执行手册。
+- 管理员可以安全恢复成员访问并处理管理员锁定，所有恢复操作撤销旧会话并留下非秘密审计。
+- 每次请求保存明确的 Provider 价格版本和整数最小货币单位成本，支持按客户合同与资源域核对用量和毛利。
+- 用户接入、管理员运营、Provider 扩展、部署、升级、备份、恢复和事故处理文档与实际命令一致。
 
 ## 不做范围
 
-本计划只完成双核心、Provider 扩展合同和最低生产地基，不扩张到没有已确认用户需求的第三条业务主线。
+本计划只补齐正式发布与长期运营所需事实；任何新产品能力仍需真实用户需求、单一 owner 和独立生产级验收。
 
 ## 设计
 
-```text
-Administrator -> Provider / Model / Credential -> Catalog Revision -> Publish
-Member -> Gateway Key -> /v1 -> Auth / Quota / Admission
-       -> Eligibility -> Priority / Weight -> Provider Adapter
-       -> Response / Stream -> Usage Settlement / Recovery
-```
+### 真实 Provider 合同
 
-| 事实 | Owner |
-| --- | --- |
-| 用户、角色、邀请、会话、Gateway Key、模型授权 | Identity |
-| Provider、模型、凭据、绑定、探测、健康与冷却 | Registry |
-| Provider kind、展示名称和 adapter builder | Providers Catalog |
-| 已发布目录 | Configuration + PostgreSQL active revision |
-| 公共协议与统一语义 | Public API + Protocol + Canonical |
-| 公平与短期容量 | Admission + Coordination |
-| 候选选择 | Routing |
-| 额度与 usage | Quota + PostgreSQL Ledger |
-| 执行、发送、流式与恢复 | Requestflow + Execution + Responses |
-| 密钥、网络与日志安全 | Security |
+- Provider Catalog 继续拥有 kind 与 builder；每个 adapter 增加可追溯的官方合同版本、已验证模型、能力和最后验证时间。
+- 真实 canary 使用专属低权限测试凭据与最小额度，夹具只保存脱敏 wire 结构；真实 secret 只来自外部 secret 注入。
+- 标准 SDK 验收至少覆盖 Go 与 Python 客户端的 models、chat、responses、stream、tools、reasoning、取消和错误解析。
+- Provider 能力变化先更新 adapter/capability owner，再同步管理端和兼容矩阵。
 
-配置发布、额度接受和执行状态使用 PostgreSQL 原子边界。Valkey 事实带 TTL 并可重建。未知上游副作用保持 `uncertain`，流提交后不拼接第二个响应，恢复、取消与清理保持幂等。
+### 容量与稳态
+
+- 建立 200～300 用户的可重复流量模型：活跃用户比例、突发、平均上下文、长流比例、后台 Responses 和单用户热点。
+- 测量 p50/p95/p99、排队等待、首字节、吞吐、错误、内存、goroutine、连接池、数据库锁与 Valkey 延迟。
+- 负载工具只调用隔离 Provider；通过可控延迟、429、5xx、断流和强杀制造容量与恢复压力。
+- 形成默认配置、单实例建议容量、扩容信号和最大安全边界，不用无限重试或放宽 fail-closed 换取吞吐。
+
+### 部署与升级
+
+- 选择一个正式主部署拓扑，交付固定版本的 Gateway、PostgreSQL、Valkey 和 TLS 入口配置。
+- 生产 secret 使用明确文件/secret store 输入，权限与轮换边界可验证；配置启动时完整校验。
+- migration 作为独立前置步骤，升级前自动备份并执行兼容性/磁盘空间检查。
+- 演练首次安装、主机重启、自启动、滚动替换、失败回滚、数据库恢复后重连和日志收集。
+
+### 可观测与支持
+
+- HTTP 指标之外增加 admission 等待/拒绝、协调租约、Provider attempt/错误/冷却、quota 预留/结算、recovery 和后台 Responses 指标。
+- 指标标签只使用稳定低基数字段，不包含用户、Key、模型输入或完整上游 URL。
+- 提供最小运行看板与阈值规则，并为每个阈值链接可执行 runbook。
+- 建立管理员账号恢复、成员密码重置、会话批量撤销和 Gateway Key 无中断更换流程。
+
+### 供应链与发布
+
+- Go、Node 和容器依赖执行锁文件完整性、已知漏洞、许可证与维护状态检查。
+- Git 历史和构建目录执行 secret 扫描；发布前验证生成物不含 `.env`、备份、日志、截图和测试 secret。
+- 构建 Windows amd64 与正式部署目标制品，生成 SBOM、SHA-256、签名/provenance、版本信息和变更说明。
+- CI 以相同脚本执行完整验证、race、供应链门槛和制品重建一致性。
+
+### 备份与灾备
+
+- 备份文件在离开数据库主机前加密，按日/周策略异地保留并定期校验可读性。
+- 定义数据库与 Gateway 配置的 RPO/RTO、负责人、恢复顺序、DNS/TLS 切换和回切流程。
+- 灾备演练从空环境恢复数据库、密钥、Gateway 与 Valkey，再执行管理员和成员主旅程。
+- 演练证据不包含 secret、正文或个人数据。
+
+### 成本与经营事实
+
+- Provider 价格使用带生效时间的不可变版本，金额采用明确币种的整数最小单位或精确定点。
+- request/usage 结算保存使用的价格版本和成本快照，历史结果不随后来改价变化。
+- 管理端提供按用户、合同、模型、Provider 和资源域聚合的只读用量/成本出口，支持公司对账和毛利分析。
+- 成本事实不参与未知余额伪造，也不改变免费/付费资源域隔离。
 
 ## 生产级切片
 
-### 双核心产品链
+### 切片 1：真实 Provider 与标准 SDK
 
-- [x] 管理员与成员身份、权限、额度、Key 和用量闭环。
-- [x] 多 Provider 目录、发布、统一 API、调度、限流、usage 和恢复闭环。
+- [ ] 固定并记录三个真实上游的官方合同、SDK 版本、模型与能力矩阵。
+- [ ] 建立外部 secret 注入的 canary 工具和脱敏证据格式。
+- [ ] 完成 models/chat/responses/stream/tools/reasoning/usage/error/cancel 现场验收。
+- [ ] 完成 Go/Python 标准 SDK 兼容旅程与 Provider 变更复验命令。
 
-### Provider 扩展
+### 切片 2：200～300 用户容量与稳态
 
-- [x] 唯一 Provider catalog、统一 Adapter builder 和动态管理端 kind 列表。
-- [x] 请求、探测、写入校验与管理端消费同一 catalog。
-- [x] 产品地图、架构和桌面提示词记录扩展准入与验证步骤。
+- [ ] 定义可审计流量模型和成功门槛。
+- [ ] 实现隔离 Provider 负载、长流、突发、429/5xx、断流、强杀和多实例场景。
+- [ ] 完成并发、连接池、数据库、Valkey、内存和队列调优。
+- [ ] 运行持续稳态测试并形成容量基线、扩容信号和剩余风险。
 
-### 最低生产地基
+### 切片 3：正式部署与升级回滚
 
-- [x] 凭据加密、Key 摘要、会话、CSRF、权限、脱敏、SSRF 和资源上限。
-- [x] PostgreSQL 原子账本与配置发布、Valkey 短期协调、取消/断连/强杀恢复。
-- [x] 原子主密钥轮换、PostgreSQL 备份恢复和 Windows amd64 生产运行演练。
+- [ ] 交付正式拓扑、固定镜像/二进制、TLS 入口和 secret 输入方式。
+- [ ] 交付安装、自启动、配置校验、migration 前置、日志和健康检查。
+- [ ] 演练升级前备份、滚动替换、失败回滚、主机重启和恢复库切换。
+- [ ] 在 staging 完成真实管理员/成员主旅程并形成 production checklist。
 
-### 最终验证
+### 切片 4：运行观测与账号恢复
 
-- [x] 全量 Go 测试与生产前端验证。
-- [x] migration round-trip、真实控制面和真实核心网关链。
-- [x] 有头 Chromium 桌面与移动真实主旅程。
-- [x] 运维与生产运行隔离演练。
-- [x] 运行最新代码的唯一完整验证入口并检查最终差异。
+- [ ] 增加低基数领域指标与稳定日志事件。
+- [ ] 提供运行看板、阈值规则和对应 runbook。
+- [ ] 实现管理员驱动成员密码恢复、管理员锁定恢复和会话批量撤销。
+- [ ] 实现 Gateway Key 重叠更换与旧 Key 撤销的无中断旅程。
+
+### 切片 5：安全供应链与发布物
+
+- [ ] 建立 Go/Node/镜像漏洞、许可证和 secret 扫描。
+- [ ] 生成并校验 SBOM、校验和、版本信息和签名/provenance。
+- [ ] 让 Linux/Windows CI 执行完整门槛与 race，并验证发布制品可重建。
+- [ ] 产出正式发布说明、升级说明和已验证平台清单。
+
+### 切片 6：备份、灾备与经营事实
+
+- [ ] 实现加密、异地、定时备份和保留策略。
+- [ ] 定义并演练 RPO/RTO、空环境整站恢复、切换与回切。
+- [ ] 实现 Provider 价格版本、请求成本快照和聚合对账出口。
+- [ ] 用真实合同样例完成额度、usage、成本和毛利核对旅程。
+
+### 切片 7：最终生产验收
+
+- [ ] 连接 staging/production 目标、真实 Provider、真实 PostgreSQL/Valkey 和生产前端。
+- [ ] 用有头 Chromium 与标准 SDK 覆盖管理员、成员、取消、刷新、重登、强杀、升级和灾备恢复。
+- [ ] 检查网络、DOM、控制台、指标、日志、持久状态、备份和发布制品。
+- [ ] 运行唯一完整验证、容量稳态、安全供应链和发布验收，更新全部事实文档。
 
 ## 实施任务
 
-- [x] 研究参考项目固定版本、许可证、adapter、路由、限流和恢复机制。
-- [x] 核验本项目客户端到 usage、管理写入到数据面发布的 owner 与消费者。
-- [x] 完成 schema、sqlc、Go、Web、脚本和事实文档同步。
-- [x] 运行定向测试并修复真实失败。
-- [x] 运行真实 PostgreSQL、Valkey、隔离 Provider 和有头 Chromium 旅程。
-- [x] 演练主密钥轮换、备份恢复和 Windows amd64 生产运行。
-- [x] 运行 `scripts/verify.ps1`，记录最终通过项与剩余外部风险。
+- [ ] 每个切片先研究参考项目与官方合同，再核验本仓库 owner 和消费者。
+- [ ] 为真实失败建立最少且最有证明力的主旅程或 owner 不变量。
+- [ ] 同步 schema、API、adapter、UI、脚本、配置、测试和事实文档。
+- [ ] 每完成一个切片立即更新本计划的事实、证据和风险。
+- [ ] 最终只按实际部署、运行、恢复和发布证据标记完成。
 
 ## 恶劣路径矩阵
 
-| 边界 | 稳定结果 | 证据 |
+| 边界 | 目标结果 | 计划证据 |
 | --- | --- | --- |
-| 未授权模型、停用用户、撤销 Key | 发送前拒绝 | core/browser |
-| 单用户大量请求 | 每用户 FIFO、用户轮转、用户并发上限 | admission/core |
-| 两实例共享容量 | 不突破全局与用户容量 | core |
-| Valkey 中断 | fail closed，已发送请求取消并保留真实状态 | core |
-| 并发额度竞争 | 原子预留与一次结算 | quota/store/core |
-| 429、5xx、超时与冷却 | 稳定错误、持久冷却、有限安全重试 | Provider fixture/core |
-| 客户端取消、断连与 partial stream | 传播取消并按发送事实结算或保持 uncertain | core/browser |
-| 进程强杀与重启 | fencing、租约过期和持久恢复 | core/browser |
-| 配置并发发布与回滚 | 唯一 active version | control/core |
-| 主密钥轮换 | 全部旧凭据同事务重加密，重复执行无新增变更 | operations |
-| PostgreSQL 恢复 | custom archive 恢复到新库并保留凭据、审计与 schema version | operations |
-| secret 泄漏 | 数据库摘要/密文与运行日志不出现完整 secret | core/browser |
+| Provider 合同变化 | capability/adapter 明确失败并可快速复验 | 真实 canary + SDK |
+| 300 用户突发与长流 | 公平、限流、队列和资源上限保持稳定 | load + soak |
+| PostgreSQL/Valkey 延迟与短暂中断 | fail closed、无超扣、恢复可解释 | fault load |
+| Gateway 强杀与主机重启 | 自启动、fencing、租约和恢复 worker 收敛 | deployment drill |
+| 升级 migration 失败 | 数据不损坏，旧版本可恢复服务 | upgrade rollback |
+| 唯一管理员锁定 | 受控恢复并撤销旧会话 | account recovery |
+| 依赖或镜像漏洞 | 发布门槛阻止不合格制品 | CI security gate |
+| 主机/卷丢失 | 在 RPO/RTO 内从异地备份恢复主旅程 | DR drill |
+| Provider 改价 | 历史成本不漂移，新请求使用新版本 | cost ledger |
+| 发布物篡改 | 校验和、签名/provenance 验证失败 | release verification |
 
 ## 验证计划
 
-唯一完整入口：
+### 当前基线
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify.ps1
 ```
 
-它覆盖环境、格式、vet、Go、sqlc 漂移、前端、mock 有头浏览器、真实有头浏览器、Compose、migration、控制面、核心链、运维演练和构建矩阵。
+### 下一阶段新增门槛
+
+- 真实 Provider canary 与 Go/Python SDK 旅程。
+- 200～300 用户负载、长流与持续稳态测试。
+- 正式部署、升级、回滚、主机重启和恢复库切换。
+- `go test -race ./internal/...` 与 Linux/Windows CI。
+- Go/Node/镜像漏洞、许可证、secret、SBOM 和制品签名检查。
+- 加密异地备份、空环境整站恢复和 RPO/RTO 演练。
+- 价格版本、成本快照与合同对账验收。
 
 ## 收口
 
-### 已通过
+### 当前完成基线
 
-- `go test ./...`
-- `pnpm.cmd --dir web run verify`
-- `scripts/test-migrations.ps1`
-- `scripts/test-control.ps1`
-- `scripts/test-core.ps1`
-- `scripts/test-browser-real.ps1`
-- `scripts/test-operations.ps1`
-- `scripts/verify.ps1`
+- 双核心、最低生产地基、Provider 扩展入口和本机完整验证已提交为 `d4b3e2c`。
 
-### 外部风险
+### 下一阶段完成标准
 
-- 本轮隔离 Provider 验收不使用真实 GLM/Agnes 凭据；正式接入具体上游时仍需按当时官方合同与真实 wire 复核模型、能力、限额和错误。
+- 本计划所有切片均有真实环境证据并标记完成。
+- staging 与正式部署目标通过管理员、成员、标准 SDK、容量、升级、灾备和发布验收。
+- 文档、运行手册、发布物和实现表达同一生产事实。
+
+### 外部依赖
+
+- 真实 Provider canary 需要 owner 提供专用低权限测试凭据与可接受的最小调用成本。
+- 正式域名、TLS、异地备份位置、签名身份和生产主机属于部署时必须确认的外部事实。
 
 ### 外部操作
 
-- 保留全部 owner 未提交改动；不 commit、不 push、不发布、不部署。
+- 本计划提交后推送 `master`；后续实现按本计划继续维护，不在本次提交中改动产品代码。
