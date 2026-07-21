@@ -9,7 +9,7 @@ import (
 const (
 	maximumLeaseTTL         = 24 * time.Hour
 	maximumConcurrencyLimit = int64(1_000_000_000)
-	maximumLeaseDimensions  = 6
+	maximumLeaseDimensions  = 8
 )
 
 // AcquireLease atomically acquires all supplied concurrency dimensions. A

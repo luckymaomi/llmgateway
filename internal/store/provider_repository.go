@@ -16,9 +16,10 @@ import (
 )
 
 type RegistryRepository struct {
-	connections            *Connections
-	queries                *db.Queries
-	commitProviderMutation func(context.Context, pgx.Tx) error
+	connections              *Connections
+	queries                  *db.Queries
+	commitProviderMutation   func(context.Context, pgx.Tx) error
+	commitCredentialMutation func(context.Context, pgx.Tx) error
 }
 
 func NewRegistryRepository(connections *Connections) *RegistryRepository {
@@ -26,6 +27,9 @@ func NewRegistryRepository(connections *Connections) *RegistryRepository {
 		connections: connections,
 		queries:     db.New(connections.Postgres),
 		commitProviderMutation: func(ctx context.Context, tx pgx.Tx) error {
+			return tx.Commit(ctx)
+		},
+		commitCredentialMutation: func(ctx context.Context, tx pgx.Tx) error {
 			return tx.Commit(ctx)
 		},
 	}

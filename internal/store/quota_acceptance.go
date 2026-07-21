@@ -12,6 +12,9 @@ import (
 )
 
 func (r *QuotaRepository) AcceptRequest(ctx context.Context, input quota.AcceptInput) (quota.AcceptedRequest, error) {
+	if input.RequestID == uuid.Nil {
+		return quota.AcceptedRequest{}, quota.ErrInvalidInput
+	}
 	var lastErr error
 	for attempt := 0; attempt < quotaTransactionAttempts; attempt++ {
 		accepted, err := r.acceptRequestOnce(ctx, input)
@@ -48,14 +51,16 @@ func (r *QuotaRepository) acceptRequestOnce(ctx context.Context, input quota.Acc
 		}
 	}
 
-	keyOwned, err := queries.IsGatewayKeyOwnedByUser(ctx, db.IsGatewayKeyOwnedByUserParams{GatewayKeyID: input.GatewayKeyID, UserID: input.UserID})
+	_, err = queries.GetActiveGatewayKeyForRequest(ctx, db.GetActiveGatewayKeyForRequestParams{GatewayKeyID: input.GatewayKeyID, UserID: input.UserID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return quota.AcceptedRequest{}, quota.ErrForbidden
+	}
 	if err != nil {
 		return quota.AcceptedRequest{}, err
 	}
-	if !keyOwned {
-		return quota.AcceptedRequest{}, quota.ErrForbidden
-	}
-	modelDomain, err := queries.GetAuthorizedModelDomain(ctx, db.GetAuthorizedModelDomainParams{UserID: input.UserID, ModelID: input.ModelID})
+	modelDomain, err := queries.GetAuthorizedGatewayKeyModelDomain(ctx, db.GetAuthorizedGatewayKeyModelDomainParams{
+		GatewayKeyID: input.GatewayKeyID, ModelID: input.ModelID, RevisionID: *input.ConfigRevisionID,
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return quota.AcceptedRequest{}, quota.ErrModelNotAuthorized
 	}
@@ -88,8 +93,9 @@ func (r *QuotaRepository) acceptRequestOnce(ctx context.Context, input quota.Acc
 		return quota.AcceptedRequest{}, quota.ErrQuotaExhausted
 	}
 
+	requestID := input.RequestID
 	requestRecord, err := queries.CreateRequest(ctx, db.CreateRequestParams{
-		IdempotencyKey: input.IdempotencyKey, RequestDigest: input.RequestDigest, UserID: input.UserID,
+		ID: requestID, IdempotencyKey: input.IdempotencyKey, RequestDigest: input.RequestDigest, UserID: input.UserID,
 		GatewayKeyID: input.GatewayKeyID, ModelID: input.ModelID, EntitlementID: entitlement.ID,
 		ConfigRevisionID: input.ConfigRevisionID, ResourceDomain: db.ResourceDomain(input.ResourceDomain), Status: db.RequestStatusQueued, Stream: input.Stream,
 	})
@@ -97,7 +103,6 @@ func (r *QuotaRepository) acceptRequestOnce(ctx context.Context, input quota.Acc
 		return quota.AcceptedRequest{}, err
 	}
 	reservationID := uuid.New()
-	requestID := requestRecord.ID
 	reservationEvent, err := queries.CreateLedgerEvent(ctx, db.CreateLedgerEventParams{
 		UserID: input.UserID, EntitlementID: entitlement.ID, RequestID: &requestID, ReservationID: &reservationID,
 		Kind: db.LedgerEventKindReservation, TokenDelta: -input.ReservedTokens, ReservedTokens: input.ReservedTokens,
@@ -116,11 +121,14 @@ func (r *QuotaRepository) acceptRequestOnce(ctx context.Context, input quota.Acc
 	if err := tx.Commit(ctx); err != nil {
 		return quota.AcceptedRequest{}, err
 	}
-	return quota.AcceptedRequest{Request: requestFromDB(requestRecord), Reservation: reservationFromDB(reservationRecord)}, nil
+	return quota.AcceptedRequest{
+		Request: requestFromDB(requestRecord), Reservation: reservationFromDB(reservationRecord),
+		EntitlementCapacity: entitlementCapacityFromDB(*entitlement),
+	}, nil
 }
 
 func (r *QuotaRepository) replayAcceptedRequest(ctx context.Context, tx pgx.Tx, queries *db.Queries, input quota.AcceptInput, existing db.Request) (quota.AcceptedRequest, error) {
-	if existing.UserID != input.UserID || existing.GatewayKeyID != input.GatewayKeyID || existing.ModelID != input.ModelID || existing.ResourceDomain != db.ResourceDomain(input.ResourceDomain) || existing.Stream != input.Stream || !bytes.Equal(existing.RequestDigest, input.RequestDigest) {
+	if existing.UserID != input.UserID || existing.GatewayKeyID != input.GatewayKeyID || existing.ModelID != input.ModelID || !equalUUID(existing.ConfigRevisionID, input.ConfigRevisionID) || existing.ResourceDomain != db.ResourceDomain(input.ResourceDomain) || existing.Stream != input.Stream || !bytes.Equal(existing.RequestDigest, input.RequestDigest) {
 		return quota.AcceptedRequest{}, quota.ErrConflict
 	}
 	reservationRecord, err := queries.GetLedgerReservationByRequest(ctx, existing.ID)
@@ -130,8 +138,22 @@ func (r *QuotaRepository) replayAcceptedRequest(ctx context.Context, tx pgx.Tx, 
 	if err != nil {
 		return quota.AcceptedRequest{}, err
 	}
+	entitlement, err := queries.GetEntitlementForUpdate(ctx, existing.EntitlementID)
+	if err != nil {
+		return quota.AcceptedRequest{}, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return quota.AcceptedRequest{}, err
 	}
-	return quota.AcceptedRequest{Request: requestFromDB(existing), Reservation: reservationFromDB(reservationRecord), Replayed: true}, nil
+	return quota.AcceptedRequest{
+		Request: requestFromDB(existing), Reservation: reservationFromDB(reservationRecord),
+		EntitlementCapacity: entitlementCapacityFromDB(entitlement), Replayed: true,
+	}, nil
+}
+
+func entitlementCapacityFromDB(value db.Entitlement) quota.EntitlementCapacity {
+	return quota.EntitlementCapacity{
+		ID: value.ID, ConcurrencyLimit: value.ConcurrencyLimit,
+		RPMLimit: value.RpmLimit, TPMLimit: value.TpmLimit,
+	}
 }

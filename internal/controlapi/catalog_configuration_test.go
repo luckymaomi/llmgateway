@@ -1,10 +1,13 @@
 package controlapi
 
 import (
+	"errors"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/luckymaomi/llmgateway/internal/configuration"
 	"github.com/luckymaomi/llmgateway/internal/identity"
 	"github.com/luckymaomi/llmgateway/internal/providers"
 	"github.com/luckymaomi/llmgateway/internal/registry"
@@ -12,6 +15,12 @@ import (
 
 func TestRegistryContract(t *testing.T) {
 	fixture := newControlFixture(t)
+	kindsResponse := request(t, fixture.handler, http.MethodGet, "/api/control/provider-kinds", nil, true, false)
+	requireStatus(t, kindsResponse, http.StatusOK)
+	kinds := decodeData[[]providerKindView](t, kindsResponse)
+	if len(kinds) != len(providers.DefaultCatalog().Kinds()) {
+		t.Fatalf("unexpected Provider kind catalog: %+v", kinds)
+	}
 	providerID := uuid.New()
 	fixture.registry.providers = []registry.Provider{{
 		ID: providerID, Slug: "openai", Name: "OpenAI", Kind: providers.KindOpenAICompatible, BaseURL: "https://api.example.test/v1", Enabled: false, CreatedAt: fixture.now, UpdatedAt: fixture.now,
@@ -42,11 +51,11 @@ func TestRegistryContract(t *testing.T) {
 	}
 
 	createResponse := request(t, fixture.handler, http.MethodPost, "/api/control/providers", map[string]any{
-		"slug": "deepseek", "name": "DeepSeek", "kind": providers.KindDeepSeek, "baseUrl": "https://api.deepseek.com",
+		"slug": "agnes", "name": "Agnes", "kind": providers.KindAgnes, "baseUrl": "https://apihub.agnes-ai.com/v1",
 	}, true, true)
 	requireStatus(t, createResponse, http.StatusCreated)
 	createdProvider := decodeData[providerView](t, createResponse)
-	if createdProvider.Slug != "deepseek" || createdProvider.Name != "DeepSeek" || createdProvider.Status != "disabled" || createdProvider.UpdatedAt.IsZero() {
+	if createdProvider.Slug != "agnes" || createdProvider.Name != "Agnes" || createdProvider.Status != "disabled" || createdProvider.UpdatedAt.IsZero() {
 		t.Fatalf("unexpected created provider: %+v", createdProvider)
 	}
 
@@ -84,6 +93,17 @@ func TestRegistryContract(t *testing.T) {
 	}
 }
 
+func TestEmptyCredentialPageUsesAnEmptyItemsArray(t *testing.T) {
+	fixture := newControlFixture(t)
+
+	response := request(t, fixture.handler, http.MethodGet, "/api/control/credentials?page=1&pageSize=20", nil, true, false)
+	requireStatus(t, response, http.StatusOK)
+	page := decodeData[pageView[credentialView]](t, response)
+	if page.Items == nil || len(page.Items) != 0 || page.Total != 0 {
+		t.Fatalf("expected a stable empty credential page, got %+v", page)
+	}
+}
+
 func TestGetProviderAuthorizationAndMissingRecord(t *testing.T) {
 	t.Run("member is forbidden", func(t *testing.T) {
 		fixture := newControlFixture(t)
@@ -105,10 +125,18 @@ func TestGetProviderAuthorizationAndMissingRecord(t *testing.T) {
 func TestConfigurationContract(t *testing.T) {
 	fixture := newControlFixture(t)
 
+	activeResponse := request(t, fixture.handler, http.MethodGet, "/api/control/configuration/active", nil, true, false)
+	requireStatus(t, activeResponse, http.StatusOK)
+	active := decodeData[activeConfigurationView](t, activeResponse)
+	if active.RevisionID == nil || *active.RevisionID != fixture.activeID.String() || active.Version != 7 || active.UpdatedAt == nil || !active.UpdatedAt.Equal(fixture.now) || len(active.Models) != 1 ||
+		active.Models[0].ID != fixture.activeModelID.String() || active.Models[0].Alias != "fast" || active.Models[0].ProviderName != "Published Provider" {
+		t.Fatalf("unexpected active configuration: %+v", active)
+	}
+
 	revisionsResponse := request(t, fixture.handler, http.MethodGet, "/api/control/configuration/revisions?page=1&pageSize=20", nil, true, false)
 	requireStatus(t, revisionsResponse, http.StatusOK)
 	revisions := decodeData[pageView[configurationRevisionView]](t, revisionsResponse)
-	if revisions.Total != 2 || revisions.Items[0].Status != "published" || revisions.Items[1].Status != "draft" {
+	if revisions.Total != 2 || revisions.Items[0].Status != "published" || revisions.Items[1].Status != "draft" || revisions.Items[0].CreatedBy != "Admin" || revisions.Items[1].CreatedBy != "Admin" {
 		t.Fatalf("unexpected revisions: %+v", revisions)
 	}
 
@@ -119,12 +147,127 @@ func TestConfigurationContract(t *testing.T) {
 		t.Fatalf("unexpected validation operation: %+v", validation)
 	}
 
-	publishResponse := request(t, fixture.handler, http.MethodPost, "/api/control/configuration/revisions/"+fixture.draftID.String()+"/publish", map[string]string{
-		"expectedActiveRevisionId": fixture.activeID.String(),
-	}, true, true)
+	captureKey := uuid.New()
+	captureResponse := requestWithIdempotencyKey(t, fixture.handler, http.MethodPost, "/api/control/configuration/revisions", nil, true, true, captureKey.String())
+	requireStatus(t, captureResponse, http.StatusCreated)
+	captured := decodeData[configurationRevisionView](t, captureResponse)
+	if captured.ID == "" || captured.Status != "draft" || captured.CreatedBy != "Admin" || captured.ProviderCount != 1 || captured.ModelCount != 1 || captured.CredentialCount != 1 || captured.RouteCount != 1 || captured.ValidationIssueCount != 0 {
+		t.Fatalf("unexpected captured revision: %+v", captured)
+	}
+	if fixture.configuration.capturedMutation.IdempotencyKey != captureKey || fixture.configuration.capturedMutation.RequestID == "" {
+		t.Fatalf("unexpected capture mutation: %+v", fixture.configuration.capturedMutation)
+	}
+
+	publishKey := uuid.New()
+	publishResponse := requestWithIdempotencyKey(t, fixture.handler, http.MethodPost, "/api/control/configuration/revisions/"+fixture.draftID.String()+"/publish", map[string]any{
+		"expectedActiveVersion": int64(7),
+	}, true, true, publishKey.String())
 	requireStatus(t, publishResponse, http.StatusOK)
 	publish := decodeData[operationView](t, publishResponse)
-	if publish.Kind != "configuration.publish" || publish.Phase != "completed" || fixture.configuration.publishedID != fixture.draftID || fixture.configuration.expectedVersion != 7 {
+	if publish.Kind != "configuration.publish" || publish.Phase != "completed" || fixture.configuration.publishedID != fixture.draftID || fixture.configuration.expectedVersion != 7 ||
+		fixture.configuration.publishedAction != configuration.MutationPublish || fixture.configuration.publishedMutation.IdempotencyKey != publishKey || fixture.configuration.publishedMutation.RequestID == "" {
 		t.Fatalf("unexpected publish operation: %+v", publish)
+	}
+	publishedResult, ok := publish.Result.(map[string]any)
+	if !ok || publishedResult["createdBy"] != "Admin" {
+		t.Fatalf("unexpected publish result: %#v", publish.Result)
+	}
+}
+
+func TestConfigurationRevisionListResolvesCreatorNamesInOneBatch(t *testing.T) {
+	fixture := newControlFixture(t)
+	fixture.configuration.revisions[1].CreatedBy = fixture.memberID
+	repeatedCreator := fixture.configuration.revisions[0]
+	repeatedCreator.ID = uuid.New()
+	repeatedCreator.Revision = 6
+	repeatedCreator.CreatedAt = repeatedCreator.CreatedAt.Add(2 * time.Minute)
+	fixture.configuration.revisions = append(fixture.configuration.revisions, repeatedCreator)
+	fixture.identity.displayNameCalls = nil
+
+	response := request(t, fixture.handler, http.MethodGet, "/api/control/configuration/revisions?page=1&pageSize=20", nil, true, false)
+	requireStatus(t, response, http.StatusOK)
+	revisions := decodeData[pageView[configurationRevisionView]](t, response)
+	if len(revisions.Items) != 3 || revisions.Items[0].CreatedBy != "Admin" || revisions.Items[1].CreatedBy != "Member" || revisions.Items[2].CreatedBy != "Admin" {
+		t.Fatalf("configuration creator names = %+v", revisions.Items)
+	}
+	if len(fixture.identity.displayNameCalls) != 1 || len(fixture.identity.displayNameCalls[0]) != 2 || fixture.identity.displayNameCalls[0][0] != fixture.adminID || fixture.identity.displayNameCalls[0][1] != fixture.memberID {
+		t.Fatalf("display-name batches = %v, want one ordered unique batch", fixture.identity.displayNameCalls)
+	}
+
+	searchResponse := request(t, fixture.handler, http.MethodGet, "/api/control/configuration/revisions?search=Member&page=1&pageSize=20", nil, true, false)
+	requireStatus(t, searchResponse, http.StatusOK)
+	searchResult := decodeData[pageView[configurationRevisionView]](t, searchResponse)
+	if searchResult.Total != 1 || len(searchResult.Items) != 1 || searchResult.Items[0].CreatedBy != "Member" {
+		t.Fatalf("configuration creator search = %+v", searchResult)
+	}
+}
+
+func TestConfigurationMutationResponsesDoNotReadIdentityAfterCommit(t *testing.T) {
+	t.Run("capture uses authenticated identity", func(t *testing.T) {
+		fixture := newControlFixture(t)
+		fixture.identity.displayNameCalls = nil
+		fixture.configuration.afterCapture = func() {
+			fixture.identity.displayNameError = errors.New("identity unavailable after capture")
+		}
+
+		response := requestWithIdempotencyKey(t, fixture.handler, http.MethodPost, "/api/control/configuration/revisions", nil, true, true, uuid.NewString())
+		requireStatus(t, response, http.StatusCreated)
+		captured := decodeData[configurationRevisionView](t, response)
+		if captured.CreatedBy != "Admin" || len(fixture.identity.displayNameCalls) != 0 {
+			t.Fatalf("capture creator/calls = %q/%v", captured.CreatedBy, fixture.identity.displayNameCalls)
+		}
+	})
+
+	t.Run("publish resolves identity before mutation", func(t *testing.T) {
+		fixture := newControlFixture(t)
+		fixture.identity.displayNameCalls = nil
+		fixture.configuration.afterPublish = func() {
+			fixture.identity.displayNameError = errors.New("identity unavailable after publish")
+		}
+
+		response := requestWithIdempotencyKey(t, fixture.handler, http.MethodPost, "/api/control/configuration/revisions/"+fixture.draftID.String()+"/publish", map[string]any{
+			"expectedActiveVersion": int64(7),
+		}, true, true, uuid.NewString())
+		requireStatus(t, response, http.StatusOK)
+		operation := decodeData[operationView](t, response)
+		result, ok := operation.Result.(map[string]any)
+		if !ok || result["createdBy"] != "Admin" || len(fixture.identity.displayNameCalls) != 1 {
+			t.Fatalf("publish result/display-name calls = %#v/%v", operation.Result, fixture.identity.displayNameCalls)
+		}
+	})
+}
+
+func TestConfigurationRevisionListFailsWhenIdentityCannotResolveCreator(t *testing.T) {
+	fixture := newControlFixture(t)
+	fixture.configuration.revisions[0].CreatedBy = uuid.New()
+
+	response := request(t, fixture.handler, http.MethodGet, "/api/control/configuration/revisions?page=1&pageSize=20", nil, true, false)
+	requireStatus(t, response, http.StatusInternalServerError)
+}
+
+func TestConfigurationMutationRequiresIdempotencyKey(t *testing.T) {
+	fixture := newControlFixture(t)
+
+	captureResponse := requestWithIdempotencyKey(t, fixture.handler, http.MethodPost, "/api/control/configuration/revisions", nil, true, true, "")
+	requireStatus(t, captureResponse, http.StatusBadRequest)
+
+	publishResponse := requestWithIdempotencyKey(t, fixture.handler, http.MethodPost, "/api/control/configuration/revisions/"+fixture.draftID.String()+"/publish", map[string]any{
+		"expectedActiveVersion": int64(7),
+	}, true, true, "not-a-uuid")
+	requireStatus(t, publishResponse, http.StatusBadRequest)
+}
+
+func TestConfigurationRollbackUsesCallerVersionAndMutation(t *testing.T) {
+	fixture := newControlFixture(t)
+	idempotencyKey := uuid.New()
+
+	response := requestWithIdempotencyKey(t, fixture.handler, http.MethodPost, "/api/control/configuration/revisions/"+fixture.activeID.String()+"/rollback", map[string]any{
+		"expectedActiveVersion": int64(7),
+	}, true, true, idempotencyKey.String())
+	requireStatus(t, response, http.StatusOK)
+	operation := decodeData[operationView](t, response)
+	if operation.Kind != "configuration.rollback" || operation.Phase != "completed" || fixture.configuration.publishedID != fixture.activeID || fixture.configuration.expectedVersion != 7 ||
+		fixture.configuration.publishedAction != configuration.MutationRollback || fixture.configuration.publishedMutation.IdempotencyKey != idempotencyKey || fixture.configuration.publishedMutation.RequestID == "" {
+		t.Fatalf("unexpected rollback operation: operation=%+v action=%q mutation=%+v", operation, fixture.configuration.publishedAction, fixture.configuration.publishedMutation)
 	}
 }

@@ -1,5 +1,5 @@
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { z } from 'zod'
@@ -30,7 +30,7 @@ const schema = z.object({
     .trim()
     .regex(/^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$/, '使用 3-64 位小写字母、数字或连字符'),
   name: z.string().trim().min(2, '请输入 Provider 名称').max(100, '名称不能超过 100 个字符'),
-  kind: z.enum(['openai-compatible', 'zhipu', 'deepseek', 'agnes']),
+  kind: z.string().trim().min(1, '请选择 Provider 类型'),
   baseUrl: z
     .url('请输入有效 HTTPS URL')
     .refine((value) => value.startsWith('https://'), '必须使用 HTTPS')
@@ -54,6 +54,11 @@ export function ProviderForm({
   provider?: ProviderRecord
 }) {
   const queryClient = useQueryClient()
+  const kindsQuery = useQuery({
+    queryKey: ['provider-kinds'],
+    queryFn: ({ signal }) => catalogApi.providerKinds(signal),
+    enabled: open,
+  })
   const form = useForm<Values>({
     resolver: zodResolver(schema),
     defaultValues: valuesFrom(provider),
@@ -273,13 +278,16 @@ export function ProviderForm({
         <Field label="类型" htmlFor="provider-kind" error={form.formState.errors.kind?.message}>
           <NativeSelect
             id="provider-kind"
-            disabled={routingLocked || mutation.isPending || Boolean(conflict)}
+            disabled={
+              routingLocked || mutation.isPending || Boolean(conflict) || kindsQuery.isPending
+            }
             {...form.register('kind')}
           >
-            <option value="openai-compatible">OpenAI-compatible</option>
-            <option value="zhipu">智谱 GLM</option>
-            <option value="deepseek">DeepSeek</option>
-            <option value="agnes">Agnes</option>
+            {kindsQuery.data?.map((kind) => (
+              <option key={kind.kind} value={kind.kind}>
+                {kind.displayName}
+              </option>
+            ))}
           </NativeSelect>
         </Field>
         <Field
@@ -303,6 +311,7 @@ export function ProviderForm({
         ) : (
           <FormProblem error={mutation.error} />
         )}
+        {kindsQuery.error ? <FormProblem error={kindsQuery.error} /> : null}
         {conflict && conflictReadError ? <FormProblem error={conflictReadError} /> : null}
         {conflict?.latest ? (
           <ProviderConflictRecovery

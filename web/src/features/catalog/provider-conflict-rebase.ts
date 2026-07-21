@@ -94,7 +94,7 @@ export function buildProviderRebase(
     values: {
       slug: latest.slug,
       name: selectedValue('name'),
-      kind: selectedValue('kind') as ProviderRecord['kind'],
+      kind: selectedValue('kind'),
       baseUrl: selectedValue('baseUrl'),
     },
     differences,

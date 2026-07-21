@@ -3,6 +3,7 @@ import { Plus } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
 import { ledgerApi, type Entitlement } from '@/api'
+import { hasCapability, useSession } from '@/app/session'
 import { DataTable, type ColumnDef } from '@/components/data-table/data-table'
 import { TableToolbar } from '@/components/data-table/table-toolbar'
 import { Page, PageHeader, PageSection } from '@/components/layout'
@@ -15,6 +16,7 @@ import { EntitlementForm } from './entitlement-form'
 import { LedgerTabs } from './ledger-tabs'
 
 export function EntitlementsPage() {
+  const session = useSession()
   const { state, setPage, setSearch, setStatus } = useListSearch()
   const [creating, setCreating] = useState(false)
   const query = useQuery({
@@ -44,17 +46,15 @@ export function EntitlementsPage() {
         ),
       },
       {
-        accessorKey: 'modelAliases',
+        accessorKey: 'modelAlias',
         header: '模型',
-        cell: ({ row }) => `${row.original.modelAliases.length} 个`,
+        cell: ({ row }) => row.original.modelAlias ?? '资源域内全部模型',
       },
       {
-        accessorKey: 'usedTokens',
-        header: '用量',
+        accessorKey: 'balanceTokens',
+        header: '可用额度',
         cell: ({ row }) =>
-          row.original.tokenLimit
-            ? `${formatTokens(row.original.usedTokens)} / ${formatTokens(row.original.tokenLimit)}`
-            : formatTokens(row.original.usedTokens),
+          `${formatTokens(row.original.balanceTokens)} / ${formatTokens(row.original.grantedTokens)}`,
       },
       { accessorKey: 'concurrencyLimit', header: '并发' },
       {
@@ -81,9 +81,11 @@ export function EntitlementsPage() {
         title="用量与账本"
         description="权威 usage、估算与额度事件"
         actions={
-          <Button icon={<Plus size={16} />} onClick={() => setCreating(true)}>
-            分配套餐
-          </Button>
+          hasCapability(session, 'ledger:write') ? (
+            <Button icon={<Plus size={16} />} onClick={() => setCreating(true)}>
+              分配套餐
+            </Button>
+          ) : null
         }
       />
       <LedgerTabs />
@@ -122,10 +124,10 @@ export function EntitlementsPage() {
               </div>
               <span>
                 {entitlement.planKind === 'token' ? 'Token Plan' : 'Coding Plan'} ·{' '}
-                {entitlement.modelAliases.length} 个模型
+                {entitlement.modelAlias ?? '资源域内全部模型'}
               </span>
               <span>
-                {formatTokens(entitlement.usedTokens)} · 到期{' '}
+                剩余 {formatTokens(entitlement.balanceTokens)} · 到期{' '}
                 {formatDateTime(entitlement.expiresAt)}
               </span>
             </div>

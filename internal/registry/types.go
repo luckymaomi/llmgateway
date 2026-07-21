@@ -40,6 +40,21 @@ type ProviderMutation struct {
 	RequestID          string
 }
 
+type CredentialMutation struct {
+	Action             CredentialMutationAction
+	IdempotencyKey     uuid.UUID
+	RequestFingerprint []byte
+	RequestID          string
+}
+
+type CredentialMutationAction string
+
+const (
+	CredentialMutationCreate CredentialMutationAction = "credential.create"
+	CredentialMutationUpdate CredentialMutationAction = "credential.update"
+	CredentialMutationStatus CredentialMutationAction = "credential.status"
+)
+
 type ResourceDomain string
 
 const (
@@ -102,25 +117,63 @@ type Credential struct {
 	RPMLimit            *int32           `json:"rpm_limit,omitempty"`
 	TPMLimit            *int64           `json:"tpm_limit,omitempty"`
 	ConcurrencyLimit    *int32           `json:"concurrency_limit,omitempty"`
-	FixedProxyURL       *string          `json:"fixed_proxy_url,omitempty"`
 	CooldownUntil       *time.Time       `json:"cooldown_until,omitempty"`
 	ConsecutiveFailures int32            `json:"consecutive_failures"`
 	LastSuccessAt       *time.Time       `json:"last_success_at,omitempty"`
 	LastErrorKind       *string          `json:"last_error_kind,omitempty"`
+	LastProbeAt         *time.Time       `json:"last_probe_at,omitempty"`
+	LastProbeLatencyMs  *int64           `json:"last_probe_latency_ms,omitempty"`
+	LastProbeKind       *string          `json:"last_probe_kind,omitempty"`
+	LastProbeStatus     *string          `json:"last_probe_status,omitempty"`
+	LastProbeErrorKind  *string          `json:"last_probe_error_kind,omitempty"`
 	CreatedAt           time.Time        `json:"created_at"`
 	UpdatedAt           time.Time        `json:"updated_at"`
+	AuthorizedModelIDs  []uuid.UUID      `json:"authorized_model_ids"`
+	AuthorizedModels    []string         `json:"authorized_models"`
+}
+
+type CredentialChange struct {
+	ID                 uuid.UUID
+	Name               string
+	EncryptedSecret    []byte
+	ReplaceSecret      bool
+	ResourceDomain     ResourceDomain
+	RPMLimit           *int32
+	TPMLimit           *int64
+	ConcurrencyLimit   *int32
+	AuthorizedModelIDs []uuid.UUID
+	ExpectedUpdatedAt  time.Time
+}
+
+type CredentialProbeTarget struct {
+	Provider     Provider
+	CredentialID uuid.UUID
+	Secret       string
+}
+
+type CredentialProbeExecution struct {
+	Kind          string
+	Status        string
+	ErrorKind     *string
+	Retryable     bool
+	MayUseTokens  bool
+	LatencyMillis int64
+}
+
+type CredentialProbeExecutor interface {
+	Execute(context.Context, CredentialProbeTarget) CredentialProbeExecution
 }
 
 type NewCredential struct {
-	ID               uuid.UUID
-	ProviderID       uuid.UUID
-	Name             string
-	EncryptedSecret  []byte
-	ResourceDomain   ResourceDomain
-	RPMLimit         *int32
-	TPMLimit         *int64
-	ConcurrencyLimit *int32
-	FixedProxyURL    *string
+	ID                 uuid.UUID
+	ProviderID         uuid.UUID
+	Name               string
+	EncryptedSecret    []byte
+	ResourceDomain     ResourceDomain
+	RPMLimit           *int32
+	TPMLimit           *int64
+	ConcurrencyLimit   *int32
+	AuthorizedModelIDs []uuid.UUID
 }
 
 type Repository interface {
@@ -135,8 +188,13 @@ type Repository interface {
 	UpdateModel(context.Context, Model, uuid.UUID) (Model, error)
 	ListModels(context.Context) ([]Model, error)
 
-	CreateCredential(context.Context, NewCredential, uuid.UUID) (Credential, error)
+	ReplayCredentialMutation(context.Context, uuid.UUID, CredentialMutation) (Credential, bool, error)
+	CreateCredential(context.Context, NewCredential, uuid.UUID, CredentialMutation) (Credential, error)
+	UpdateCredential(context.Context, CredentialChange, uuid.UUID, CredentialMutation) (Credential, error)
+	SetCredentialStatus(context.Context, uuid.UUID, CredentialStatus, time.Time, uuid.UUID, CredentialMutation) (Credential, error)
 	ListCredentials(context.Context) ([]Credential, error)
+	GetCredential(context.Context, uuid.UUID) (Credential, error)
 	GetEncryptedCredential(context.Context, uuid.UUID) ([]byte, error)
+	RecordCredentialProbe(context.Context, uuid.UUID, time.Time, CredentialProbeExecution, uuid.UUID, string) (Credential, error)
 	BindCredentialModel(context.Context, uuid.UUID, uuid.UUID, int32, int32, uuid.UUID) error
 }

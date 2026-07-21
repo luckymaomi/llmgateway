@@ -2,6 +2,7 @@ package providers
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 
@@ -22,4 +23,20 @@ func (a *openAIAdapter) Probe(ctx context.Context, credential Credential) (Probe
 	request.Header.Set("Authorization", "Bearer "+credential.APIKey)
 	request.Header.Set("Accept", "application/json")
 	return Probe{Available: true, MayConsumeTokens: false, Kind: ProbeModels, Request: request}, nil
+}
+
+func (a *openAIAdapter) ValidateProbe(kind ProbeKind, statusCode int, headers http.Header, body []byte) *canonical.Error {
+	if statusCode < http.StatusOK || statusCode >= http.StatusMultipleChoices {
+		return a.ClassifyError(statusCode, headers, body)
+	}
+	if kind != ProbeModels {
+		return a.requestError(canonical.ErrorProviderConfiguration, "unsupported_probe", "provider probe is not supported", "")
+	}
+	var envelope struct {
+		Data []json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil || envelope.Data == nil {
+		return a.requestError(canonical.ErrorProviderConfiguration, "invalid_probe_response", "provider returned an invalid models response", "")
+	}
+	return nil
 }

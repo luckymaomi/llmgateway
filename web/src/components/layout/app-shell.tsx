@@ -2,7 +2,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
 import { Dialog, Tooltip } from 'radix-ui'
 import { LogOut, Menu, Network, PanelLeftClose, X } from 'lucide-react'
-import { Suspense, useState } from 'react'
+import { Suspense, useEffect, useState } from 'react'
 
 import { authApi, type Session } from '@/api'
 import { navigationFor } from '@/app/navigation'
@@ -14,7 +14,6 @@ import { LoadingState } from '../ui/state'
 
 const roleLabel = {
   administrator: '管理员',
-  operator: '运维人员',
   member: '成员',
 } as const
 
@@ -26,6 +25,14 @@ export function AppShell() {
   const pathname = useRouterState({ select: (state) => state.location.pathname })
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  useEffect(() => {
+    if (!mobileOpen) return
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMobileOpen(false)
+    }
+    document.addEventListener('keydown', closeOnEscape, true)
+    return () => document.removeEventListener('keydown', closeOnEscape, true)
+  }, [mobileOpen])
   const logout = useMutation({
     mutationFn: authApi.logout,
     async onSettled() {
@@ -64,7 +71,7 @@ export function AppShell() {
             <div className="app-header__left">
               <Dialog.Root open={mobileOpen} onOpenChange={setMobileOpen}>
                 <Dialog.Trigger asChild>
-                  <IconButton label="打开导航" className="mobile-menu-trigger">
+                  <IconButton label="打开导航" className="mobile-menu-trigger" showTooltip={false}>
                     <Menu size={19} />
                   </IconButton>
                 </Dialog.Trigger>
@@ -74,7 +81,7 @@ export function AppShell() {
                     <div className="mobile-navigation__header">
                       <Dialog.Title>LLMGateway</Dialog.Title>
                       <Dialog.Close asChild>
-                        <IconButton label="关闭导航">
+                        <IconButton label="关闭导航" showTooltip={false}>
                           <X size={19} />
                         </IconButton>
                       </Dialog.Close>

@@ -52,6 +52,13 @@ func PresentResponseInProgress(responseID, model string, createdAt int64, reques
 	return result
 }
 
+func PresentResponseQueued(responseID, model string, createdAt int64, request ResponsesRequest) map[string]any {
+	result := responseBase(responseID, model, request, "queued")
+	result["created_at"] = createdAt
+	result["completed_at"] = nil
+	return result
+}
+
 func PresentResponseFailed(responseID, model string, createdAt int64, request ResponsesRequest, providerError *canonical.Error) map[string]any {
 	result := responseBase(responseID, model, request, "failed")
 	result["created_at"] = createdAt
@@ -66,9 +73,13 @@ func responseBase(id, model string, request ResponsesRequest, status string) map
 		"instructions": nil, "max_output_tokens": request.Chat.MaxOutputTokens, "model": model, "output": []any{},
 		"parallel_tool_calls": true, "previous_response_id": nil, "store": request.Store, "temperature": request.Chat.Temperature,
 		"top_p": request.Chat.TopP, "truncation": "disabled", "usage": nil, "metadata": map[string]any{},
+		"background": request.Background,
 	}
 	if request.Instructions != "" {
 		result["instructions"] = request.Instructions
+	}
+	if request.PreviousResponseID != "" {
+		result["previous_response_id"] = request.PreviousResponseID
 	}
 	result["reasoning"] = map[string]any{"effort": reasoningEffort(request.Chat.Reasoning), "summary": nil}
 	format := "text"

@@ -111,10 +111,6 @@ func classifyHTTPError(statusCode int, _ string) canonical.ErrorKind {
 	}
 }
 
-func classifyDeepSeekError(statusCode int, _ string) canonical.ErrorKind {
-	return classifyHTTPError(statusCode, "")
-}
-
 func classifyZhipuError(statusCode int, code string) canonical.ErrorKind {
 	switch code {
 	case "1000", "1001", "1002", "1003", "1004", "1110", "1111", "1112":

@@ -35,6 +35,44 @@ func (q *Queries) BindCredentialModel(ctx context.Context, arg BindCredentialMod
 	return err
 }
 
+const claimCredentialMutation = `-- name: ClaimCredentialMutation :one
+INSERT INTO credential_mutations (actor_user_id, action, idempotency_key, request_fingerprint, request_id)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (actor_user_id, idempotency_key) DO NOTHING
+RETURNING id, actor_user_id, action, idempotency_key, request_fingerprint, request_id, credential_id, result, created_at
+`
+
+type ClaimCredentialMutationParams struct {
+	ActorUserID        uuid.UUID `json:"actor_user_id"`
+	Action             string    `json:"action"`
+	IdempotencyKey     uuid.UUID `json:"idempotency_key"`
+	RequestFingerprint []byte    `json:"request_fingerprint"`
+	RequestID          string    `json:"request_id"`
+}
+
+func (q *Queries) ClaimCredentialMutation(ctx context.Context, arg ClaimCredentialMutationParams) (CredentialMutation, error) {
+	row := q.db.QueryRow(ctx, claimCredentialMutation,
+		arg.ActorUserID,
+		arg.Action,
+		arg.IdempotencyKey,
+		arg.RequestFingerprint,
+		arg.RequestID,
+	)
+	var i CredentialMutation
+	err := row.Scan(
+		&i.ID,
+		&i.ActorUserID,
+		&i.Action,
+		&i.IdempotencyKey,
+		&i.RequestFingerprint,
+		&i.RequestID,
+		&i.CredentialID,
+		&i.Result,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const claimProviderMutation = `-- name: ClaimProviderMutation :one
 INSERT INTO provider_mutations (actor_user_id, action, idempotency_key, request_fingerprint, request_id)
 VALUES ($1, $2, $3, $4, $5)
@@ -73,6 +111,36 @@ func (q *Queries) ClaimProviderMutation(ctx context.Context, arg ClaimProviderMu
 	return i, err
 }
 
+const completeCredentialMutation = `-- name: CompleteCredentialMutation :one
+UPDATE credential_mutations
+SET credential_id = $1, result = $2
+WHERE id = $3
+RETURNING id, actor_user_id, action, idempotency_key, request_fingerprint, request_id, credential_id, result, created_at
+`
+
+type CompleteCredentialMutationParams struct {
+	CredentialID *uuid.UUID `json:"credential_id"`
+	Result       []byte     `json:"result"`
+	ID           uuid.UUID  `json:"id"`
+}
+
+func (q *Queries) CompleteCredentialMutation(ctx context.Context, arg CompleteCredentialMutationParams) (CredentialMutation, error) {
+	row := q.db.QueryRow(ctx, completeCredentialMutation, arg.CredentialID, arg.Result, arg.ID)
+	var i CredentialMutation
+	err := row.Scan(
+		&i.ID,
+		&i.ActorUserID,
+		&i.Action,
+		&i.IdempotencyKey,
+		&i.RequestFingerprint,
+		&i.RequestID,
+		&i.CredentialID,
+		&i.Result,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const completeProviderMutation = `-- name: CompleteProviderMutation :one
 UPDATE provider_mutations
 SET provider_id = $1, result = $2
@@ -104,9 +172,9 @@ func (q *Queries) CompleteProviderMutation(ctx context.Context, arg CompleteProv
 }
 
 const createCredential = `-- name: CreateCredential :one
-INSERT INTO provider_credentials (id, provider_id, name, encrypted_secret, resource_domain, rpm_limit, tpm_limit, concurrency_limit, fixed_proxy_url)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-RETURNING id, provider_id, name, encrypted_secret, resource_domain, status, rpm_limit, tpm_limit, concurrency_limit, fixed_proxy_url, cooldown_until, consecutive_failures, last_success_at, last_error_kind, created_at, updated_at
+INSERT INTO provider_credentials (id, provider_id, name, encrypted_secret, resource_domain, rpm_limit, tpm_limit, concurrency_limit)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING id, provider_id, name, encrypted_secret, resource_domain, status, rpm_limit, tpm_limit, concurrency_limit, cooldown_until, consecutive_failures, last_success_at, last_error_kind, last_probe_at, last_probe_latency_ms, last_probe_kind, last_probe_status, last_probe_error_kind, created_at, updated_at
 `
 
 type CreateCredentialParams struct {
@@ -118,7 +186,6 @@ type CreateCredentialParams struct {
 	RpmLimit         *int32         `json:"rpm_limit"`
 	TpmLimit         *int64         `json:"tpm_limit"`
 	ConcurrencyLimit *int32         `json:"concurrency_limit"`
-	FixedProxyUrl    *string        `json:"fixed_proxy_url"`
 }
 
 func (q *Queries) CreateCredential(ctx context.Context, arg CreateCredentialParams) (ProviderCredential, error) {
@@ -131,7 +198,6 @@ func (q *Queries) CreateCredential(ctx context.Context, arg CreateCredentialPara
 		arg.RpmLimit,
 		arg.TpmLimit,
 		arg.ConcurrencyLimit,
-		arg.FixedProxyUrl,
 	)
 	var i ProviderCredential
 	err := row.Scan(
@@ -144,11 +210,15 @@ func (q *Queries) CreateCredential(ctx context.Context, arg CreateCredentialPara
 		&i.RpmLimit,
 		&i.TpmLimit,
 		&i.ConcurrencyLimit,
-		&i.FixedProxyUrl,
 		&i.CooldownUntil,
 		&i.ConsecutiveFailures,
 		&i.LastSuccessAt,
 		&i.LastErrorKind,
+		&i.LastProbeAt,
+		&i.LastProbeLatencyMs,
+		&i.LastProbeKind,
+		&i.LastProbeStatus,
+		&i.LastProbeErrorKind,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -239,8 +309,77 @@ func (q *Queries) CreateProvider(ctx context.Context, arg CreateProviderParams) 
 	return i, err
 }
 
+const deleteCredentialModelBindings = `-- name: DeleteCredentialModelBindings :exec
+DELETE FROM credential_models WHERE credential_id = $1
+`
+
+func (q *Queries) DeleteCredentialModelBindings(ctx context.Context, credentialID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteCredentialModelBindings, credentialID)
+	return err
+}
+
+const getCredentialForUpdate = `-- name: GetCredentialForUpdate :one
+SELECT id, provider_id, name, encrypted_secret, resource_domain, status, rpm_limit, tpm_limit, concurrency_limit, cooldown_until, consecutive_failures, last_success_at, last_error_kind, last_probe_at, last_probe_latency_ms, last_probe_kind, last_probe_status, last_probe_error_kind, created_at, updated_at FROM provider_credentials WHERE id = $1 FOR UPDATE
+`
+
+func (q *Queries) GetCredentialForUpdate(ctx context.Context, id uuid.UUID) (ProviderCredential, error) {
+	row := q.db.QueryRow(ctx, getCredentialForUpdate, id)
+	var i ProviderCredential
+	err := row.Scan(
+		&i.ID,
+		&i.ProviderID,
+		&i.Name,
+		&i.EncryptedSecret,
+		&i.ResourceDomain,
+		&i.Status,
+		&i.RpmLimit,
+		&i.TpmLimit,
+		&i.ConcurrencyLimit,
+		&i.CooldownUntil,
+		&i.ConsecutiveFailures,
+		&i.LastSuccessAt,
+		&i.LastErrorKind,
+		&i.LastProbeAt,
+		&i.LastProbeLatencyMs,
+		&i.LastProbeKind,
+		&i.LastProbeStatus,
+		&i.LastProbeErrorKind,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getCredentialMutation = `-- name: GetCredentialMutation :one
+SELECT id, actor_user_id, action, idempotency_key, request_fingerprint, request_id, credential_id, result, created_at FROM credential_mutations
+WHERE actor_user_id = $1 AND action = $2 AND idempotency_key = $3
+`
+
+type GetCredentialMutationParams struct {
+	ActorUserID    uuid.UUID `json:"actor_user_id"`
+	Action         string    `json:"action"`
+	IdempotencyKey uuid.UUID `json:"idempotency_key"`
+}
+
+func (q *Queries) GetCredentialMutation(ctx context.Context, arg GetCredentialMutationParams) (CredentialMutation, error) {
+	row := q.db.QueryRow(ctx, getCredentialMutation, arg.ActorUserID, arg.Action, arg.IdempotencyKey)
+	var i CredentialMutation
+	err := row.Scan(
+		&i.ID,
+		&i.ActorUserID,
+		&i.Action,
+		&i.IdempotencyKey,
+		&i.RequestFingerprint,
+		&i.RequestID,
+		&i.CredentialID,
+		&i.Result,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getCredentialSecret = `-- name: GetCredentialSecret :one
-SELECT id, provider_id, name, encrypted_secret, resource_domain, status, rpm_limit, tpm_limit, concurrency_limit, fixed_proxy_url, cooldown_until, consecutive_failures, last_success_at, last_error_kind, created_at, updated_at FROM provider_credentials WHERE id = $1
+SELECT id, provider_id, name, encrypted_secret, resource_domain, status, rpm_limit, tpm_limit, concurrency_limit, cooldown_until, consecutive_failures, last_success_at, last_error_kind, last_probe_at, last_probe_latency_ms, last_probe_kind, last_probe_status, last_probe_error_kind, created_at, updated_at FROM provider_credentials WHERE id = $1
 `
 
 func (q *Queries) GetCredentialSecret(ctx context.Context, id uuid.UUID) (ProviderCredential, error) {
@@ -256,11 +395,15 @@ func (q *Queries) GetCredentialSecret(ctx context.Context, id uuid.UUID) (Provid
 		&i.RpmLimit,
 		&i.TpmLimit,
 		&i.ConcurrencyLimit,
-		&i.FixedProxyUrl,
 		&i.CooldownUntil,
 		&i.ConsecutiveFailures,
 		&i.LastSuccessAt,
 		&i.LastErrorKind,
+		&i.LastProbeAt,
+		&i.LastProbeLatencyMs,
+		&i.LastProbeKind,
+		&i.LastProbeStatus,
+		&i.LastProbeErrorKind,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -307,6 +450,28 @@ func (q *Queries) GetModelByPublicName(ctx context.Context, publicName string) (
 		&i.ProviderKind,
 		&i.ProviderBaseUrl,
 		&i.ProviderEnabled,
+	)
+	return i, err
+}
+
+const getModelForCredentialBinding = `-- name: GetModelForCredentialBinding :one
+SELECT id, provider_id, public_name, upstream_name, display_name, resource_domain, capabilities, enabled, created_at, updated_at FROM models WHERE id = $1 FOR SHARE
+`
+
+func (q *Queries) GetModelForCredentialBinding(ctx context.Context, id uuid.UUID) (Model, error) {
+	row := q.db.QueryRow(ctx, getModelForCredentialBinding, id)
+	var i Model
+	err := row.Scan(
+		&i.ID,
+		&i.ProviderID,
+		&i.PublicName,
+		&i.UpstreamName,
+		&i.DisplayName,
+		&i.ResourceDomain,
+		&i.Capabilities,
+		&i.Enabled,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -385,53 +550,63 @@ func (q *Queries) GetProviderMutation(ctx context.Context, arg GetProviderMutati
 	return i, err
 }
 
-const listAuthorizedModels = `-- name: ListAuthorizedModels :many
-SELECT m.id, m.provider_id, m.public_name, m.upstream_name, m.display_name, m.resource_domain, m.capabilities, m.enabled, m.created_at, m.updated_at, p.slug AS provider_slug, p.name AS provider_name
-FROM models m
-JOIN providers p ON p.id = m.provider_id
-JOIN model_authorizations a ON a.model_id = m.id
-WHERE a.user_id = $1 AND m.enabled AND p.enabled
-ORDER BY m.public_name, m.id
+const listCredentialModelBindings = `-- name: ListCredentialModelBindings :many
+SELECT cm.credential_id, m.id AS model_id, m.public_name
+FROM credential_models cm
+JOIN models m ON m.id = cm.model_id
+ORDER BY cm.credential_id, m.public_name, m.id
 `
 
-type ListAuthorizedModelsRow struct {
-	ID             uuid.UUID          `json:"id"`
-	ProviderID     uuid.UUID          `json:"provider_id"`
-	PublicName     string             `json:"public_name"`
-	UpstreamName   string             `json:"upstream_name"`
-	DisplayName    string             `json:"display_name"`
-	ResourceDomain ResourceDomain     `json:"resource_domain"`
-	Capabilities   []byte             `json:"capabilities"`
-	Enabled        bool               `json:"enabled"`
-	CreatedAt      pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
-	ProviderSlug   string             `json:"provider_slug"`
-	ProviderName   string             `json:"provider_name"`
+type ListCredentialModelBindingsRow struct {
+	CredentialID uuid.UUID `json:"credential_id"`
+	ModelID      uuid.UUID `json:"model_id"`
+	PublicName   string    `json:"public_name"`
 }
 
-func (q *Queries) ListAuthorizedModels(ctx context.Context, userID uuid.UUID) ([]ListAuthorizedModelsRow, error) {
-	rows, err := q.db.Query(ctx, listAuthorizedModels, userID)
+func (q *Queries) ListCredentialModelBindings(ctx context.Context) ([]ListCredentialModelBindingsRow, error) {
+	rows, err := q.db.Query(ctx, listCredentialModelBindings)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListAuthorizedModelsRow{}
+	items := []ListCredentialModelBindingsRow{}
 	for rows.Next() {
-		var i ListAuthorizedModelsRow
-		if err := rows.Scan(
-			&i.ID,
-			&i.ProviderID,
-			&i.PublicName,
-			&i.UpstreamName,
-			&i.DisplayName,
-			&i.ResourceDomain,
-			&i.Capabilities,
-			&i.Enabled,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.ProviderSlug,
-			&i.ProviderName,
-		); err != nil {
+		var i ListCredentialModelBindingsRow
+		if err := rows.Scan(&i.CredentialID, &i.ModelID, &i.PublicName); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCredentialModelBindingsForCredential = `-- name: ListCredentialModelBindingsForCredential :many
+SELECT cm.credential_id, m.id AS model_id, m.public_name
+FROM credential_models cm
+JOIN models m ON m.id = cm.model_id
+WHERE cm.credential_id = $1
+ORDER BY m.public_name, m.id
+`
+
+type ListCredentialModelBindingsForCredentialRow struct {
+	CredentialID uuid.UUID `json:"credential_id"`
+	ModelID      uuid.UUID `json:"model_id"`
+	PublicName   string    `json:"public_name"`
+}
+
+func (q *Queries) ListCredentialModelBindingsForCredential(ctx context.Context, credentialID uuid.UUID) ([]ListCredentialModelBindingsForCredentialRow, error) {
+	rows, err := q.db.Query(ctx, listCredentialModelBindingsForCredential, credentialID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListCredentialModelBindingsForCredentialRow{}
+	for rows.Next() {
+		var i ListCredentialModelBindingsForCredentialRow
+		if err := rows.Scan(&i.CredentialID, &i.ModelID, &i.PublicName); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -443,7 +618,7 @@ func (q *Queries) ListAuthorizedModels(ctx context.Context, userID uuid.UUID) ([
 }
 
 const listCredentials = `-- name: ListCredentials :many
-SELECT id, provider_id, name, resource_domain, status, rpm_limit, tpm_limit, concurrency_limit, fixed_proxy_url, cooldown_until, consecutive_failures, last_success_at, last_error_kind, created_at, updated_at
+SELECT id, provider_id, name, resource_domain, status, rpm_limit, tpm_limit, concurrency_limit, cooldown_until, consecutive_failures, last_success_at, last_error_kind, last_probe_at, last_probe_latency_ms, last_probe_kind, last_probe_status, last_probe_error_kind, created_at, updated_at
 FROM provider_credentials ORDER BY name, id
 `
 
@@ -456,11 +631,15 @@ type ListCredentialsRow struct {
 	RpmLimit            *int32             `json:"rpm_limit"`
 	TpmLimit            *int64             `json:"tpm_limit"`
 	ConcurrencyLimit    *int32             `json:"concurrency_limit"`
-	FixedProxyUrl       *string            `json:"fixed_proxy_url"`
 	CooldownUntil       pgtype.Timestamptz `json:"cooldown_until"`
 	ConsecutiveFailures int32              `json:"consecutive_failures"`
 	LastSuccessAt       pgtype.Timestamptz `json:"last_success_at"`
 	LastErrorKind       *string            `json:"last_error_kind"`
+	LastProbeAt         pgtype.Timestamptz `json:"last_probe_at"`
+	LastProbeLatencyMs  *int64             `json:"last_probe_latency_ms"`
+	LastProbeKind       *string            `json:"last_probe_kind"`
+	LastProbeStatus     *string            `json:"last_probe_status"`
+	LastProbeErrorKind  *string            `json:"last_probe_error_kind"`
 	CreatedAt           pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
 }
@@ -483,89 +662,17 @@ func (q *Queries) ListCredentials(ctx context.Context) ([]ListCredentialsRow, er
 			&i.RpmLimit,
 			&i.TpmLimit,
 			&i.ConcurrencyLimit,
-			&i.FixedProxyUrl,
 			&i.CooldownUntil,
 			&i.ConsecutiveFailures,
 			&i.LastSuccessAt,
 			&i.LastErrorKind,
+			&i.LastProbeAt,
+			&i.LastProbeLatencyMs,
+			&i.LastProbeKind,
+			&i.LastProbeStatus,
+			&i.LastProbeErrorKind,
 			&i.CreatedAt,
 			&i.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listEligibleCredentials = `-- name: ListEligibleCredentials :many
-SELECT c.id, c.provider_id, c.name, c.encrypted_secret, c.resource_domain, c.status, c.rpm_limit, c.tpm_limit, c.concurrency_limit, c.fixed_proxy_url, c.cooldown_until, c.consecutive_failures, c.last_success_at, c.last_error_kind, c.created_at, c.updated_at, cm.priority, cm.weight
-FROM provider_credentials c
-JOIN credential_models cm ON cm.credential_id = c.id
-WHERE cm.model_id = $1
-  AND c.resource_domain = $2
-  AND c.status <> 'disabled'
-  AND (c.cooldown_until IS NULL OR c.cooldown_until <= now())
-ORDER BY cm.priority, c.id
-`
-
-type ListEligibleCredentialsParams struct {
-	ModelID        uuid.UUID      `json:"model_id"`
-	ResourceDomain ResourceDomain `json:"resource_domain"`
-}
-
-type ListEligibleCredentialsRow struct {
-	ID                  uuid.UUID          `json:"id"`
-	ProviderID          uuid.UUID          `json:"provider_id"`
-	Name                string             `json:"name"`
-	EncryptedSecret     []byte             `json:"encrypted_secret"`
-	ResourceDomain      ResourceDomain     `json:"resource_domain"`
-	Status              CredentialStatus   `json:"status"`
-	RpmLimit            *int32             `json:"rpm_limit"`
-	TpmLimit            *int64             `json:"tpm_limit"`
-	ConcurrencyLimit    *int32             `json:"concurrency_limit"`
-	FixedProxyUrl       *string            `json:"fixed_proxy_url"`
-	CooldownUntil       pgtype.Timestamptz `json:"cooldown_until"`
-	ConsecutiveFailures int32              `json:"consecutive_failures"`
-	LastSuccessAt       pgtype.Timestamptz `json:"last_success_at"`
-	LastErrorKind       *string            `json:"last_error_kind"`
-	CreatedAt           pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
-	Priority            int32              `json:"priority"`
-	Weight              int32              `json:"weight"`
-}
-
-func (q *Queries) ListEligibleCredentials(ctx context.Context, arg ListEligibleCredentialsParams) ([]ListEligibleCredentialsRow, error) {
-	rows, err := q.db.Query(ctx, listEligibleCredentials, arg.ModelID, arg.ResourceDomain)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListEligibleCredentialsRow{}
-	for rows.Next() {
-		var i ListEligibleCredentialsRow
-		if err := rows.Scan(
-			&i.ID,
-			&i.ProviderID,
-			&i.Name,
-			&i.EncryptedSecret,
-			&i.ResourceDomain,
-			&i.Status,
-			&i.RpmLimit,
-			&i.TpmLimit,
-			&i.ConcurrencyLimit,
-			&i.FixedProxyUrl,
-			&i.CooldownUntil,
-			&i.ConsecutiveFailures,
-			&i.LastSuccessAt,
-			&i.LastErrorKind,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.Priority,
-			&i.Weight,
 		); err != nil {
 			return nil, err
 		}
@@ -665,6 +772,333 @@ func (q *Queries) ListProviders(ctx context.Context) ([]Provider, error) {
 	return items, nil
 }
 
+const listPublishedCandidates = `-- name: ListPublishedCandidates :many
+SELECT route.credential_id AS id, route.priority, route.weight,
+       credential.rpm_limit, credential.tpm_limit, credential.concurrency_limit,
+       live_credential.consecutive_failures, live_credential.last_success_at, live_credential.cooldown_until
+FROM config_revision_routes route
+JOIN config_revision_credentials credential
+  ON credential.revision_id = route.revision_id AND credential.credential_id = route.credential_id
+JOIN provider_credentials live_credential ON live_credential.id = credential.credential_id
+WHERE route.revision_id = $1
+  AND route.model_id = $2
+  AND credential.resource_domain = $3
+  AND (
+    live_credential.status = 'active'
+    OR (live_credential.status = 'cooling' AND live_credential.cooldown_until <= now())
+  )
+ORDER BY route.priority, route.credential_id
+`
+
+type ListPublishedCandidatesParams struct {
+	RevisionID     uuid.UUID      `json:"revision_id"`
+	ModelID        uuid.UUID      `json:"model_id"`
+	ResourceDomain ResourceDomain `json:"resource_domain"`
+}
+
+type ListPublishedCandidatesRow struct {
+	ID                  uuid.UUID          `json:"id"`
+	Priority            int32              `json:"priority"`
+	Weight              int32              `json:"weight"`
+	RpmLimit            *int32             `json:"rpm_limit"`
+	TpmLimit            *int64             `json:"tpm_limit"`
+	ConcurrencyLimit    *int32             `json:"concurrency_limit"`
+	ConsecutiveFailures int32              `json:"consecutive_failures"`
+	LastSuccessAt       pgtype.Timestamptz `json:"last_success_at"`
+	CooldownUntil       pgtype.Timestamptz `json:"cooldown_until"`
+}
+
+func (q *Queries) ListPublishedCandidates(ctx context.Context, arg ListPublishedCandidatesParams) ([]ListPublishedCandidatesRow, error) {
+	rows, err := q.db.Query(ctx, listPublishedCandidates, arg.RevisionID, arg.ModelID, arg.ResourceDomain)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPublishedCandidatesRow{}
+	for rows.Next() {
+		var i ListPublishedCandidatesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Priority,
+			&i.Weight,
+			&i.RpmLimit,
+			&i.TpmLimit,
+			&i.ConcurrencyLimit,
+			&i.ConsecutiveFailures,
+			&i.LastSuccessAt,
+			&i.CooldownUntil,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPublishedModelsForKey = `-- name: ListPublishedModelsForKey :many
+SELECT ac.revision_id,
+       m.model_id AS id, m.public_name, m.upstream_name, m.resource_domain, m.capabilities, m.created_at,
+       p.provider_id, p.slug AS provider_slug, p.kind AS provider_kind, p.base_url AS provider_base_url
+FROM active_config ac
+JOIN config_revision_models m ON m.revision_id = ac.revision_id
+JOIN config_revision_providers p ON p.revision_id = m.revision_id AND p.provider_id = m.provider_id
+JOIN gateway_key_models key_model ON key_model.model_id = m.model_id
+WHERE ac.singleton = true
+  AND key_model.gateway_key_id = $1
+  AND EXISTS (
+    SELECT 1
+    FROM config_revision_routes route
+    JOIN config_revision_credentials credential
+      ON credential.revision_id = route.revision_id AND credential.credential_id = route.credential_id
+    JOIN provider_credentials live_credential ON live_credential.id = credential.credential_id
+    WHERE route.revision_id = ac.revision_id
+      AND route.model_id = m.model_id
+      AND (
+        live_credential.status = 'active'
+        OR (live_credential.status = 'cooling' AND live_credential.cooldown_until <= now())
+      )
+  )
+ORDER BY m.public_name, m.model_id
+`
+
+type ListPublishedModelsForKeyRow struct {
+	RevisionID      uuid.UUID          `json:"revision_id"`
+	ID              uuid.UUID          `json:"id"`
+	PublicName      string             `json:"public_name"`
+	UpstreamName    string             `json:"upstream_name"`
+	ResourceDomain  ResourceDomain     `json:"resource_domain"`
+	Capabilities    []byte             `json:"capabilities"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	ProviderID      uuid.UUID          `json:"provider_id"`
+	ProviderSlug    string             `json:"provider_slug"`
+	ProviderKind    string             `json:"provider_kind"`
+	ProviderBaseUrl string             `json:"provider_base_url"`
+}
+
+func (q *Queries) ListPublishedModelsForKey(ctx context.Context, gatewayKeyID uuid.UUID) ([]ListPublishedModelsForKeyRow, error) {
+	rows, err := q.db.Query(ctx, listPublishedModelsForKey, gatewayKeyID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPublishedModelsForKeyRow{}
+	for rows.Next() {
+		var i ListPublishedModelsForKeyRow
+		if err := rows.Scan(
+			&i.RevisionID,
+			&i.ID,
+			&i.PublicName,
+			&i.UpstreamName,
+			&i.ResourceDomain,
+			&i.Capabilities,
+			&i.CreatedAt,
+			&i.ProviderID,
+			&i.ProviderSlug,
+			&i.ProviderKind,
+			&i.ProviderBaseUrl,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const recordCredentialProbe = `-- name: RecordCredentialProbe :one
+UPDATE provider_credentials
+SET last_probe_at = $1,
+    last_probe_latency_ms = $2,
+    last_probe_kind = $3,
+    last_probe_status = $4,
+    last_probe_error_kind = $5
+WHERE id = $6
+RETURNING id, provider_id, name, encrypted_secret, resource_domain, status, rpm_limit, tpm_limit, concurrency_limit, cooldown_until, consecutive_failures, last_success_at, last_error_kind, last_probe_at, last_probe_latency_ms, last_probe_kind, last_probe_status, last_probe_error_kind, created_at, updated_at
+`
+
+type RecordCredentialProbeParams struct {
+	LastProbeAt        pgtype.Timestamptz `json:"last_probe_at"`
+	LastProbeLatencyMs *int64             `json:"last_probe_latency_ms"`
+	LastProbeKind      *string            `json:"last_probe_kind"`
+	LastProbeStatus    *string            `json:"last_probe_status"`
+	LastProbeErrorKind *string            `json:"last_probe_error_kind"`
+	ID                 uuid.UUID          `json:"id"`
+}
+
+func (q *Queries) RecordCredentialProbe(ctx context.Context, arg RecordCredentialProbeParams) (ProviderCredential, error) {
+	row := q.db.QueryRow(ctx, recordCredentialProbe,
+		arg.LastProbeAt,
+		arg.LastProbeLatencyMs,
+		arg.LastProbeKind,
+		arg.LastProbeStatus,
+		arg.LastProbeErrorKind,
+		arg.ID,
+	)
+	var i ProviderCredential
+	err := row.Scan(
+		&i.ID,
+		&i.ProviderID,
+		&i.Name,
+		&i.EncryptedSecret,
+		&i.ResourceDomain,
+		&i.Status,
+		&i.RpmLimit,
+		&i.TpmLimit,
+		&i.ConcurrencyLimit,
+		&i.CooldownUntil,
+		&i.ConsecutiveFailures,
+		&i.LastSuccessAt,
+		&i.LastErrorKind,
+		&i.LastProbeAt,
+		&i.LastProbeLatencyMs,
+		&i.LastProbeKind,
+		&i.LastProbeStatus,
+		&i.LastProbeErrorKind,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const recordCredentialRuntimeFailure = `-- name: RecordCredentialRuntimeFailure :exec
+UPDATE provider_credentials
+SET status = 'cooling', cooldown_until = $1,
+    consecutive_failures = consecutive_failures + 1,
+    last_error_kind = $2
+WHERE id = $3 AND status <> 'disabled'
+`
+
+type RecordCredentialRuntimeFailureParams struct {
+	CooldownUntil pgtype.Timestamptz `json:"cooldown_until"`
+	ErrorKind     *string            `json:"error_kind"`
+	ID            uuid.UUID          `json:"id"`
+}
+
+func (q *Queries) RecordCredentialRuntimeFailure(ctx context.Context, arg RecordCredentialRuntimeFailureParams) error {
+	_, err := q.db.Exec(ctx, recordCredentialRuntimeFailure, arg.CooldownUntil, arg.ErrorKind, arg.ID)
+	return err
+}
+
+const recordCredentialRuntimeSuccess = `-- name: RecordCredentialRuntimeSuccess :exec
+UPDATE provider_credentials
+SET status = 'active', cooldown_until = NULL, consecutive_failures = 0,
+    last_success_at = $1, last_error_kind = NULL
+WHERE id = $2 AND status <> 'disabled'
+`
+
+type RecordCredentialRuntimeSuccessParams struct {
+	ObservedAt pgtype.Timestamptz `json:"observed_at"`
+	ID         uuid.UUID          `json:"id"`
+}
+
+func (q *Queries) RecordCredentialRuntimeSuccess(ctx context.Context, arg RecordCredentialRuntimeSuccessParams) error {
+	_, err := q.db.Exec(ctx, recordCredentialRuntimeSuccess, arg.ObservedAt, arg.ID)
+	return err
+}
+
+const resolvePublishedModelForKey = `-- name: ResolvePublishedModelForKey :one
+SELECT ac.revision_id,
+       m.model_id AS id, m.public_name, m.upstream_name, m.resource_domain, m.capabilities, m.created_at,
+       p.provider_id, p.slug AS provider_slug, p.kind AS provider_kind, p.base_url AS provider_base_url,
+       EXISTS (
+         SELECT 1 FROM gateway_key_models key_model
+         WHERE key_model.gateway_key_id = $1 AND key_model.model_id = m.model_id
+       ) AS authorized
+FROM active_config ac
+JOIN config_revision_models m ON m.revision_id = ac.revision_id
+JOIN config_revision_providers p ON p.revision_id = m.revision_id AND p.provider_id = m.provider_id
+WHERE ac.singleton = true
+  AND m.public_name = $2
+`
+
+type ResolvePublishedModelForKeyParams struct {
+	GatewayKeyID uuid.UUID `json:"gateway_key_id"`
+	PublicName   string    `json:"public_name"`
+}
+
+type ResolvePublishedModelForKeyRow struct {
+	RevisionID      uuid.UUID          `json:"revision_id"`
+	ID              uuid.UUID          `json:"id"`
+	PublicName      string             `json:"public_name"`
+	UpstreamName    string             `json:"upstream_name"`
+	ResourceDomain  ResourceDomain     `json:"resource_domain"`
+	Capabilities    []byte             `json:"capabilities"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	ProviderID      uuid.UUID          `json:"provider_id"`
+	ProviderSlug    string             `json:"provider_slug"`
+	ProviderKind    string             `json:"provider_kind"`
+	ProviderBaseUrl string             `json:"provider_base_url"`
+	Authorized      bool               `json:"authorized"`
+}
+
+func (q *Queries) ResolvePublishedModelForKey(ctx context.Context, arg ResolvePublishedModelForKeyParams) (ResolvePublishedModelForKeyRow, error) {
+	row := q.db.QueryRow(ctx, resolvePublishedModelForKey, arg.GatewayKeyID, arg.PublicName)
+	var i ResolvePublishedModelForKeyRow
+	err := row.Scan(
+		&i.RevisionID,
+		&i.ID,
+		&i.PublicName,
+		&i.UpstreamName,
+		&i.ResourceDomain,
+		&i.Capabilities,
+		&i.CreatedAt,
+		&i.ProviderID,
+		&i.ProviderSlug,
+		&i.ProviderKind,
+		&i.ProviderBaseUrl,
+		&i.Authorized,
+	)
+	return i, err
+}
+
+const setCredentialStatus = `-- name: SetCredentialStatus :one
+UPDATE provider_credentials
+SET status = $1,
+    cooldown_until = CASE WHEN $1::credential_status = 'active' THEN NULL ELSE cooldown_until END,
+    updated_at = GREATEST(now(), updated_at + interval '1 microsecond')
+WHERE id = $2 AND updated_at = $3
+RETURNING id, provider_id, name, encrypted_secret, resource_domain, status, rpm_limit, tpm_limit, concurrency_limit, cooldown_until, consecutive_failures, last_success_at, last_error_kind, last_probe_at, last_probe_latency_ms, last_probe_kind, last_probe_status, last_probe_error_kind, created_at, updated_at
+`
+
+type SetCredentialStatusParams struct {
+	Status            CredentialStatus   `json:"status"`
+	ID                uuid.UUID          `json:"id"`
+	ExpectedUpdatedAt pgtype.Timestamptz `json:"expected_updated_at"`
+}
+
+func (q *Queries) SetCredentialStatus(ctx context.Context, arg SetCredentialStatusParams) (ProviderCredential, error) {
+	row := q.db.QueryRow(ctx, setCredentialStatus, arg.Status, arg.ID, arg.ExpectedUpdatedAt)
+	var i ProviderCredential
+	err := row.Scan(
+		&i.ID,
+		&i.ProviderID,
+		&i.Name,
+		&i.EncryptedSecret,
+		&i.ResourceDomain,
+		&i.Status,
+		&i.RpmLimit,
+		&i.TpmLimit,
+		&i.ConcurrencyLimit,
+		&i.CooldownUntil,
+		&i.ConsecutiveFailures,
+		&i.LastSuccessAt,
+		&i.LastErrorKind,
+		&i.LastProbeAt,
+		&i.LastProbeLatencyMs,
+		&i.LastProbeKind,
+		&i.LastProbeStatus,
+		&i.LastProbeErrorKind,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const setProviderEnabled = `-- name: SetProviderEnabled :one
 UPDATE providers SET enabled = $1, updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
 WHERE id = $2 RETURNING id, slug, name, kind, base_url, enabled, source_url, verified_at, created_at, updated_at
@@ -693,10 +1127,73 @@ func (q *Queries) SetProviderEnabled(ctx context.Context, arg SetProviderEnabled
 	return i, err
 }
 
+const updateCredential = `-- name: UpdateCredential :one
+UPDATE provider_credentials
+SET name = $1,
+    encrypted_secret = CASE WHEN $2::boolean THEN $3 ELSE encrypted_secret END,
+    resource_domain = $4,
+    rpm_limit = $5,
+    tpm_limit = $6,
+    concurrency_limit = $7,
+    updated_at = GREATEST(now(), updated_at + interval '1 microsecond')
+WHERE id = $8 AND updated_at = $9
+RETURNING id, provider_id, name, encrypted_secret, resource_domain, status, rpm_limit, tpm_limit, concurrency_limit, cooldown_until, consecutive_failures, last_success_at, last_error_kind, last_probe_at, last_probe_latency_ms, last_probe_kind, last_probe_status, last_probe_error_kind, created_at, updated_at
+`
+
+type UpdateCredentialParams struct {
+	Name              string             `json:"name"`
+	ReplaceSecret     bool               `json:"replace_secret"`
+	EncryptedSecret   []byte             `json:"encrypted_secret"`
+	ResourceDomain    ResourceDomain     `json:"resource_domain"`
+	RpmLimit          *int32             `json:"rpm_limit"`
+	TpmLimit          *int64             `json:"tpm_limit"`
+	ConcurrencyLimit  *int32             `json:"concurrency_limit"`
+	ID                uuid.UUID          `json:"id"`
+	ExpectedUpdatedAt pgtype.Timestamptz `json:"expected_updated_at"`
+}
+
+func (q *Queries) UpdateCredential(ctx context.Context, arg UpdateCredentialParams) (ProviderCredential, error) {
+	row := q.db.QueryRow(ctx, updateCredential,
+		arg.Name,
+		arg.ReplaceSecret,
+		arg.EncryptedSecret,
+		arg.ResourceDomain,
+		arg.RpmLimit,
+		arg.TpmLimit,
+		arg.ConcurrencyLimit,
+		arg.ID,
+		arg.ExpectedUpdatedAt,
+	)
+	var i ProviderCredential
+	err := row.Scan(
+		&i.ID,
+		&i.ProviderID,
+		&i.Name,
+		&i.EncryptedSecret,
+		&i.ResourceDomain,
+		&i.Status,
+		&i.RpmLimit,
+		&i.TpmLimit,
+		&i.ConcurrencyLimit,
+		&i.CooldownUntil,
+		&i.ConsecutiveFailures,
+		&i.LastSuccessAt,
+		&i.LastErrorKind,
+		&i.LastProbeAt,
+		&i.LastProbeLatencyMs,
+		&i.LastProbeKind,
+		&i.LastProbeStatus,
+		&i.LastProbeErrorKind,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const updateCredentialState = `-- name: UpdateCredentialState :one
 UPDATE provider_credentials
 SET status = $1, cooldown_until = $2, consecutive_failures = $3, last_success_at = $4, last_error_kind = $5, updated_at = now()
-WHERE id = $6 RETURNING id, provider_id, name, encrypted_secret, resource_domain, status, rpm_limit, tpm_limit, concurrency_limit, fixed_proxy_url, cooldown_until, consecutive_failures, last_success_at, last_error_kind, created_at, updated_at
+WHERE id = $6 RETURNING id, provider_id, name, encrypted_secret, resource_domain, status, rpm_limit, tpm_limit, concurrency_limit, cooldown_until, consecutive_failures, last_success_at, last_error_kind, last_probe_at, last_probe_latency_ms, last_probe_kind, last_probe_status, last_probe_error_kind, created_at, updated_at
 `
 
 type UpdateCredentialStateParams struct {
@@ -728,11 +1225,15 @@ func (q *Queries) UpdateCredentialState(ctx context.Context, arg UpdateCredentia
 		&i.RpmLimit,
 		&i.TpmLimit,
 		&i.ConcurrencyLimit,
-		&i.FixedProxyUrl,
 		&i.CooldownUntil,
 		&i.ConsecutiveFailures,
 		&i.LastSuccessAt,
 		&i.LastErrorKind,
+		&i.LastProbeAt,
+		&i.LastProbeLatencyMs,
+		&i.LastProbeKind,
+		&i.LastProbeStatus,
+		&i.LastProbeErrorKind,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

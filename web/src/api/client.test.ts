@@ -5,7 +5,7 @@ import { server } from '@/test/server'
 
 import { accessApi } from './access'
 import { authApi } from './auth'
-import { streamPlaygroundRun } from './operations'
+import { streamPlaygroundRun } from './playground'
 import type { CreatedGatewayKey, GatewayKey, PlaygroundEvent, Session } from './types'
 
 const session: Session = {
@@ -21,6 +21,7 @@ describe('same-origin control API', () => {
   it('adopts the session CSRF fact for authenticated writes', async () => {
     let receivedBody: unknown
     let receivedCsrf = ''
+    let receivedIdempotencyKey = ''
     const created: CreatedGatewayKey = {
       key: gatewayKey,
       secret: 'lgw_live_once',
@@ -29,23 +30,28 @@ describe('same-origin control API', () => {
       http.get('/api/control/session', () => HttpResponse.json({ data: session })),
       http.post('/api/control/keys', async ({ request }) => {
         receivedCsrf = request.headers.get('x-csrf-token') ?? ''
+        receivedIdempotencyKey = request.headers.get('idempotency-key') ?? ''
         receivedBody = await request.json()
         return HttpResponse.json({ data: created })
       }),
     )
 
     await authApi.session()
-    const result = await accessApi.createKey({
-      ownerId: 'user-admin',
-      name: 'Automation',
-      authorizedModels: ['gpt-main'],
-    })
+    const result = await accessApi.createKey(
+      {
+        ownerId: 'user-admin',
+        name: 'Automation',
+        authorizedModelIds: ['11111111-1111-4111-8111-111111111111'],
+      },
+      '22222222-2222-4222-8222-222222222222',
+    )
 
     expect(receivedCsrf).toBe('csrf-session-token')
+    expect(receivedIdempotencyKey).toBe('22222222-2222-4222-8222-222222222222')
     expect(receivedBody).toEqual({
       ownerId: 'user-admin',
       name: 'Automation',
-      authorizedModels: ['gpt-main'],
+      authorizedModelIds: ['11111111-1111-4111-8111-111111111111'],
     })
     expect(result).toEqual(created)
   })
@@ -100,6 +106,7 @@ describe('same-origin control API', () => {
 
     await streamPlaygroundRun(
       {
+        gatewayKeyId: 'key-1',
         model: 'gpt-main',
         stream: true,
         messages: [{ role: 'user', content: 'Hello' }],
@@ -119,6 +126,7 @@ const gatewayKey: GatewayKey = {
   name: 'Automation',
   prefix: 'lgw_live',
   status: 'active',
+  authorizedModelIds: ['11111111-1111-4111-8111-111111111111'],
   authorizedModels: ['gpt-main'],
   createdAt: '2026-07-19T00:00:00.000Z',
 }

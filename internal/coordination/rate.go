@@ -11,7 +11,7 @@ const (
 	maximumBucketTokens   = int64(1_000_000_000_000)
 	maximumRefillInterval = 24 * time.Hour
 	maximumFullRefill     = 30 * 24 * time.Hour
-	maximumRateDimensions = 12
+	maximumRateDimensions = 16
 )
 
 // AcquireRate atomically deducts every supplied bucket or none of them. A

@@ -8,61 +8,6 @@ import (
 	"github.com/luckymaomi/llmgateway/internal/canonical"
 )
 
-func TestDeepSeekBuildsThinkingToolReplayRequest(t *testing.T) {
-	t.Parallel()
-
-	adapter := NewDeepSeek()
-	strict := true
-	request, err := adapter.BuildRequest(context.Background(), Credential{APIKey: "fixture-key"}, canonical.ChatRequest{
-		Model: "deepseek-v4-pro",
-		Messages: []canonical.Message{
-			{Role: canonical.RoleUser, Content: canonical.TextContent("Weather tomorrow?")},
-			{
-				Role: canonical.RoleAssistant, Content: canonical.TextContent("I will check."),
-				Reasoning: &canonical.ReasoningContent{Text: "I need the forecast tool."},
-				ToolCalls: []canonical.ToolCall{{
-					ID: "call_weather", Type: "function",
-					Function: canonical.ToolFunctionCall{Name: "get_weather", Arguments: `{"city":"Hangzhou"}`},
-				}},
-			},
-			{Role: canonical.RoleTool, ToolCallID: "call_weather", Content: canonical.TextContent(`{"condition":"cloudy"}`)},
-		},
-		Tools: []canonical.ToolDefinition{{
-			Name: "get_weather", Description: "Get a city forecast",
-			Parameters: json.RawMessage(`{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}`),
-			Strict:     &strict,
-		}},
-		ToolChoice: &canonical.ToolChoice{Mode: canonical.ToolChoiceRequired},
-		Stream:     true,
-		Reasoning: &canonical.ReasoningConfig{
-			Enabled: boolPointer(true), Effort: canonical.ReasoningEffortHigh,
-		},
-	})
-	if err != nil {
-		t.Fatalf("build DeepSeek request: %v", err)
-	}
-	if request.URL.String() != "https://api.deepseek.com/chat/completions" {
-		t.Fatalf("request URL = %q", request.URL.String())
-	}
-	if request.Header.Get("Accept") != "text/event-stream" {
-		t.Fatalf("Accept = %q", request.Header.Get("Accept"))
-	}
-	assertRequestJSON(t, request, `{
-		"model":"deepseek-v4-pro",
-		"messages":[
-			{"role":"user","content":"Weather tomorrow?"},
-			{"role":"assistant","content":"I will check.","reasoning_content":"I need the forecast tool.","tool_calls":[{"id":"call_weather","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Hangzhou\"}"}}]},
-			{"role":"tool","content":"{\"condition\":\"cloudy\"}","tool_call_id":"call_weather"}
-		],
-		"stream":true,
-		"tools":[{"type":"function","function":{"name":"get_weather","description":"Get a city forecast","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]},"strict":true}}],
-		"tool_choice":"required",
-		"stream_options":{"include_usage":true},
-		"thinking":{"type":"enabled"},
-		"reasoning_effort":"high"
-	}`)
-}
-
 func TestZhipuBuildsPreservedToolStreamRequest(t *testing.T) {
 	t.Parallel()
 
@@ -138,7 +83,7 @@ func TestOpenAICompatibleBuildsDeclaredContractRequest(t *testing.T) {
 	}
 	request, err := adapter.BuildRequest(context.Background(), Credential{APIKey: "fixture-key"}, canonical.ChatRequest{
 		Model:    "general-chat",
-		Messages: []canonical.Message{{Role: canonical.RoleUser, Name: "operator", Content: canonical.TextContent("Summarize")}},
+		Messages: []canonical.Message{{Role: canonical.RoleUser, Name: "caller", Content: canonical.TextContent("Summarize")}},
 		Stream:   true,
 		Reasoning: &canonical.ReasoningConfig{
 			Effort: canonical.ReasoningEffortMedium,
@@ -149,7 +94,7 @@ func TestOpenAICompatibleBuildsDeclaredContractRequest(t *testing.T) {
 	}
 	assertRequestJSON(t, request, `{
 		"model":"general-chat",
-		"messages":[{"role":"user","name":"operator","content":"Summarize"}],
+		"messages":[{"role":"user","name":"caller","content":"Summarize"}],
 		"stream":true,
 		"stream_options":{"include_usage":true},
 		"reasoning_effort":"medium"

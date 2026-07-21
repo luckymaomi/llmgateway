@@ -29,6 +29,7 @@ type controlFixture struct {
 	memberID      uuid.UUID
 	activeID      uuid.UUID
 	draftID       uuid.UUID
+	activeModelID uuid.UUID
 	now           time.Time
 }
 
@@ -39,6 +40,9 @@ func newControlFixture(t *testing.T) controlFixture {
 	memberID := uuid.New()
 	activeID := uuid.New()
 	draftID := uuid.New()
+	activeProviderID := uuid.New()
+	activeModelID := uuid.New()
+	activeCredentialID := uuid.New()
 	principal := identity.Principal{
 		SessionID:   uuid.New(),
 		UserID:      adminID,
@@ -64,13 +68,19 @@ func newControlFixture(t *testing.T) controlFixture {
 	}
 	configurationService := &configurationStub{
 		active: configuration.Active{
-			Revision:  configuration.Revision{ID: activeID, Revision: 4, Document: configuration.DefaultDocument(), Checksum: "active-checksum", CreatedBy: adminID, CreatedAt: now},
+			Revision:  configuration.Revision{ID: activeID, Revision: 4, Checksum: "active-checksum", Catalog: configuration.CatalogSummary{ProviderCount: 1, ModelCount: 1, CredentialCount: 1, RouteCount: 1}, CreatedBy: adminID, CreatedAt: now},
 			Version:   7,
 			UpdatedAt: now,
 		},
 		revisions: []configuration.Revision{
-			{ID: activeID, Revision: 4, Document: configuration.DefaultDocument(), Checksum: "active-checksum", CreatedBy: adminID, CreatedAt: now},
-			{ID: draftID, Revision: 5, Document: configuration.DefaultDocument(), Checksum: "draft-checksum", CreatedBy: adminID, CreatedAt: now.Add(time.Minute)},
+			{ID: activeID, Revision: 4, Checksum: "active-checksum", Catalog: configuration.CatalogSummary{ProviderCount: 1, ModelCount: 1, CredentialCount: 1, RouteCount: 1}, CreatedBy: adminID, CreatedAt: now},
+			{ID: draftID, Revision: 5, Checksum: "draft-checksum", Catalog: configuration.CatalogSummary{ProviderCount: 1, ModelCount: 1, CredentialCount: 1, RouteCount: 1}, CreatedBy: adminID, CreatedAt: now.Add(time.Minute)},
+		},
+		catalog: configuration.Catalog{
+			Providers:   []configuration.CatalogProvider{{ID: activeProviderID, Slug: "published", Name: "Published Provider", Kind: "openai_compatible", BaseURL: "https://published.example.test/v1"}},
+			Models:      []configuration.CatalogModel{{ID: activeModelID, ProviderID: activeProviderID, PublicName: "fast", UpstreamName: "fast-upstream", DisplayName: "Fast", ResourceDomain: "professional", CreatedAt: now}},
+			Credentials: []configuration.CatalogCredential{{ID: activeCredentialID, ProviderID: activeProviderID, ResourceDomain: "professional"}},
+			Routes:      []configuration.CatalogRoute{{ModelID: activeModelID, CredentialID: activeCredentialID, Priority: 100, Weight: 100}},
 		},
 	}
 	registryService := &registryStub{}
@@ -87,11 +97,21 @@ func newControlFixture(t *testing.T) controlFixture {
 		memberID:      memberID,
 		activeID:      activeID,
 		draftID:       draftID,
+		activeModelID: activeModelID,
 		now:           now,
 	}
 }
 
 func request(t *testing.T, handler http.Handler, method, path string, body any, authenticated, csrf bool) *httptest.ResponseRecorder {
+	t.Helper()
+	idempotencyKey := ""
+	if method != http.MethodGet {
+		idempotencyKey = uuid.NewString()
+	}
+	return requestWithIdempotencyKey(t, handler, method, path, body, authenticated, csrf, idempotencyKey)
+}
+
+func requestWithIdempotencyKey(t *testing.T, handler http.Handler, method, path string, body any, authenticated, csrf bool, idempotencyKey string) *httptest.ResponseRecorder {
 	t.Helper()
 	var encoded []byte
 	if body != nil {
@@ -112,8 +132,8 @@ func request(t *testing.T, handler http.Handler, method, path string, body any, 
 	if csrf {
 		req.Header.Set("X-CSRF-Token", "csrf-test-token")
 	}
-	if method != http.MethodGet {
-		req.Header.Set("Idempotency-Key", uuid.NewString())
+	if idempotencyKey != "" {
+		req.Header.Set("Idempotency-Key", idempotencyKey)
 	}
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)

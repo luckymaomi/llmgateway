@@ -11,7 +11,6 @@ type Kind string
 
 const (
 	KindOpenAICompatible Kind = "openai-compatible"
-	KindDeepSeek         Kind = "deepseek"
 	KindZhipu            Kind = "zhipu"
 	KindAgnes            Kind = "agnes"
 )
@@ -46,4 +45,5 @@ type Adapter interface {
 	ParseStream() StreamParser
 	ClassifyError(statusCode int, headers http.Header, body []byte) *canonical.Error
 	Probe(context.Context, Credential) (Probe, error)
+	ValidateProbe(ProbeKind, int, http.Header, []byte) *canonical.Error
 }

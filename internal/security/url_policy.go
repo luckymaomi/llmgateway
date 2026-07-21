@@ -2,6 +2,7 @@ package security
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"net"
@@ -58,7 +59,9 @@ func (e *URLPolicyError) Is(target error) bool {
 type SSRFPolicy struct {
 	AllowedPrivatePrefixes  []netip.Prefix
 	AllowedResolvedPrefixes []netip.Prefix
+	AllowLoopback           bool
 	MaxRedirects            int
+	RootCAs                 *x509.CertPool
 }
 
 type netIPResolver interface {
@@ -68,6 +71,7 @@ type netIPResolver interface {
 type URLValidator struct {
 	allowedPrivatePrefixes  []netip.Prefix
 	allowedResolvedPrefixes []netip.Prefix
+	allowLoopback           bool
 	resolver                netIPResolver
 }
 
@@ -83,6 +87,7 @@ func NewURLValidator(policy SSRFPolicy) (*URLValidator, error) {
 	return &URLValidator{
 		allowedPrivatePrefixes:  prefixes,
 		allowedResolvedPrefixes: resolvedPrefixes,
+		allowLoopback:           policy.AllowLoopback,
 		resolver:                net.DefaultResolver,
 	}, nil
 }
@@ -141,6 +146,9 @@ func (v *URLValidator) resolveAndValidate(ctx context.Context, host string) ([]n
 }
 
 func (v *URLValidator) validateAddress(address netip.Addr) error {
+	if address.IsValid() && address.Zone() == "" && address.IsLoopback() && v.allowLoopback {
+		return nil
+	}
 	if !address.IsValid() || address.Zone() != "" || isMetadataAddress(address) ||
 		address.IsUnspecified() || address.IsLoopback() || address.IsLinkLocalUnicast() ||
 		address.IsLinkLocalMulticast() || address.IsMulticast() {

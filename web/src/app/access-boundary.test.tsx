@@ -172,6 +172,7 @@ const administratorKey: GatewayKey = {
   name: 'Administrator Cached Key',
   prefix: 'lgw_admin',
   status: 'active',
+  authorizedModelIds: [],
   authorizedModels: [],
   createdAt: '2026-07-20T00:00:00Z',
 }
@@ -183,6 +184,7 @@ const memberKey: GatewayKey = {
   name: 'Member Self Key',
   prefix: 'lgw_member',
   status: 'active',
+  authorizedModelIds: [],
   authorizedModels: [],
   createdAt: '2026-07-20T00:00:00Z',
 }
@@ -190,7 +192,6 @@ const memberKey: GatewayKey = {
 const issuedInvitation: Invitation = {
   id: 'invitation-id',
   codePrefix: 'invite-',
-  role: 'member',
   status: 'issued',
   expiresAt: '2026-07-21T00:00:00Z',
   createdBy: administratorSession.displayName,

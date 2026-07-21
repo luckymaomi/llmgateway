@@ -9,7 +9,6 @@ type Clock interface {
 
 type TicketID string
 type UserID string
-type Priority int32
 
 type Config struct {
 	MaxQueued        int
@@ -37,14 +36,12 @@ func (c Config) validate() error {
 type Request struct {
 	ID           TicketID
 	UserID       UserID
-	Priority     Priority
 	QueueTimeout time.Duration
 }
 
 type Ticket struct {
 	ID         TicketID
 	UserID     UserID
-	Priority   Priority
 	EnqueuedAt time.Time
 	Deadline   time.Time
 }

@@ -26,10 +26,6 @@ const RegisterPage = lazyRouteComponent(
 )
 const PendingPage = lazyRouteComponent(() => import('@/features/auth/pending-page'), 'PendingPage')
 
-const OverviewPage = lazyRouteComponent(
-  () => import('@/features/overview/overview-page'),
-  'OverviewPage',
-)
 const ProvidersPage = lazyRouteComponent(
   () => import('@/features/catalog/providers-page'),
   'ProvidersPage',
@@ -58,22 +54,9 @@ const EntitlementsPage = lazyRouteComponent(
   () => import('@/features/ledger/entitlements-page'),
   'EntitlementsPage',
 )
-const RequestsPage = lazyRouteComponent(
-  () => import('@/features/operations/requests-page'),
-  'RequestsPage',
-)
-const AuditPage = lazyRouteComponent(() => import('@/features/operations/audit-page'), 'AuditPage')
-const ContentPage = lazyRouteComponent(
-  () => import('@/features/operations/content-page'),
-  'ContentPage',
-)
 const PlaygroundPage = lazyRouteComponent(
   () => import('@/features/playground/playground-page'),
   'PlaygroundPage',
-)
-const SettingsPage = lazyRouteComponent(
-  () => import('@/features/settings/settings-page'),
-  'SettingsPage',
 )
 
 interface RouterContext {
@@ -197,7 +180,6 @@ function protectedRoute<const TPath extends string>(
   })
 }
 
-const overviewRoute = protectedRoute('/overview', 'overview:read', OverviewPage)
 const providersRoute = protectedRoute('/providers/providers', 'providers:read', ProvidersPage, true)
 const modelsRoute = protectedRoute('/providers/models', 'providers:read', ModelsPage, true)
 const revisionsRoute = protectedRoute('/providers/revisions', 'providers:read', RevisionsPage, true)
@@ -223,26 +205,9 @@ const entitlementsRoute = protectedRoute(
   'ledger:read',
   EntitlementsPage,
   true,
+  ['administrator'],
 )
-const requestsRoute = protectedRoute('/operations/requests', 'operations:read', RequestsPage, true)
-const auditRoute = protectedRoute('/operations/audit', 'audit:read', AuditPage, true)
-const contentRoute = protectedRoute('/operations/content', 'content:read', ContentPage, true)
 const playgroundRoute = protectedRoute('/playground', 'playground:use', PlaygroundPage)
-const securityRoute = protectedRoute('/settings/security', 'settings:read', () => (
-  <SettingsPage section="security" />
-))
-const networkRoute = protectedRoute('/settings/network', 'settings:read', () => (
-  <SettingsPage section="network" />
-))
-const observabilityRoute = protectedRoute('/settings/observability', 'settings:read', () => (
-  <SettingsPage section="observability" />
-))
-const backupsRoute = protectedRoute('/settings/backups', 'settings:read', () => (
-  <SettingsPage section="backups" />
-))
-const settingsRevisionsRoute = protectedRoute('/settings/revisions', 'settings:read', () => (
-  <SettingsPage section="revisions" />
-))
 const forbiddenRoute = createRoute({
   getParentRoute: () => authenticatedLayout,
   path: '/forbidden',
@@ -265,7 +230,6 @@ const routeTree = rootRoute.addChildren([
   rootIndex,
   publicLayout.addChildren([setupRoute, loginRoute, registerRoute, pendingRoute]),
   authenticatedLayout.addChildren([
-    overviewRoute,
     providersRoute,
     modelsRoute,
     revisionsRoute,
@@ -276,15 +240,7 @@ const routeTree = rootRoute.addChildren([
     usageRoute,
     entriesRoute,
     entitlementsRoute,
-    requestsRoute,
-    auditRoute,
-    contentRoute,
     playgroundRoute,
-    securityRoute,
-    networkRoute,
-    observabilityRoute,
-    backupsRoute,
-    settingsRevisionsRoute,
     forbiddenRoute,
   ]),
 ])

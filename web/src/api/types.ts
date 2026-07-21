@@ -1,7 +1,6 @@
-export type Role = 'administrator' | 'operator' | 'member'
+export type Role = 'administrator' | 'member'
 
 export type Capability =
-  | 'overview:read'
   | 'providers:read'
   | 'providers:write'
   | 'credentials:read'
@@ -10,12 +9,7 @@ export type Capability =
   | 'access:write'
   | 'ledger:read'
   | 'ledger:write'
-  | 'operations:read'
-  | 'audit:read'
-  | 'content:read'
   | 'playground:use'
-  | 'settings:read'
-  | 'settings:write'
   | 'revisions:publish'
 
 export type ResourceDomain = 'free' | 'professional'
@@ -48,51 +42,20 @@ export interface ListQuery {
   resourceDomain?: ResourceDomain
 }
 
-export interface MetricPoint {
-  timestamp: string
-  requests: number
-  inputTokens: number
-  outputTokens: number
-  errorRate: number
-}
-
-export interface OverviewAlert {
-  id: string
-  severity: 'info' | 'warning' | 'critical'
-  title: string
-  summary: string
-  occurredAt: string
-  requestId?: string
-}
-
-export interface PoolCapacity {
-  resourceDomain: ResourceDomain
-  readyCredentials: number
-  busyCredentials: number
-  coolingCredentials: number
-  queuedRequests: number
-}
-
-export interface Overview {
-  health: 'healthy' | 'degraded' | 'unavailable'
-  requests24h: number
-  successRate: number
-  p95LatencyMs: number
-  queuedRequests: number
-  series: MetricPoint[]
-  pools: PoolCapacity[]
-  alerts: OverviewAlert[]
-}
-
 export interface ProviderRecord {
   id: string
   slug: string
   name: string
-  kind: 'openai-compatible' | 'zhipu' | 'deepseek' | 'agnes'
+  kind: string
   baseUrl: string
   status: 'enabled' | 'disabled'
   verifiedAt?: string
   updatedAt: string
+}
+
+export interface ProviderKind {
+  kind: string
+  displayName: string
 }
 
 export interface Provider extends ProviderRecord {
@@ -124,7 +87,7 @@ export interface Model {
   upstreamModelId: string
   resourceDomain: ResourceDomain
   capabilities: ModelCapability[]
-  contextTokens?: number
+  contextTokens: number
   status: EntityStatus
   verifiedAt?: string
 }
@@ -147,6 +110,27 @@ export interface ConfigurationRevision {
   publishedAt?: string
   summary: string
   validationIssueCount: number
+  providerCount: number
+  modelCount: number
+  credentialCount: number
+  routeCount: number
+}
+
+export interface ActiveConfigurationModel {
+  id: string
+  alias: string
+  displayName: string
+  providerId: string
+  providerName: string
+  resourceDomain: ResourceDomain
+}
+
+export interface ActiveConfiguration {
+  revisionId: string | null
+  sequence: number
+  version: number
+  updatedAt: string | null
+  models: ActiveConfigurationModel[]
 }
 
 export interface Credential {
@@ -157,14 +141,20 @@ export interface Credential {
   maskedSecret: string
   resourceDomain: ResourceDomain
   status: EntityStatus
+  authorizedModelIds: string[]
   authorizedModels: string[]
   rpmLimit?: number
   tpmLimit?: number
   concurrencyLimit?: number
-  fixedProxy?: string
   cooldownUntil?: string
   lastCheckedAt?: string
   recentSuccessRate?: number
+  lastProbeAt?: string
+  lastProbeLatencyMs?: number
+  lastProbeKind?: string
+  lastProbeStatus?: 'succeeded' | 'failed' | 'unavailable'
+  lastProbeErrorKind?: string
+  updatedAt: string
 }
 
 export interface CredentialInput {
@@ -172,11 +162,26 @@ export interface CredentialInput {
   label: string
   secret: string
   resourceDomain: ResourceDomain
-  authorizedModels: string[]
+  authorizedModelIds: string[]
   rpmLimit?: number
   tpmLimit?: number
   concurrencyLimit?: number
-  fixedProxy?: string
+}
+
+export interface CredentialUpdateInput extends Omit<CredentialInput, 'providerId' | 'secret'> {
+  secret?: string
+  expectedUpdatedAt: string
+}
+
+export interface CredentialProbeResult {
+  credential: Credential
+  kind: string
+  status: 'succeeded' | 'failed' | 'unavailable'
+  errorKind?: string
+  retryable: boolean
+  mayUseTokens: boolean
+  latencyMillis: number
+  requestId: string
 }
 
 export interface UserAccount {
@@ -195,7 +200,6 @@ export interface UserAccount {
 export interface Invitation {
   id: string
   codePrefix: string
-  role: Role
   status: 'issued' | 'claimed' | 'approved' | 'expired' | 'revoked'
   expiresAt: string
   createdBy: string
@@ -209,6 +213,7 @@ export interface GatewayKey {
   name: string
   prefix: string
   status: 'active' | 'revoked' | 'expired'
+  authorizedModelIds: string[]
   authorizedModels: string[]
   expiresAt?: string
   createdAt: string
@@ -251,15 +256,16 @@ export interface Entitlement {
   ownerName: string
   planKind: 'token' | 'coding'
   resourceDomain: ResourceDomain
-  modelAliases: string[]
-  tokenLimit?: number
-  usedTokens: number
+  modelId?: string
+  modelAlias?: string
+  grantedTokens: number
+  balanceTokens: number
   rpmLimit?: number
   tpmLimit?: number
   concurrencyLimit: number
   startsAt: string
   expiresAt: string
-  status: 'scheduled' | 'active' | 'expired' | 'revoked'
+  status: 'scheduled' | 'active' | 'expired'
 }
 
 export interface LedgerAdjustmentInput {
@@ -274,85 +280,14 @@ export interface EntitlementInput {
   ownerId: string
   planKind: Entitlement['planKind']
   resourceDomain: ResourceDomain
-  modelAliases: string[]
-  tokenLimit?: number
+  modelId?: string
+  grantedTokens: number
   rpmLimit?: number
   tpmLimit?: number
   concurrencyLimit: number
   startsAt: string
   expiresAt: string
-}
-
-export type RequestState =
-  | 'queued'
-  | 'admitted'
-  | 'dispatching'
-  | 'streaming'
-  | 'completed'
-  | 'failed'
-  | 'canceled'
-  | 'uncertain'
-
-export interface ProviderAttempt {
-  id: string
-  sequence: number
-  providerName: string
-  credentialLabel: string
-  state: 'selected' | 'sending' | 'committed' | 'succeeded' | 'failed' | 'uncertain'
-  exclusionReasons: string[]
-  errorCode?: string
-  latencyMs?: number
-  inputTokens?: number
-  outputTokens?: number
-  startedAt: string
-  completedAt?: string
-}
-
-export interface GatewayRequest {
-  id: string
-  requestId: string
-  createdAt: string
-  completedAt?: string
-  userName: string
-  keyPrefix: string
-  modelAlias: string
-  resourceDomain: ResourceDomain
-  state: RequestState
-  statusCode?: number
-  latencyMs?: number
-  ttftMs?: number
-  inputTokens?: number
-  outputTokens?: number
-  errorCode?: string
-  errorMessage?: string
-  configurationRevisionId: string
-  attempts?: ProviderAttempt[]
-}
-
-export interface AuditEvent {
-  id: string
-  occurredAt: string
-  actorName: string
-  action: string
-  objectType: string
-  objectLabel: string
-  summary: string
-  requestId: string
-}
-
-export interface ContentRecord {
-  id: string
-  requestId: string
-  ownerName: string
-  modelAlias: string
-  capturedAt: string
-  expiresAt: string
-  status: 'retained' | 'deletion_scheduled' | 'deleted'
-  accessReasonRequired: boolean
-  content?: {
-    request: unknown
-    response: unknown
-  }
+  reason: string
 }
 
 export type OperationPhase =
@@ -410,6 +345,7 @@ export interface PlaygroundMessage {
 }
 
 export interface PlaygroundRunInput {
+  gatewayKeyId: string
   model: string
   stream: boolean
   messages: Array<Pick<PlaygroundMessage, 'role' | 'content'>>
@@ -430,11 +366,3 @@ export type PlaygroundEvent =
     }
   | { type: 'completed'; requestId: string }
   | { type: 'error'; problem: ApiProblemShape }
-
-export interface SettingsDocument {
-  section: 'security' | 'network' | 'observability' | 'backups' | 'revisions'
-  revisionId: string
-  values: Record<string, string | number | boolean>
-  updatedAt: string
-  updatedBy: string
-}

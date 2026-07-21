@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/luckymaomi/llmgateway/internal/execution"
 	"github.com/luckymaomi/llmgateway/internal/identity"
 )
 
@@ -19,6 +20,7 @@ var (
 	ErrQuotaExhausted         = errors.New("quota exhausted")
 	ErrUsageUnknown           = errors.New("usage is unknown")
 	ErrTerminalConflict       = errors.New("reservation has a different terminal result")
+	ErrOutcomeUnknown         = errors.New("quota operation outcome is unknown")
 	ErrInvariant              = errors.New("quota invariant violated")
 )
 
@@ -73,16 +75,6 @@ const (
 	LedgerCompensation LedgerKind = "compensation"
 )
 
-type ModelAuthorization struct {
-	UserID         uuid.UUID      `json:"user_id"`
-	ModelID        uuid.UUID      `json:"model_id"`
-	PublicName     string         `json:"public_name"`
-	DisplayName    string         `json:"display_name"`
-	ResourceDomain ResourceDomain `json:"resource_domain"`
-	Enabled        bool           `json:"enabled"`
-	CreatedAt      time.Time      `json:"created_at"`
-}
-
 type Entitlement struct {
 	ID               uuid.UUID      `json:"id"`
 	UserID           uuid.UUID      `json:"user_id"`
@@ -101,6 +93,7 @@ type Entitlement struct {
 
 type NewEntitlement struct {
 	IdempotencyKey   uuid.UUID
+	RequestID        string
 	UserID           uuid.UUID
 	Plan             Plan
 	ResourceDomain   ResourceDomain
@@ -142,7 +135,20 @@ type LedgerFilter struct {
 	Page          Page
 }
 
+type UsageRecord struct {
+	RequestID      uuid.UUID
+	UserID         uuid.UUID
+	KeyPrefix      string
+	ModelAlias     string
+	ResourceDomain ResourceDomain
+	InputTokens    int64
+	OutputTokens   int64
+	UsageSource    UsageSource
+	OccurredAt     time.Time
+}
+
 type AcceptInput struct {
+	RequestID        uuid.UUID
 	UserID           uuid.UUID
 	GatewayKeyID     uuid.UUID
 	ModelID          uuid.UUID
@@ -190,9 +196,17 @@ type Reservation struct {
 }
 
 type AcceptedRequest struct {
-	Request     Request     `json:"request"`
-	Reservation Reservation `json:"reservation"`
-	Replayed    bool        `json:"replayed"`
+	Request             Request             `json:"request"`
+	Reservation         Reservation         `json:"reservation"`
+	EntitlementCapacity EntitlementCapacity `json:"entitlement_capacity"`
+	Replayed            bool                `json:"replayed"`
+}
+
+type EntitlementCapacity struct {
+	ID               uuid.UUID `json:"id"`
+	ConcurrencyLimit int32     `json:"concurrency_limit"`
+	RPMLimit         *int32    `json:"rpm_limit,omitempty"`
+	TPMLimit         *int64    `json:"tpm_limit,omitempty"`
 }
 
 type Resolution struct {
@@ -201,16 +215,15 @@ type Resolution struct {
 }
 
 type Repository interface {
-	AuthorizeModel(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) error
-	RevokeModel(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) error
-	ListModelAuthorizations(context.Context, uuid.UUID) ([]ModelAuthorization, error)
 	CreateEntitlement(context.Context, NewEntitlement, uuid.UUID) (Entitlement, error)
 	ListEntitlements(context.Context, *uuid.UUID, Page) ([]Entitlement, error)
 	ListLedger(context.Context, LedgerFilter) ([]LedgerEvent, error)
+	ListUsage(context.Context, *uuid.UUID, Page) ([]UsageRecord, error)
 	AcceptRequest(context.Context, AcceptInput) (AcceptedRequest, error)
-	Settle(context.Context, uuid.UUID, int64, int64, UsageSource) (Resolution, error)
-	Release(context.Context, uuid.UUID, string, string) (Resolution, error)
-	Compensate(context.Context, uuid.UUID, int64, int64, UsageSource, string, string) (Resolution, error)
+	Settle(context.Context, uuid.UUID, execution.Claim, int64, int64, UsageSource) (Resolution, error)
+	Release(context.Context, uuid.UUID, execution.Claim, string, string) (Resolution, error)
+	ReleaseAccepted(context.Context, uuid.UUID, string, string) (Resolution, error)
+	Compensate(context.Context, uuid.UUID, execution.Claim, int64, int64, UsageSource, string, string) (Resolution, error)
 }
 
 type Service struct {

@@ -47,7 +47,8 @@ func paginate[T any](items []T, query listQuery) pageView[T] {
 	if end > total {
 		end = total
 	}
-	pageItems := append([]T(nil), items[start:end]...)
+	pageItems := make([]T, end-start)
+	copy(pageItems, items[start:end])
 	return pageView[T]{Items: pageItems, Page: query.Page, PageSize: query.PageSize, Total: total}
 }
 

@@ -1,5 +1,7 @@
 param(
-  [switch] $SkipGo
+  [switch] $SkipGo,
+  [switch] $SkipServices,
+  [switch] $SkipDockerDaemon
 )
 
 $ErrorActionPreference = "Stop"
@@ -57,17 +59,25 @@ try {
   }
 
   $docker = Get-LLMGatewayDockerCommand
-  & $docker info --format "Docker server {{.ServerVersion}} ({{.OSType}}/{{.Architecture}})" | Write-Host
-  if ($LASTEXITCODE -ne 0) {
-    throw "Docker Desktop is not ready."
+  if ($SkipDockerDaemon) {
+    Write-Host "Docker daemon check skipped explicitly."
+  } else {
+    & $docker info --format "Docker server {{.ServerVersion}} ({{.OSType}}/{{.Architecture}})" | Write-Host
+    if ($LASTEXITCODE -ne 0) {
+      throw "Docker Desktop is not ready."
+    }
   }
 
   Invoke-LLMGatewayDocker compose version
   Invoke-LLMGatewayDocker compose config --quiet
-  Wait-LLMGatewayContainerHealthy -Container "llmgateway-postgres"
-  Wait-LLMGatewayContainerHealthy -Container "llmgateway-valkey"
-  Test-LLMGatewayPostgres
-  Test-LLMGatewayValkey
+  if ($SkipServices) {
+    Write-Host "Shared development service checks skipped explicitly."
+  } else {
+    Wait-LLMGatewayContainerHealthy -Container "llmgateway-postgres"
+    Wait-LLMGatewayContainerHealthy -Container "llmgateway-valkey"
+    Test-LLMGatewayPostgres
+    Test-LLMGatewayValkey
+  }
 
   Write-Host "Environment verification passed."
 } finally {

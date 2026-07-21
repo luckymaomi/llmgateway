@@ -9,7 +9,6 @@ import (
 	"context"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const createAuditEvent = `-- name: CreateAuditEvent :one
@@ -44,34 +43,6 @@ func (q *Queries) CreateAuditEvent(ctx context.Context, arg CreateAuditEventPara
 		&i.TargetID,
 		&i.RequestID,
 		&i.Detail,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
-const deleteExpiredContent = `-- name: DeleteExpiredContent :execrows
-DELETE FROM content_records WHERE expires_at <= now()
-`
-
-func (q *Queries) DeleteExpiredContent(ctx context.Context) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteExpiredContent)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const getContentRecord = `-- name: GetContentRecord :one
-SELECT request_id, encrypted_content, expires_at, created_at FROM content_records WHERE request_id = $1 AND expires_at > now()
-`
-
-func (q *Queries) GetContentRecord(ctx context.Context, requestID uuid.UUID) (ContentRecord, error) {
-	row := q.db.QueryRow(ctx, getContentRecord, requestID)
-	var i ContentRecord
-	err := row.Scan(
-		&i.RequestID,
-		&i.EncryptedContent,
-		&i.ExpiresAt,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -113,21 +84,4 @@ func (q *Queries) ListAuditEvents(ctx context.Context, arg ListAuditEventsParams
 		return nil, err
 	}
 	return items, nil
-}
-
-const upsertContentRecord = `-- name: UpsertContentRecord :exec
-INSERT INTO content_records (request_id, encrypted_content, expires_at)
-VALUES ($1, $2, $3)
-ON CONFLICT (request_id) DO UPDATE SET encrypted_content = excluded.encrypted_content, expires_at = excluded.expires_at
-`
-
-type UpsertContentRecordParams struct {
-	RequestID        uuid.UUID          `json:"request_id"`
-	EncryptedContent []byte             `json:"encrypted_content"`
-	ExpiresAt        pgtype.Timestamptz `json:"expires_at"`
-}
-
-func (q *Queries) UpsertContentRecord(ctx context.Context, arg UpsertContentRecordParams) error {
-	_, err := q.db.Exec(ctx, upsertContentRecord, arg.RequestID, arg.EncryptedContent, arg.ExpiresAt)
-	return err
 }

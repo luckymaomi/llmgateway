@@ -136,10 +136,16 @@ class SameOriginApiClient {
     return (isEnvelope<TResponse>(body) ? body.data : body) as TResponse
   }
 
-  async stream<TBody>(path: string, body: TBody, signal: AbortSignal): Promise<Response> {
+  async stream<TBody>(
+    path: string,
+    body: TBody,
+    signal: AbortSignal,
+    extraHeaders: Record<string, string> = {},
+  ): Promise<Response> {
     const headers: Record<string, string> = {
       Accept: 'text/event-stream',
       'Content-Type': 'application/json',
+      ...extraHeaders,
     }
     if (this.csrfToken) headers['X-CSRF-Token'] = this.csrfToken
     const response = await fetch(path, {

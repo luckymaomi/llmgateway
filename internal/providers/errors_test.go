@@ -25,11 +25,6 @@ func TestProviderErrorFixturesProduceStableKinds(t *testing.T) {
 		wantCode   string
 	}{
 		{
-			name: "DeepSeek exhausted balance", adapter: NewDeepSeek(), statusCode: http.StatusPaymentRequired,
-			body:     `{"error":{"message":"Insufficient Balance","type":"authentication_error","param":null,"code":"insufficient_balance"}}`,
-			wantKind: canonical.ErrorQuota, wantCode: "insufficient_balance",
-		},
-		{
 			name: "Zhipu platform overload", adapter: NewZhipu(), statusCode: http.StatusTooManyRequests,
 			body:     `{"error":{"code":"1305","message":"Model traffic is high"}}`,
 			wantKind: canonical.ErrorProviderTemporary, wantCode: "1305",

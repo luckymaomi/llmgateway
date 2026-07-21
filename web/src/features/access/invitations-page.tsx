@@ -3,6 +3,7 @@ import { Plus, XCircle } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
 import { accessApi, type Invitation } from '@/api'
+import { loadPendingInvitationOperation } from '@/app/pending-operations'
 import { hasCapability, useSession } from '@/app/session'
 import { DataTable, type ColumnDef } from '@/components/data-table/data-table'
 import { TableToolbar } from '@/components/data-table/table-toolbar'
@@ -19,7 +20,10 @@ export function InvitationsPage() {
   const session = useSession()
   const canWrite = hasCapability(session, 'access:write')
   const { state, setPage, setSearch, setStatus } = useListSearch()
-  const [creating, setCreating] = useState(false)
+  const [pendingCreation, setPendingCreation] = useState(
+    () => loadPendingInvitationOperation(session.userId) !== undefined,
+  )
+  const [creating, setCreating] = useState(pendingCreation)
   const queryClient = useQueryClient()
   const query = useQuery({
     queryKey: ['invitations', state],
@@ -36,11 +40,6 @@ export function InvitationsPage() {
         accessorKey: 'codePrefix',
         header: '邀请码',
         cell: ({ row }) => <code>{row.original.codePrefix}…</code>,
-      },
-      {
-        accessorKey: 'role',
-        header: '角色',
-        cell: ({ row }) => (row.original.role === 'operator' ? '运维人员' : '成员'),
       },
       {
         accessorKey: 'status',
@@ -84,7 +83,11 @@ export function InvitationsPage() {
         description="邀请、审核、模型授权和调用凭据"
         actions={
           canWrite ? (
-            <Button icon={<Plus size={16} />} onClick={() => setCreating(true)}>
+            <Button
+              icon={<Plus size={16} />}
+              disabled={pendingCreation}
+              onClick={() => setCreating(true)}
+            >
               创建邀请
             </Button>
           ) : null
@@ -124,15 +127,25 @@ export function InvitationsPage() {
                 <code>{invitation.codePrefix}…</code>
                 <StatusBadge status={invitation.status} />
               </div>
+              <span>{formatDateTime(invitation.expiresAt)}</span>
               <span>
-                {invitation.role === 'operator' ? '运维人员' : '成员'} ·{' '}
-                {formatDateTime(invitation.expiresAt)}
+                创建人：{invitation.createdBy}
+                {invitation.claimedBy ? ` · 领取人：${invitation.claimedBy}` : ''}
               </span>
             </div>
           )}
         />
       </PageSection>
-      {canWrite ? <InvitationForm open={creating} onOpenChange={setCreating} /> : null}
+      {canWrite ? (
+        <InvitationForm
+          open={creating}
+          onOpenChange={setCreating}
+          onPendingChange={(pending) => {
+            setPendingCreation(pending)
+            if (pending) setCreating(true)
+          }}
+        />
+      ) : null}
     </Page>
   )
 }

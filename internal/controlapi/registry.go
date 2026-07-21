@@ -11,6 +11,20 @@ import (
 	"github.com/luckymaomi/llmgateway/internal/registry"
 )
 
+type providerKindView struct {
+	Kind        providers.Kind `json:"kind"`
+	DisplayName string         `json:"displayName"`
+}
+
+func (a *API) listProviderKinds(w http.ResponseWriter, r *http.Request) {
+	kinds := providers.DefaultCatalog().Kinds()
+	views := make([]providerKindView, 0, len(kinds))
+	for _, kind := range kinds {
+		views = append(views, providerKindView{Kind: kind.Kind, DisplayName: kind.DisplayName})
+	}
+	writeData(w, http.StatusOK, views)
+}
+
 func (a *API) listProviders(w http.ResponseWriter, r *http.Request) {
 	snapshot, err := a.loadRegistrySnapshot(r)
 	if err != nil {
@@ -201,6 +215,11 @@ func (a *API) writeModel(w http.ResponseWriter, r *http.Request, id uuid.UUID) {
 		a.writeRegistryError(w, r, err)
 		return
 	}
+	provider, err := a.registry.GetProvider(r.Context(), principalFromContext(r.Context()), input.ProviderID)
+	if err != nil {
+		a.writeRegistryError(w, r, err)
+		return
+	}
 	model := registry.Model{
 		ID:             id,
 		ProviderID:     input.ProviderID,
@@ -222,16 +241,12 @@ func (a *API) writeModel(w http.ResponseWriter, r *http.Request, id uuid.UUID) {
 		a.writeRegistryError(w, r, err)
 		return
 	}
-	snapshot, err := a.loadRegistrySnapshot(r)
-	if err != nil {
-		a.writeRegistrySnapshotError(w, r, err)
-		return
-	}
+	saved.ProviderName = provider.Name
 	status := http.StatusOK
 	if id == uuid.Nil {
 		status = http.StatusCreated
 	}
-	writeData(w, status, snapshot.presentModel(saved))
+	writeData(w, status, (registrySnapshot{}).presentModel(saved))
 }
 
 func (a *API) listCredentials(w http.ResponseWriter, r *http.Request) {
@@ -257,35 +272,67 @@ func (a *API) listCredentials(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) createCredential(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		ProviderID       uuid.UUID               `json:"providerId"`
-		Label            string                  `json:"label"`
-		Secret           string                  `json:"secret"`
-		ResourceDomain   registry.ResourceDomain `json:"resourceDomain"`
-		AuthorizedModels []string                `json:"authorizedModels"`
-		RPMLimit         *int32                  `json:"rpmLimit"`
-		TPMLimit         *int64                  `json:"tpmLimit"`
-		ConcurrencyLimit *int32                  `json:"concurrencyLimit"`
-		FixedProxy       *string                 `json:"fixedProxy"`
+		ProviderID         uuid.UUID               `json:"providerId"`
+		Label              string                  `json:"label"`
+		Secret             string                  `json:"secret"`
+		ResourceDomain     registry.ResourceDomain `json:"resourceDomain"`
+		AuthorizedModelIDs []uuid.UUID             `json:"authorizedModelIds"`
+		RPMLimit           *int32                  `json:"rpmLimit"`
+		TPMLimit           *int64                  `json:"tpmLimit"`
+		ConcurrencyLimit   *int32                  `json:"concurrencyLimit"`
 	}
 	if err := decodeJSON(w, r, &input); err != nil {
 		writeDecodeError(w, r, err)
 		return
 	}
-	if len(input.AuthorizedModels) != 0 {
-		writeProblem(w, r, problem{Status: http.StatusNotImplemented, Code: "feature_not_implemented", Message: "Atomic credential creation with model bindings does not have a registry owner yet.", Stage: "credential_model_authorization"})
+	mutation, ok := providerMutationRequest(w, r)
+	if !ok {
+		return
+	}
+	provider, err := a.registry.GetProvider(r.Context(), principalFromContext(r.Context()), input.ProviderID)
+	if err != nil {
+		a.writeRegistryError(w, r, err)
 		return
 	}
 	created, err := a.registry.CreateCredential(r.Context(), principalFromContext(r.Context()), registry.NewCredential{
-		ProviderID:       input.ProviderID,
-		Name:             input.Label,
-		ResourceDomain:   input.ResourceDomain,
-		RPMLimit:         input.RPMLimit,
-		TPMLimit:         input.TPMLimit,
-		ConcurrencyLimit: input.ConcurrencyLimit,
-		FixedProxyURL:    input.FixedProxy,
-	}, input.Secret)
+		ProviderID:         input.ProviderID,
+		Name:               input.Label,
+		ResourceDomain:     input.ResourceDomain,
+		RPMLimit:           input.RPMLimit,
+		TPMLimit:           input.TPMLimit,
+		ConcurrencyLimit:   input.ConcurrencyLimit,
+		AuthorizedModelIDs: input.AuthorizedModelIDs,
+	}, input.Secret, mutation)
 	if err != nil {
 		a.writeRegistryError(w, r, err)
+		return
+	}
+	snapshot := registrySnapshot{providerNames: map[uuid.UUID]string{provider.ID: provider.Name}}
+	writeData(w, http.StatusCreated, snapshot.presentCredential(created))
+}
+
+func (a *API) updateCredential(w http.ResponseWriter, r *http.Request) {
+	credentialID, err := uuid.Parse(chi.URLParam(r, "credentialID"))
+	if err != nil {
+		writeDecodeError(w, r, err)
+		return
+	}
+	var input struct {
+		Label              string                  `json:"label"`
+		Secret             string                  `json:"secret"`
+		ResourceDomain     registry.ResourceDomain `json:"resourceDomain"`
+		AuthorizedModelIDs []uuid.UUID             `json:"authorizedModelIds"`
+		RPMLimit           *int32                  `json:"rpmLimit"`
+		TPMLimit           *int64                  `json:"tpmLimit"`
+		ConcurrencyLimit   *int32                  `json:"concurrencyLimit"`
+		ExpectedUpdatedAt  time.Time               `json:"expectedUpdatedAt"`
+	}
+	if err := decodeJSON(w, r, &input); err != nil {
+		writeDecodeError(w, r, err)
+		return
+	}
+	mutation, ok := providerMutationRequest(w, r)
+	if !ok {
 		return
 	}
 	snapshot, err := a.loadRegistrySnapshot(r)
@@ -293,5 +340,73 @@ func (a *API) createCredential(w http.ResponseWriter, r *http.Request) {
 		a.writeRegistrySnapshotError(w, r, err)
 		return
 	}
-	writeData(w, http.StatusCreated, snapshot.presentCredential(created))
+	updated, err := a.registry.UpdateCredential(r.Context(), principalFromContext(r.Context()), registry.CredentialChange{
+		ID: credentialID, Name: input.Label, ResourceDomain: input.ResourceDomain,
+		RPMLimit: input.RPMLimit, TPMLimit: input.TPMLimit, ConcurrencyLimit: input.ConcurrencyLimit,
+		AuthorizedModelIDs: input.AuthorizedModelIDs, ExpectedUpdatedAt: input.ExpectedUpdatedAt,
+	}, input.Secret, mutation)
+	if err != nil {
+		a.writeRegistryError(w, r, err)
+		return
+	}
+	writeData(w, http.StatusOK, snapshot.presentCredential(updated))
+}
+
+func (a *API) setCredentialStatus(w http.ResponseWriter, r *http.Request) {
+	credentialID, err := uuid.Parse(chi.URLParam(r, "credentialID"))
+	if err != nil {
+		writeDecodeError(w, r, err)
+		return
+	}
+	var input struct {
+		Enabled           *bool     `json:"enabled"`
+		ExpectedUpdatedAt time.Time `json:"expectedUpdatedAt"`
+	}
+	if err := decodeJSON(w, r, &input); err != nil {
+		writeDecodeError(w, r, err)
+		return
+	}
+	if input.Enabled == nil {
+		a.writeRegistryError(w, r, registry.ErrInvalidInput)
+		return
+	}
+	mutation, ok := providerMutationRequest(w, r)
+	if !ok {
+		return
+	}
+	snapshot, err := a.loadRegistrySnapshot(r)
+	if err != nil {
+		a.writeRegistrySnapshotError(w, r, err)
+		return
+	}
+	updated, err := a.registry.SetCredentialEnabled(r.Context(), principalFromContext(r.Context()), credentialID, *input.Enabled, input.ExpectedUpdatedAt, mutation)
+	if err != nil {
+		a.writeRegistryError(w, r, err)
+		return
+	}
+	writeData(w, http.StatusOK, snapshot.presentCredential(updated))
+}
+
+func (a *API) probeCredential(w http.ResponseWriter, r *http.Request) {
+	credentialID, err := uuid.Parse(chi.URLParam(r, "credentialID"))
+	if err != nil {
+		writeDecodeError(w, r, err)
+		return
+	}
+	requestID := httpserver.RequestIDFromContext(r.Context())
+	snapshot, err := a.loadRegistrySnapshot(r)
+	if err != nil {
+		a.writeRegistrySnapshotError(w, r, err)
+		return
+	}
+	execution, credential, err := a.registry.ProbeCredential(r.Context(), principalFromContext(r.Context()), credentialID, requestID)
+	if err != nil {
+		a.writeRegistryError(w, r, err)
+		return
+	}
+	writeData(w, http.StatusOK, credentialProbeView{
+		Credential: snapshot.presentCredential(credential), Kind: execution.Kind, Status: execution.Status,
+		ErrorKind: execution.ErrorKind, Retryable: execution.Retryable, MayUseTokens: execution.MayUseTokens,
+		LatencyMillis: execution.LatencyMillis, RequestID: requestID,
+	})
 }

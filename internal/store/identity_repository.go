@@ -1,10 +1,12 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,12 +19,26 @@ import (
 )
 
 type IdentityRepository struct {
-	pool    *pgxpool.Pool
-	queries *db.Queries
+	pool                       *pgxpool.Pool
+	queries                    *db.Queries
+	commitInvitationMutation   func(context.Context, pgx.Tx) error
+	commitGatewayKeyMutation   func(context.Context, pgx.Tx) error
+	commitGatewayKeyRevocation func(context.Context, pgx.Tx) error
 }
 
 func NewIdentityRepository(pool *pgxpool.Pool) *IdentityRepository {
-	return &IdentityRepository{pool: pool, queries: db.New(pool)}
+	return &IdentityRepository{
+		pool: pool, queries: db.New(pool),
+		commitInvitationMutation: func(ctx context.Context, tx pgx.Tx) error {
+			return tx.Commit(ctx)
+		},
+		commitGatewayKeyMutation: func(ctx context.Context, tx pgx.Tx) error {
+			return tx.Commit(ctx)
+		},
+		commitGatewayKeyRevocation: func(ctx context.Context, tx pgx.Tx) error {
+			return tx.Commit(ctx)
+		},
+	}
 }
 
 func (r *IdentityRepository) IsBootstrapped(ctx context.Context) (bool, error) {
@@ -88,7 +104,7 @@ func (r *IdentityRepository) Register(ctx context.Context, invitationDigest []by
 	}
 	user, err := queries.CreateUser(ctx, db.CreateUserParams{
 		Email: input.Email, DisplayName: input.DisplayName, PasswordHash: input.PasswordHash,
-		Role: invitation.Role, Status: db.UserStatusPending,
+		Role: db.UserRoleMember, Status: db.UserStatusPending,
 	})
 	if err != nil {
 		return identity.User{}, translateStoreError(err)
@@ -115,6 +131,21 @@ func (r *IdentityRepository) FindUserByEmail(ctx context.Context, email string) 
 		return identity.User{}, translateStoreError(err)
 	}
 	return userFromDB(user), nil
+}
+
+func (r *IdentityRepository) UserDisplayNames(ctx context.Context, userIDs []uuid.UUID) (map[uuid.UUID]string, error) {
+	result := make(map[uuid.UUID]string, len(userIDs))
+	if len(userIDs) == 0 {
+		return result, nil
+	}
+	items, err := r.queries.ListUserDisplayNames(ctx, userIDs)
+	if err != nil {
+		return nil, fmt.Errorf("identity store: list user display names: %w", err)
+	}
+	for _, item := range items {
+		result[item.ID] = item.DisplayName
+	}
+	return result, nil
 }
 
 func (r *IdentityRepository) ListUsers(ctx context.Context, status *identity.Status, page identity.Page) (identity.UserPage, error) {
@@ -192,12 +223,65 @@ func (r *IdentityRepository) RevokeSession(ctx context.Context, id uuid.UUID) er
 	return err
 }
 
-func (r *IdentityRepository) CreateInvitation(ctx context.Context, actorID uuid.UUID, digest []byte, codePrefix string, role identity.Role, expiresAt time.Time) (identity.Invitation, error) {
-	invitation, err := r.queries.CreateInvitation(ctx, db.CreateInvitationParams{CodeDigest: digest, CodePrefix: codePrefix, CreatedBy: actorID, Role: db.UserRole(role), ExpiresAt: timestamp(expiresAt)})
+func (r *IdentityRepository) ReplayInvitationMutation(ctx context.Context, actorID uuid.UUID, mutation identity.InvitationMutation) (identity.Invitation, bool, error) {
+	operation, err := r.queries.GetInvitationMutation(ctx, invitationMutationLookup(actorID, mutation))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return identity.Invitation{}, false, nil
+	}
+	if err != nil {
+		return identity.Invitation{}, false, translateStoreError(err)
+	}
+	invitation, err := invitationMutationResult(operation, mutation)
+	return invitation, true, err
+}
+
+func (r *IdentityRepository) CreateInvitation(ctx context.Context, input identity.NewInvitation, actorID uuid.UUID, mutation identity.InvitationMutation) (identity.Invitation, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return identity.Invitation{}, err
+	}
+	defer tx.Rollback(ctx)
+	queries := r.queries.WithTx(tx)
+	operation, err := queries.ClaimInvitationMutation(ctx, db.ClaimInvitationMutationParams{
+		ActorUserID: actorID, IdempotencyKey: mutation.IdempotencyKey,
+		RequestFingerprint: mutation.RequestFingerprint, RequestID: mutation.RequestID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		existing, loadErr := queries.GetInvitationMutation(ctx, invitationMutationLookup(actorID, mutation))
+		if loadErr != nil {
+			return identity.Invitation{}, translateStoreError(loadErr)
+		}
+		return invitationMutationResult(existing, mutation)
+	}
 	if err != nil {
 		return identity.Invitation{}, translateStoreError(err)
 	}
-	return invitationFromDB(invitation), nil
+
+	created, err := queries.CreateInvitation(ctx, db.CreateInvitationParams{
+		CodeDigest: input.CodeDigest, CodePrefix: input.CodePrefix, CreatedBy: actorID,
+		ExpiresAt: timestamp(input.ExpiresAt),
+	})
+	if err != nil {
+		return identity.Invitation{}, translateStoreError(err)
+	}
+	result := invitationFromDB(created)
+	audit := auditParams(&actorID, "invitation.created", "invitation", result.ID.String(), map[string]any{"expires_at": result.ExpiresAt})
+	audit.RequestID = &mutation.RequestID
+	if _, err := queries.CreateAuditEvent(ctx, audit); err != nil {
+		return identity.Invitation{}, err
+	}
+	encoded, err := json.Marshal(invitationMutationResultFromInvitation(result))
+	if err != nil {
+		return identity.Invitation{}, fmt.Errorf("encode invitation mutation result: %w", err)
+	}
+	invitationID := result.ID
+	if _, err := queries.CompleteInvitationMutation(ctx, db.CompleteInvitationMutationParams{InvitationID: &invitationID, Result: encoded, ID: operation.ID}); err != nil {
+		return identity.Invitation{}, err
+	}
+	if err := r.commitInvitationMutation(ctx, tx); err != nil {
+		return r.reconcileInvitationMutation(ctx, actorID, mutation, err)
+	}
+	return result, nil
 }
 
 func (r *IdentityRepository) ListInvitations(ctx context.Context, page identity.Page) ([]identity.Invitation, error) {
@@ -224,16 +308,78 @@ func (r *IdentityRepository) RevokeInvitation(ctx context.Context, id, actorID u
 	return err
 }
 
-func (r *IdentityRepository) CreateGatewayKey(ctx context.Context, userID uuid.UUID, name, prefix string, digest []byte, expiresAt *time.Time, actorID uuid.UUID) (identity.GatewayKey, error) {
-	key, err := r.queries.CreateGatewayKey(ctx, db.CreateGatewayKeyParams{UserID: userID, Name: name, Prefix: prefix, SecretDigest: digest, ExpiresAt: optionalTimestamp(expiresAt)})
-	if err != nil {
-		return identity.GatewayKey{}, translateStoreError(err)
-	}
-	_, err = r.queries.CreateAuditEvent(ctx, auditParams(&actorID, "gateway_key.created", "gateway_key", key.ID.String(), map[string]any{"user_id": userID, "prefix": prefix}))
+func (r *IdentityRepository) CreateGatewayKey(ctx context.Context, input identity.NewGatewayKey, actorID uuid.UUID, mutation identity.GatewayKeyMutation) (identity.GatewayKey, error) {
+	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return identity.GatewayKey{}, err
 	}
-	return gatewayKeyFromDB(key.ID, key.UserID, key.Name, key.Prefix, key.ExpiresAt, key.RevokedAt, key.LastUsedAt, key.CreatedAt), nil
+	defer tx.Rollback(ctx)
+	queries := r.queries.WithTx(tx)
+	operation, err := queries.ClaimGatewayKeyMutation(ctx, db.ClaimGatewayKeyMutationParams{
+		ActorUserID: actorID, IdempotencyKey: mutation.IdempotencyKey,
+		RequestFingerprint: mutation.RequestFingerprint, RequestID: mutation.RequestID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		existing, loadErr := queries.GetGatewayKeyMutation(ctx, gatewayKeyMutationLookup(actorID, mutation))
+		if loadErr != nil {
+			return identity.GatewayKey{}, translateStoreError(loadErr)
+		}
+		return gatewayKeyMutationResult(existing, mutation)
+	}
+	if err != nil {
+		return identity.GatewayKey{}, translateStoreError(err)
+	}
+
+	user, err := queries.GetUserForGatewayKeyCreation(ctx, input.UserID)
+	if err != nil {
+		return identity.GatewayKey{}, translateStoreError(err)
+	}
+	if user.Status != db.UserStatusActive {
+		return identity.GatewayKey{}, identity.ErrDisabled
+	}
+	modelNames := make([]string, 0, len(input.AuthorizedModelIDs))
+	for _, modelID := range input.AuthorizedModelIDs {
+		model, modelErr := queries.GetModelForGatewayKeyBinding(ctx, modelID)
+		if modelErr != nil {
+			return identity.GatewayKey{}, translateStoreError(modelErr)
+		}
+		modelNames = append(modelNames, model.PublicName)
+	}
+
+	created, err := queries.CreateGatewayKey(ctx, db.CreateGatewayKeyParams{
+		UserID: input.UserID, Name: input.Name, Prefix: input.Prefix,
+		SecretDigest: input.SecretDigest, ExpiresAt: optionalTimestamp(input.ExpiresAt),
+	})
+	if err != nil {
+		return identity.GatewayKey{}, translateStoreError(err)
+	}
+	for _, modelID := range input.AuthorizedModelIDs {
+		if err := queries.BindGatewayKeyModel(ctx, db.BindGatewayKeyModelParams{GatewayKeyID: created.ID, ModelID: modelID}); err != nil {
+			return identity.GatewayKey{}, translateStoreError(err)
+		}
+	}
+	result := gatewayKeyFromDB(created.ID, created.UserID, created.Name, created.Prefix, created.ExpiresAt, created.RevokedAt, created.LastUsedAt, created.CreatedAt)
+	result.AuthorizedModelIDs = append([]uuid.UUID(nil), input.AuthorizedModelIDs...)
+	result.AuthorizedModels = append([]string(nil), modelNames...)
+	params := auditParams(&actorID, "gateway_key.created", "gateway_key", created.ID.String(), map[string]any{
+		"user_id": input.UserID, "prefix": input.Prefix, "model_ids": input.AuthorizedModelIDs, "expires_at": input.ExpiresAt,
+	})
+	params.RequestID = &mutation.RequestID
+	if _, err := queries.CreateAuditEvent(ctx, params); err != nil {
+		return identity.GatewayKey{}, err
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		return identity.GatewayKey{}, fmt.Errorf("encode gateway-key mutation result: %w", err)
+	}
+	keyID := result.ID
+	if _, err := queries.CompleteGatewayKeyMutation(ctx, db.CompleteGatewayKeyMutationParams{GatewayKeyID: &keyID, Result: encoded, ID: operation.ID}); err != nil {
+		return identity.GatewayKey{}, err
+	}
+	if err := r.commitGatewayKeyMutation(ctx, tx); err != nil {
+		return r.reconcileGatewayKeyMutation(ctx, actorID, mutation, err)
+	}
+	return result, nil
 }
 
 func (r *IdentityRepository) ListGatewayKeys(ctx context.Context, userID uuid.UUID) ([]identity.GatewayKey, error) {
@@ -241,33 +387,214 @@ func (r *IdentityRepository) ListGatewayKeys(ctx context.Context, userID uuid.UU
 	if err != nil {
 		return nil, err
 	}
+	bindings, err := r.queries.ListGatewayKeyModelBindingsByUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	modelIDs := make(map[uuid.UUID][]uuid.UUID)
+	modelNames := make(map[uuid.UUID][]string)
+	for _, binding := range bindings {
+		modelIDs[binding.GatewayKeyID] = append(modelIDs[binding.GatewayKeyID], binding.ModelID)
+		modelNames[binding.GatewayKeyID] = append(modelNames[binding.GatewayKeyID], binding.PublicName)
+	}
 	result := make([]identity.GatewayKey, 0, len(items))
 	for _, item := range items {
-		result = append(result, gatewayKeyFromDB(item.ID, item.UserID, item.Name, item.Prefix, item.ExpiresAt, item.RevokedAt, item.LastUsedAt, item.CreatedAt))
+		key := gatewayKeyFromDB(item.ID, item.UserID, item.Name, item.Prefix, item.ExpiresAt, item.RevokedAt, item.LastUsedAt, item.CreatedAt)
+		key.AuthorizedModelIDs = modelIDs[item.ID]
+		key.AuthorizedModels = modelNames[item.ID]
+		result = append(result, key)
+	}
+	return result, nil
+}
+
+func (r *IdentityRepository) reconcileInvitationMutation(ctx context.Context, actorID uuid.UUID, mutation identity.InvitationMutation, commitErr error) (identity.Invitation, error) {
+	reconcileCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+	defer cancel()
+	delay := 20 * time.Millisecond
+	var reconciliationErr error
+	for {
+		operation, err := r.queries.GetInvitationMutation(reconcileCtx, invitationMutationLookup(actorID, mutation))
+		if err == nil {
+			return invitationMutationResult(operation, mutation)
+		}
+		reconciliationErr = err
+		timer := time.NewTimer(delay)
+		select {
+		case <-reconcileCtx.Done():
+			timer.Stop()
+			return identity.Invitation{}, fmt.Errorf("%w: commit: %v; reconciliation: %v", identity.ErrOutcomeUnknown, commitErr, reconciliationErr)
+		case <-timer.C:
+		}
+		if delay < 250*time.Millisecond {
+			delay *= 2
+		}
+	}
+}
+
+func invitationMutationLookup(actorID uuid.UUID, mutation identity.InvitationMutation) db.GetInvitationMutationParams {
+	return db.GetInvitationMutationParams{ActorUserID: actorID, IdempotencyKey: mutation.IdempotencyKey}
+}
+
+type persistedInvitationMutationResult struct {
+	ID         uuid.UUID  `json:"id"`
+	CreatedBy  uuid.UUID  `json:"created_by"`
+	ClaimedBy  *uuid.UUID `json:"claimed_by,omitempty"`
+	ExpiresAt  time.Time  `json:"expires_at"`
+	ClaimedAt  *time.Time `json:"claimed_at,omitempty"`
+	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	CodePrefix string     `json:"code_prefix"`
+}
+
+func invitationMutationResultFromInvitation(invitation identity.Invitation) persistedInvitationMutationResult {
+	return persistedInvitationMutationResult{
+		ID: invitation.ID, CreatedBy: invitation.CreatedBy, ClaimedBy: invitation.ClaimedBy,
+		ExpiresAt: invitation.ExpiresAt, ClaimedAt: invitation.ClaimedAt,
+		RevokedAt: invitation.RevokedAt, CreatedAt: invitation.CreatedAt, CodePrefix: invitation.CodePrefix,
+	}
+}
+
+func (result persistedInvitationMutationResult) invitation() identity.Invitation {
+	return identity.Invitation{
+		ID: result.ID, CreatedBy: result.CreatedBy, ClaimedBy: result.ClaimedBy,
+		ExpiresAt: result.ExpiresAt, ClaimedAt: result.ClaimedAt,
+		RevokedAt: result.RevokedAt, CreatedAt: result.CreatedAt, CodePrefix: result.CodePrefix,
+	}
+}
+
+func invitationMutationResult(operation db.InvitationMutation, mutation identity.InvitationMutation) (identity.Invitation, error) {
+	if !bytes.Equal(operation.RequestFingerprint, mutation.RequestFingerprint) {
+		return identity.Invitation{}, identity.ErrIdempotencyConflict
+	}
+	var result persistedInvitationMutationResult
+	decoder := json.NewDecoder(bytes.NewReader(operation.Result))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&result); err != nil ||
+		result.ID == uuid.Nil || result.CreatedBy != operation.ActorUserID ||
+		operation.InvitationID == nil || *operation.InvitationID != result.ID ||
+		len(result.CodePrefix) != 13 || !strings.HasPrefix(result.CodePrefix, "invite_") ||
+		result.ExpiresAt.IsZero() || result.CreatedAt.IsZero() {
+		return identity.Invitation{}, fmt.Errorf("identity store: invalid invitation mutation result")
+	}
+	return result.invitation(), nil
+}
+
+func (r *IdentityRepository) reconcileGatewayKeyMutation(ctx context.Context, actorID uuid.UUID, mutation identity.GatewayKeyMutation, commitErr error) (identity.GatewayKey, error) {
+	reconcileCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+	defer cancel()
+	delay := 20 * time.Millisecond
+	var reconciliationErr error
+	for {
+		operation, err := r.queries.GetGatewayKeyMutation(reconcileCtx, gatewayKeyMutationLookup(actorID, mutation))
+		if err == nil {
+			return gatewayKeyMutationResult(operation, mutation)
+		}
+		reconciliationErr = err
+		timer := time.NewTimer(delay)
+		select {
+		case <-reconcileCtx.Done():
+			timer.Stop()
+			return identity.GatewayKey{}, fmt.Errorf("%w: commit: %v; reconciliation: %v", identity.ErrOutcomeUnknown, commitErr, reconciliationErr)
+		case <-timer.C:
+		}
+		if delay < 250*time.Millisecond {
+			delay *= 2
+		}
+	}
+}
+
+func gatewayKeyMutationLookup(actorID uuid.UUID, mutation identity.GatewayKeyMutation) db.GetGatewayKeyMutationParams {
+	return db.GetGatewayKeyMutationParams{ActorUserID: actorID, IdempotencyKey: mutation.IdempotencyKey}
+}
+
+func gatewayKeyMutationResult(operation db.GatewayKeyMutation, mutation identity.GatewayKeyMutation) (identity.GatewayKey, error) {
+	if !bytes.Equal(operation.RequestFingerprint, mutation.RequestFingerprint) {
+		return identity.GatewayKey{}, identity.ErrIdempotencyConflict
+	}
+	var result identity.GatewayKey
+	if err := json.Unmarshal(operation.Result, &result); err != nil || result.ID == uuid.Nil || operation.GatewayKeyID == nil || *operation.GatewayKeyID != result.ID {
+		return identity.GatewayKey{}, fmt.Errorf("identity store: invalid gateway-key mutation result")
 	}
 	return result, nil
 }
 
 func (r *IdentityRepository) RevokeGatewayKey(ctx context.Context, keyID, actorID uuid.UUID, allowAny bool) error {
-	var rows int64
-	var err error
-	if allowAny {
-		rows, err = r.queries.RevokeGatewayKey(ctx, keyID)
-	} else {
-		rows, err = r.queries.RevokeOwnedGatewayKey(ctx, db.RevokeOwnedGatewayKeyParams{ID: keyID, UserID: actorID})
-	}
+	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	if rows == 0 {
-		return identity.ErrConflict
+	defer tx.Rollback(ctx)
+	queries := r.queries.WithTx(tx)
+	key, err := queries.GetGatewayKeyForRevocation(ctx, keyID)
+	if err != nil {
+		return translateStoreError(err)
 	}
-	_, err = r.queries.CreateAuditEvent(ctx, auditParams(&actorID, "gateway_key.revoked", "gateway_key", keyID.String(), nil))
-	return err
+	if !allowAny && key.UserID != actorID {
+		return identity.ErrForbidden
+	}
+	if key.RevokedAt.Valid {
+		return nil
+	}
+	rows, err := queries.MarkGatewayKeyRevoked(ctx, keyID)
+	if err != nil {
+		return translateStoreError(err)
+	}
+	if rows != 1 {
+		return fmt.Errorf("identity store: gateway key %s changed while locked", keyID)
+	}
+	if _, err := queries.CreateAuditEvent(ctx, auditParams(&actorID, "gateway_key.revoked", "gateway_key", keyID.String(), map[string]any{"owner_id": key.UserID})); err != nil {
+		return err
+	}
+	if err := r.commitGatewayKeyRevocation(ctx, tx); err != nil {
+		return r.reconcileGatewayKeyRevocation(ctx, keyID, actorID, allowAny, err)
+	}
+	return nil
+}
+
+func (r *IdentityRepository) reconcileGatewayKeyRevocation(ctx context.Context, keyID, actorID uuid.UUID, allowAny bool, commitErr error) error {
+	reconcileCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+	defer cancel()
+	delay := 20 * time.Millisecond
+	var reconciliationErr error
+	for {
+		key, err := r.queries.GetGatewayKeyRevocationState(reconcileCtx, keyID)
+		switch {
+		case err == nil:
+			if !allowAny && key.UserID != actorID {
+				return identity.ErrForbidden
+			}
+			if key.RevokedAt.Valid {
+				return nil
+			}
+			return fmt.Errorf("identity store: revoke gateway key commit: %w", commitErr)
+		case errors.Is(err, pgx.ErrNoRows):
+			return nil
+		default:
+			reconciliationErr = err
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-reconcileCtx.Done():
+			timer.Stop()
+			return fmt.Errorf("%w: commit: %v; reconciliation: %v", identity.ErrOutcomeUnknown, commitErr, reconciliationErr)
+		case <-timer.C:
+		}
+		if delay < 250*time.Millisecond {
+			delay *= 2
+		}
+	}
 }
 
 func (r *IdentityRepository) FindGatewayPrincipal(ctx context.Context, digest []byte) (identity.GatewayPrincipal, error) {
 	key, err := r.queries.GetGatewayKeyByDigest(ctx, digest)
+	if err != nil {
+		return identity.GatewayPrincipal{}, translateStoreError(err)
+	}
+	return identity.GatewayPrincipal{KeyID: key.ID, UserID: key.UserID, Role: identity.Role(key.UserRole), Status: identity.Status(key.UserStatus), KeyPrefix: key.Prefix, ExpiresAt: timePointer(key.ExpiresAt)}, nil
+}
+
+func (r *IdentityRepository) FindGatewayPrincipalByID(ctx context.Context, id uuid.UUID) (identity.GatewayPrincipal, error) {
+	key, err := r.queries.GetGatewayKeyPrincipalByID(ctx, id)
 	if err != nil {
 		return identity.GatewayPrincipal{}, translateStoreError(err)
 	}
@@ -283,7 +610,7 @@ func userFromDB(user db.User) identity.User {
 }
 
 func invitationFromDB(invitation db.Invitation) identity.Invitation {
-	return identity.Invitation{ID: invitation.ID, Role: identity.Role(invitation.Role), ExpiresAt: invitation.ExpiresAt.Time, ClaimedAt: timePointer(invitation.ClaimedAt), RevokedAt: timePointer(invitation.RevokedAt), CreatedAt: invitation.CreatedAt.Time, CodePrefix: invitation.CodePrefix}
+	return identity.Invitation{ID: invitation.ID, CreatedBy: invitation.CreatedBy, ClaimedBy: invitation.ClaimedBy, ExpiresAt: invitation.ExpiresAt.Time, ClaimedAt: timePointer(invitation.ClaimedAt), RevokedAt: timePointer(invitation.RevokedAt), CreatedAt: invitation.CreatedAt.Time, CodePrefix: invitation.CodePrefix}
 }
 
 func gatewayKeyFromDB(id, userID uuid.UUID, name, prefix string, expiresAt, revokedAt, lastUsedAt, createdAt pgtype.Timestamptz) identity.GatewayKey {

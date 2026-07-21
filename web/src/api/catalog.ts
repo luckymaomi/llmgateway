@@ -1,8 +1,11 @@
 import { apiClient, listQuery } from './client'
 import type {
+  ActiveConfiguration,
   ConfigurationRevision,
   Credential,
   CredentialInput,
+  CredentialProbeResult,
+  CredentialUpdateInput,
   ListQuery,
   Model,
   ModelInput,
@@ -10,17 +13,22 @@ import type {
   Page,
   Provider,
   ProviderCreateInput,
+  ProviderKind,
   ProviderRecord,
   ProviderUpdateInput,
 } from './types'
 
 const base = '/api/control'
 const item = (path: string, id: string) => `${base}/${path}/${encodeURIComponent(id)}`
-const providerMutationHeaders = (idempotencyKey: string) => ({
+const mutationHeaders = (idempotencyKey: string) => ({
   'Idempotency-Key': idempotencyKey,
 })
 
 export const catalogApi = {
+  providerKinds: (signal?: AbortSignal) =>
+    apiClient.request<ProviderKind[]>(`${base}/provider-kinds`, {
+      ...(signal ? { signal } : {}),
+    }),
   providers: (query: ListQuery, signal?: AbortSignal) =>
     apiClient.request<Page<Provider>>(`${base}/providers`, {
       query: listQuery(query),
@@ -34,13 +42,13 @@ export const catalogApi = {
     apiClient.request<ProviderRecord, ProviderCreateInput>(`${base}/providers`, {
       method: 'POST',
       body: input,
-      headers: providerMutationHeaders(idempotencyKey),
+      headers: mutationHeaders(idempotencyKey),
     }),
   updateProvider: (id: string, input: ProviderUpdateInput, idempotencyKey: string) =>
     apiClient.request<ProviderRecord, ProviderUpdateInput>(item('providers', id), {
       method: 'PUT',
       body: input,
-      headers: providerMutationHeaders(idempotencyKey),
+      headers: mutationHeaders(idempotencyKey),
     }),
   setProviderEnabled: (
     id: string,
@@ -53,7 +61,7 @@ export const catalogApi = {
       {
         method: 'PUT',
         body: { enabled, expectedUpdatedAt },
-        headers: providerMutationHeaders(idempotencyKey),
+        headers: mutationHeaders(idempotencyKey),
       },
     ),
   models: (query: ListQuery, signal?: AbortSignal) =>
@@ -71,19 +79,36 @@ export const catalogApi = {
       query: listQuery(query),
       ...(signal ? { signal } : {}),
     }),
+  activeConfiguration: (signal?: AbortSignal) =>
+    apiClient.request<ActiveConfiguration>(`${base}/configuration/active`, {
+      ...(signal ? { signal } : {}),
+    }),
+  captureRevision: (idempotencyKey: string) =>
+    apiClient.request<ConfigurationRevision>(`${base}/configuration/revisions`, {
+      method: 'POST',
+      headers: mutationHeaders(idempotencyKey),
+    }),
   validateRevision: (id: string) =>
     apiClient.request<OperationSnapshot>(`${item('configuration/revisions', id)}/validate`, {
       method: 'POST',
     }),
-  publishRevision: (id: string, expectedActiveRevisionId: string) =>
-    apiClient.request<OperationSnapshot, { expectedActiveRevisionId: string }>(
+  publishRevision: (id: string, expectedActiveVersion: number, idempotencyKey: string) =>
+    apiClient.request<OperationSnapshot, { expectedActiveVersion: number }>(
       `${item('configuration/revisions', id)}/publish`,
-      { method: 'POST', body: { expectedActiveRevisionId } },
+      {
+        method: 'POST',
+        body: { expectedActiveVersion },
+        headers: mutationHeaders(idempotencyKey),
+      },
     ),
-  rollbackRevision: (id: string, expectedActiveRevisionId: string) =>
-    apiClient.request<OperationSnapshot, { expectedActiveRevisionId: string }>(
+  rollbackRevision: (id: string, expectedActiveVersion: number, idempotencyKey: string) =>
+    apiClient.request<OperationSnapshot, { expectedActiveVersion: number }>(
       `${item('configuration/revisions', id)}/rollback`,
-      { method: 'POST', body: { expectedActiveRevisionId } },
+      {
+        method: 'POST',
+        body: { expectedActiveVersion },
+        headers: mutationHeaders(idempotencyKey),
+      },
     ),
 
   credentials: (query: ListQuery, signal?: AbortSignal) =>
@@ -91,24 +116,35 @@ export const catalogApi = {
       query: listQuery(query),
       ...(signal ? { signal } : {}),
     }),
-  createCredential: (input: CredentialInput) =>
+  createCredential: (input: CredentialInput, idempotencyKey: string) =>
     apiClient.request<Credential, CredentialInput>(`${base}/credentials`, {
       method: 'POST',
       body: input,
+      headers: mutationHeaders(idempotencyKey),
     }),
-  updateCredential: (id: string, input: CredentialInput) =>
-    apiClient.request<Credential, CredentialInput>(item('credentials', id), {
+  updateCredential: (id: string, input: CredentialUpdateInput, idempotencyKey: string) =>
+    apiClient.request<Credential, CredentialUpdateInput>(item('credentials', id), {
       method: 'PUT',
       body: input,
+      headers: mutationHeaders(idempotencyKey),
     }),
-  setCredentialEnabled: (id: string, enabled: boolean) =>
-    apiClient.request<Credential, { enabled: boolean }>(`${item('credentials', id)}/status`, {
-      method: 'PUT',
-      body: { enabled },
-    }),
-  testCredential: (id: string, mode: 'connection' | 'generation') =>
-    apiClient.request<OperationSnapshot, { mode: 'connection' | 'generation' }>(
-      `${item('credentials', id)}/tests`,
-      { method: 'POST', body: { mode } },
+  setCredentialEnabled: (
+    id: string,
+    enabled: boolean,
+    expectedUpdatedAt: string,
+    idempotencyKey: string,
+  ) =>
+    apiClient.request<Credential, { enabled: boolean; expectedUpdatedAt: string }>(
+      `${item('credentials', id)}/status`,
+      {
+        method: 'PUT',
+        body: { enabled, expectedUpdatedAt },
+        headers: mutationHeaders(idempotencyKey),
+      },
     ),
+  probeCredential: (id: string, signal?: AbortSignal) =>
+    apiClient.request<CredentialProbeResult>(`${item('credentials', id)}/probe`, {
+      method: 'POST',
+      ...(signal ? { signal } : {}),
+    }),
 }

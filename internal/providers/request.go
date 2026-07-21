@@ -121,14 +121,6 @@ func NewOpenAICompatible(options OpenAICompatibleOptions) (Adapter, error) {
 	return newAdapter(options.BaseURL, openAICompatiblePolicy(options.Capabilities, options.RequestIDHeader))
 }
 
-func NewDeepSeek() Adapter {
-	return mustNewAdapter("https://api.deepseek.com", deepSeekPolicy())
-}
-
-func NewDeepSeekWithBaseURL(baseURL string) (Adapter, error) {
-	return newAdapter(baseURL, deepSeekPolicy())
-}
-
 func NewZhipu() Adapter {
 	return mustNewAdapter("https://open.bigmodel.cn/api/paas/v4", zhipuPolicy())
 }

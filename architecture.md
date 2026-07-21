@@ -1,130 +1,119 @@
 # LLMGateway Architecture
 
-本文记录正式实现前已经确认的技术与架构基线。产品范围与行为事实以 [`spec.md`](spec.md) 为准；具体实现任务仍由根目录 `plan.md` 管理。
+本文记录当前技术栈、事实 owner、运行拓扑和管理端结构。产品合同以 [`spec.md`](spec.md) 为准，当前实施状态以 [`plan.md`](plan.md) 为准。
 
 ## 技术基线
 
-| 层 | 选择 | 边界 |
+| 层 | 选择 | 职责 |
 | --- | --- | --- |
-| 服务端 | Go 1.26.5 或更新的 1.26 补丁版 | 单一模块化服务，不预先拆微服务 |
-| HTTP | 标准库 `net/http` + `chi` | 数据面保持流式响应、取消和连接生命周期的原生语义 |
-| 持久化 | PostgreSQL 18 | 用户、凭据元数据、配置版本、额度账本、请求事实和审计的唯一持久 owner |
-| SQL | `pgx` + `sqlc` + `goose` | 显式 SQL、生成类型、单向迁移；不引入重型 ORM |
-| 协调 | Valkey 9 | 限流、并发租约、短期粘性和缓存；可丢失，不拥有账本或配置事实 |
-| 管理端 | React 19 + TypeScript + Vite 8 | 独立前端开发，生产构建后嵌入 Go 二进制 |
-| 前端数据 | TanStack Router、Query、Table | 路由、服务端状态和密集表格各自有明确 owner |
-| UI 基础 | Radix/shadcn 风格原语 + Lucide + CSS tokens | 可访问、低噪声、信息密集，不绑定大型整套后台主题 |
-| 可观测性 | OpenTelemetry + Prometheus 语义 | 日志、trace 和指标共用 request ID，默认脱敏 |
-| 本地基础设施 | Docker Compose | PostgreSQL 与 Valkey 使用健康检查、命名卷和本机端口绑定 |
+| 服务端 | Go 1.26 模块化单体 | 公共 API、管理 API、后台恢复和生产前端交付 |
+| HTTP | `net/http` + `chi` | 请求上限、取消、流式生命周期和中间件 |
+| 持久化 | PostgreSQL 18 | 身份、catalog revision、请求、attempt、额度、usage、mutation 和审计的唯一持久 owner |
+| SQL | `pgx` + `sqlc` + 基线 migration | 显式事务与确定性生成类型 |
+| 协调 | Valkey 9 | RPM/TPM、并发租约与跨实例短期容量；不拥有账本、配置或排队顺序 |
+| 管理端 | React 19 + TypeScript + Vite 8 | 生产构建嵌入 Go 二进制 |
+| 前端状态 | TanStack Router/Query/Table | 路由、服务端 cache 和数据表格 |
+| UI | Radix 原语、Lucide、CSS tokens | 可访问、信息密集、桌面与移动可操作 |
+| 运行证据 | 结构化日志 + Prometheus 指标 | request ID、稳定错误类别、容量与恢复结果，默认脱敏 |
 
-选择模块化单体是为了让几十人规模保持简单，同时保留清晰的模块合同。后续只有在独立扩容、故障隔离或发布节奏已有事实需求时，才拆分数据面或管理面。
+模块化单体适合约 200～300 名受控用户：部署和恢复边界清楚，同时各领域仍按事实 owner 隔离。只有出现独立扩容或发布需求时才拆服务。
 
 ## 运行拓扑
 
 ```text
-                           +----------------------+
-Admin browser ------------> Control Plane API    |
-                           |                      |
-Client / SDK / Agent ----->| Public LLM API       |-----> Provider upstream
-                           |                      |
-                           | Go modular monolith  |
-                           +-----+-----------+----+
-                                 |           |
-                                 v           v
-                           PostgreSQL      Valkey
-                           durable facts   leases/rate limits/cache
+Administrator / Member Browser
+              |
+              v
+       Control API + embedded Web
+              |
+Client SDK -> Public /v1 API -> Request Workflow -> Provider Adapter -> Upstream
+              |                     |
+              v                     v
+         PostgreSQL <----------> Valkey
+       persistent facts       expiring coordination
 ```
 
-首期一个 Go 进程同时承载公共数据面、管理 API 和静态管理端。三者在代码内保持独立边界，共享身份、配置发布、账本和可观测性合同。部署可以先使用单实例；水平扩容时所有权威状态仍进入 PostgreSQL，跨实例临时协调进入 Valkey。
+- 单个 Go 进程同时提供管理 API、公共 API、恢复 worker 和嵌入式生产前端。
+- PostgreSQL 故障时不能接受需要持久事实的新工作；Valkey 故障时不能绕过共享容量。
+- 多实例共享 PostgreSQL 与 Valkey。请求执行通过持久 claim/heartbeat 和过期租约协调，强杀后由存活实例或重启实例恢复。
 
 ## 模块边界
 
 ```text
-cmd/gateway
 internal/
-  protocol/       OpenAI-compatible HTTP 与流生命周期
-  canonical/      请求、响应、工具、reasoning、usage、错误的统一语义
-  identity/       用户、邀请、角色、会话、网关 Key 与授权
-  providers/      Provider 注册、模型能力与 adapter
-  credentials/    上游凭据加密、授权、健康、冷却与停用
-  admission/      用户公平排队、并发许可与背压
-  routing/        资源域、模型路由、账号选择与会话粘性
-  resilience/     限流、超时、退避、重试、熔断与恢复
-  ledger/         usage、预留、结算、补偿、额度与套餐
-  config/         草稿校验、版本发布、生效与回滚
-  observability/  请求事实、指标、日志、审计与内容留存
-  store/          PostgreSQL/Valkey 的技术接线，不拥有业务规则
-web/              React 管理端
+  publicapi/       /v1 鉴权、协议响应和流式边界
+  protocol/        OpenAI-compatible wire 解析与呈现
+  canonical/       消息、工具、reasoning、usage 和错误语义
+  providers/       Provider adapter、能力与错误分类
+  identity/        用户、角色、会话、邀请、Gateway Key 与模型授权
+  registry/        Provider、模型、凭据、绑定、健康与冷却
+  configuration/   catalog revision、发布、回滚与 active version
+  admission/       本地每用户 FIFO、用户轮转和并发上限
+  coordination/    Valkey 原子限流与租约
+  routing/         硬资格、管理员优先级和同级权重选择
+  quota/           额度预留、结算、补偿与 usage
+  requestflow/     接受、执行、发送、流式、结算与恢复编排
+  execution/       持久执行 claim 与 fencing
+  responses/       后台 Responses 状态机
+  security/        AEAD、摘要、SSRF 与网络策略
+  controlapi/      管理 HTTP 合同与权限边界
+  store/           PostgreSQL/Valkey adapter 与 sqlc 消费者
+  app/             配置校验、依赖装配和进程生命周期
 ```
 
-模块目录表达变化原因，不表达数据库表。公共 handler、Provider adapter、存储实现和 UI 只能消费对应 owner 的合同，不复制调度、额度或错误判断。
+Public API、Canonical Model 和 Provider Adapter 分别拥有外部合同、内部语义和厂商差异。调度不解析厂商 wire，adapter 不判断用户额度，handler 不重算领域状态。
 
-## 核心链路
+`providers.Catalog` 是 Provider kind、展示名称和 adapter builder 的唯一注册事实。请求执行、凭据探测、Provider 写入校验和管理端类型列表都从 catalog 读取；Catalog 在构建时固定并随受审查版本发布。
 
-同步文本请求：
+## 请求数据流
 
 ```text
-接收并校验 -> 鉴权/授权 -> 额度预留与 admission -> 路由与账号选择
--> 获取限流/并发许可 -> adapter 发送 -> 响应或流事件归一
--> authoritative usage 结算/补偿 -> 请求事实、指标与审计
+校验 Gateway Key 与模型授权
+  -> 本地公平 admission + Valkey 共享容量
+  -> PostgreSQL 原子额度预留并持久接受请求
+  -> 已发布 catalog 解析模型与候选凭据
+  -> 硬资格过滤 -> 最小 priority -> 同级 weighted choice
+  -> 取得 Provider/credential/用户/Key 多维租约
+  -> 解密最小必要 secret，SSRF 安全客户端发送
+  -> 非流/流式响应归一
+  -> 权威 usage 结算，或按发送事实释放/保持 uncertain
 ```
 
-流式响应一旦向客户端提交，就不能透明切换账号重放。发送边界不确定时记录 `uncertain`，由明确恢复流程处理，不把未知副作用当成未发送。
+冷却、有限重试和熔断只消费稳定错误类别。发送事实未知、流已提交或请求不可安全重放时不切换 Provider。
 
-管理配置：
+## 配置发布
 
-```text
-编辑草稿 -> 完整校验 -> PostgreSQL 持久化 -> 原子发布版本
--> 数据面读取已发布快照 -> 审计 -> 可验证回滚
-```
+1. 管理员编辑 live registry。
+2. 捕获操作在 PostgreSQL 事务内复制 Provider、模型、凭据非秘密字段和路由绑定，生成不可变 revision 与 checksum。
+3. 发布以 expected active version 做并发控制，原子切换唯一 active revision。
+4. 数据面只读取 active revision；Valkey 不保存第二套配置快照。
+5. 回滚是把一个已有 revision 重新设为 active，并递增 active version。
 
-## 数据与一致性
+## 身份与管理端
 
-- PostgreSQL 是身份、配置、凭据状态、账本和请求事实的唯一权威来源。
-- Valkey 只保存可以由 PostgreSQL 或当前配置重建的租约、计数器、短期粘性和缓存。
-- 额度采用不可变账本事件与可追溯余额快照，不直接修改无来源余额。
-- 并发预留、结算和补偿在数据库事务或等价原子边界内完成。
-- 配置以不可变版本发布，运行请求绑定读取到的版本，避免一半旧配置、一半新配置。
-- 免费资源域与付费资源域在数据模型、路由和结算路径上显式隔离。
+- `administrator`：Provider、模型、凭据、发布、用户、额度和任意用户 Key。
+- `member`：自己的 Key、授权、额度、用量和 Playground。
+- 导航按 capability 生成，不靠隐藏按钮替代服务端授权。
+- 一次性 secret 只在创建/幂等恢复响应中出现，不进入 Query cache、localStorage、sessionStorage、截图或 trace。
+- 管理信息架构只保留：Provider、模型、凭据、发布版本、用户、邀请、额度、Key、用量和 Playground。
 
-## 管理端信息架构
+## 持久与恢复边界
 
-参考仓库只提供机制证据，不拥有 LLMGateway 的页面结构。Sub2API 展示了完整运营能力，但菜单、商城和推广模块超出当前范围；New API 的功能模块、分区编辑和密集数据表更适合作为结构参考；Kitty 的低噪声状态反馈可用于长请求和测试操作。
-
-首期管理端主导航收敛为：
-
-1. **总览**：系统健康、请求、延迟、错误、资源池容量和待处理告警。
-2. **Provider 与模型**：Provider、模型能力、端点、路由组和配置发布。
-3. **上游凭据池**：凭据、授权模型、资源域、并发/RPM、健康、冷却与连接测试。
-4. **用户与网关 Key**：邀请、审核、角色、模型授权、Key、停用与额度分配。
-5. **用量与账本**：请求用量、额度事件、预留/结算/补偿和资源域消耗。
-6. **请求与审计**：请求事实、路由决策、错误、管理员操作和受控内容审计。
-7. **Playground**：文本、工具调用、reasoning 和流式响应的直接测试入口。
-8. **系统设置**：安全、保留期、代理出口、可观测性和发布版本。
-
-页面采用稳定导航侧栏、紧凑页头、工具栏、桌面表格与移动列表。导航、工具或运行事实侧栏必须承载真实内容与明确职责；禁止用单侧竖线、另一侧留空的伪 sidebar/callout 制造层级。状态和分组使用完整边界、背景、间距或排版表达。连接测试、配置发布和长操作必须展示已提交、当前步骤、成功或可行动错误；不能只用 toast 表达最终状态。卡片仅用于统计摘要和重复实体，不把每个页面堆成卡片墙。
+- PostgreSQL 保存 logical request、attempt、execution claim、reservation、usage 和后台 response 状态。
+- Valkey 租约带 TTL；持有进程死亡后容量可恢复，但排队位置不持久化。
+- 客户端排队时取消不会创建持久请求；接受后取消按是否已发送分别释放、结算或保持 uncertain。
+- 流输出后失败不能拼接第二个 Provider 响应。
+- 429/临时错误更新凭据冷却；管理员停用优先于自动健康。
+- 恢复和取消操作幂等，fencing 阻止过期执行者覆盖新 owner。
 
 ## 安全边界
 
-- 网关 Key 只保存不可逆摘要；上游凭据使用主密钥信封加密，并在最小发送边界解密。
-- 管理端使用可撤销服务端会话与最小权限授权，不把长期管理权限放进不可撤销前端令牌。
-- 自定义上游 URL 和代理统一经过 SSRF、重定向、DNS 重绑定和内网地址检查。
-- 普通日志、错误和指标不记录密钥或正文；内容审计进入独立受控存储并有保留/删除策略。
-- 本地 Compose 默认只绑定 `127.0.0.1`。生产监听地址、TLS、反向代理和外部访问必须显式配置。
+- Provider secret 使用版本化 AEAD；Gateway Key、邀请码、会话和 CSRF 使用带独立 pepper 的摘要。
+- 自定义上游 URL 在连接与重定向阶段执行 SSRF、DNS 解析与地址范围检查。
+- cookie、CSRF、权限、资源上限、日志脱敏和 secret canary 进入验证链。
+- 普通日志与审计只记录非正文事实；系统不存储请求或响应正文。
+- 主密钥轮换和 PostgreSQL 备份恢复必须使用显式、可验证、可回滚的运维命令，不能混入普通启动。
 
-## 构建与交付
+## 交付拓扑
 
-- 开发时前端由 Vite 提供热更新，Go 服务独立运行；PostgreSQL 与 Valkey 由 Compose 提供。
-- 生产构建先生成前端静态资源，再通过 `go:embed` 进入单个 Go 二进制。
-- 目标为 Windows、Linux、macOS 的常见 x64/ARM 构建；数据库和 Valkey 作为外部服务，不嵌入二进制。
-- 一个完整验证入口最终覆盖 Go 格式/静态检查/测试/竞态、前端格式/类型/测试/构建、迁移、Compose 配置和安全扫描。
-- 日常确定性测试不依赖真实 Provider；真实 Provider 合同验收使用隔离凭据和独立命令。
-
-## 本地开发基础设施
-
-当前 Compose 只启动 PostgreSQL 和 Valkey，不伪造尚未实现的网关服务。默认端口为：
-
-- PostgreSQL: `127.0.0.1:15432`
-- Valkey: `127.0.0.1:16380`
-
-命名卷保留开发数据，普通停止不会删除。任何清空数据操作必须是单独、显式、可确认的命令，不能混入启动或验证流程。
+当前生产形态是一份包含前端静态资源的 Go 二进制，连接受控 PostgreSQL 18 和 Valkey 9，并由反向代理终止公网 TLS。实际声明支持的操作系统、架构和部署目标只以完成过的构建、启动、主旅程、强杀恢复、备份恢复与轮换演练为准。

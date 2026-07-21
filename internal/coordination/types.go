@@ -5,12 +5,14 @@ import "time"
 type Scope string
 
 const (
-	ScopeGlobal     Scope = "global"
-	ScopeUser       Scope = "user"
-	ScopeGatewayKey Scope = "gateway_key"
-	ScopeModel      Scope = "model"
-	ScopeProvider   Scope = "provider"
-	ScopeCredential Scope = "credential"
+	ScopeGlobal         Scope = "global"
+	ScopeResourceDomain Scope = "resource_domain"
+	ScopeUser           Scope = "user"
+	ScopeEntitlement    Scope = "entitlement"
+	ScopeGatewayKey     Scope = "gateway_key"
+	ScopeModel          Scope = "model"
+	ScopeProvider       Scope = "provider"
+	ScopeCredential     Scope = "credential"
 )
 
 // Dimension identifies a coordination scope. SubjectID should be an internal,

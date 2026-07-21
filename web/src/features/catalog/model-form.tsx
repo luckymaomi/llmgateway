@@ -1,7 +1,7 @@
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect } from 'react'
-import { useForm } from 'react-hook-form'
+import { useEffect, type FormEvent } from 'react'
+import { useForm, type DefaultValues } from 'react-hook-form'
 import { z } from 'zod'
 
 import { catalogApi, type Model, type ModelCapability, type ModelInput } from '@/api'
@@ -25,12 +25,7 @@ const schema = z.object({
   capabilities: z
     .array(z.enum(['streaming', 'tools', 'reasoning', 'structured_output']))
     .min(1, '至少选择一项能力'),
-  contextTokens: z
-    .number()
-    .int()
-    .positive()
-    .optional()
-    .or(z.nan().transform(() => undefined)),
+  contextTokens: z.number().int().positive('请输入正整数上下文 Token 上限'),
 })
 
 type Values = z.infer<typeof schema>
@@ -61,14 +56,49 @@ export function ModelForm({
     },
   })
 
+  async function submit(values: Values): Promise<void> {
+    try {
+      await mutation.mutateAsync({
+        providerId: values.providerId,
+        alias: values.alias,
+        upstreamModelId: values.upstreamModelId,
+        resourceDomain: values.resourceDomain,
+        capabilities: values.capabilities,
+        contextTokens: values.contextTokens,
+      })
+    } catch {
+      // The mutation state renders the typed error.
+    }
+  }
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault()
+    const formElement = event.currentTarget
+    if (formElement.dataset.submissionPending === 'true') return
+    formElement.dataset.submissionPending = 'true'
+    try {
+      await form.handleSubmit(submit)(event)
+    } finally {
+      delete formElement.dataset.submissionPending
+    }
+  }
+
   return (
     <DialogFrame
       open={open}
-      onOpenChange={onOpenChange}
+      onOpenChange={(nextOpen) => {
+        if (!mutation.isPending || nextOpen) onOpenChange(nextOpen)
+      }}
       title={model ? '编辑模型' : '添加模型'}
+      dismissible={!mutation.isPending}
       footer={
         <>
-          <Button type="button" variant="secondary" onClick={() => onOpenChange(false)}>
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={mutation.isPending}
+            onClick={() => onOpenChange(false)}
+          >
             取消
           </Button>
           <Button type="submit" form="model-form" disabled={mutation.isPending}>
@@ -77,20 +107,7 @@ export function ModelForm({
         </>
       }
     >
-      <form
-        id="model-form"
-        className="form-grid"
-        onSubmit={form.handleSubmit((values) =>
-          mutation.mutate({
-            providerId: values.providerId,
-            alias: values.alias,
-            upstreamModelId: values.upstreamModelId,
-            resourceDomain: values.resourceDomain,
-            capabilities: values.capabilities,
-            ...(values.contextTokens !== undefined ? { contextTokens: values.contextTokens } : {}),
-          }),
-        )}
-      >
+      <form id="model-form" className="form-grid" onSubmit={(event) => void handleSubmit(event)}>
         <Field
           label="Provider"
           htmlFor="model-provider"
@@ -161,7 +178,7 @@ export function ModelForm({
   )
 }
 
-function valuesFrom(model?: Model): Values {
+function valuesFrom(model?: Model): DefaultValues<Values> {
   return model
     ? {
         providerId: model.providerId,

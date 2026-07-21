@@ -12,40 +12,90 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const createConfigOutbox = `-- name: CreateConfigOutbox :exec
-INSERT INTO config_outbox (revision_id, active_version, document)
-VALUES ($1, $2, $3)
+const claimConfigMutation = `-- name: ClaimConfigMutation :one
+INSERT INTO config_mutations (actor_user_id, action, idempotency_key, request_fingerprint, request_id)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (actor_user_id, action, idempotency_key) DO NOTHING
+RETURNING id, actor_user_id, action, idempotency_key, request_fingerprint, request_id, revision_id, result, created_at
 `
 
-type CreateConfigOutboxParams struct {
-	RevisionID    uuid.UUID `json:"revision_id"`
-	ActiveVersion int64     `json:"active_version"`
-	Document      []byte    `json:"document"`
+type ClaimConfigMutationParams struct {
+	ActorUserID        uuid.UUID `json:"actor_user_id"`
+	Action             string    `json:"action"`
+	IdempotencyKey     uuid.UUID `json:"idempotency_key"`
+	RequestFingerprint []byte    `json:"request_fingerprint"`
+	RequestID          string    `json:"request_id"`
 }
 
-func (q *Queries) CreateConfigOutbox(ctx context.Context, arg CreateConfigOutboxParams) error {
-	_, err := q.db.Exec(ctx, createConfigOutbox, arg.RevisionID, arg.ActiveVersion, arg.Document)
-	return err
+func (q *Queries) ClaimConfigMutation(ctx context.Context, arg ClaimConfigMutationParams) (ConfigMutation, error) {
+	row := q.db.QueryRow(ctx, claimConfigMutation,
+		arg.ActorUserID,
+		arg.Action,
+		arg.IdempotencyKey,
+		arg.RequestFingerprint,
+		arg.RequestID,
+	)
+	var i ConfigMutation
+	err := row.Scan(
+		&i.ID,
+		&i.ActorUserID,
+		&i.Action,
+		&i.IdempotencyKey,
+		&i.RequestFingerprint,
+		&i.RequestID,
+		&i.RevisionID,
+		&i.Result,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const completeConfigMutation = `-- name: CompleteConfigMutation :one
+UPDATE config_mutations
+SET revision_id = $1, result = $2
+WHERE id = $3
+RETURNING id, actor_user_id, action, idempotency_key, request_fingerprint, request_id, revision_id, result, created_at
+`
+
+type CompleteConfigMutationParams struct {
+	RevisionID *uuid.UUID `json:"revision_id"`
+	Result     []byte     `json:"result"`
+	ID         uuid.UUID  `json:"id"`
+}
+
+func (q *Queries) CompleteConfigMutation(ctx context.Context, arg CompleteConfigMutationParams) (ConfigMutation, error) {
+	row := q.db.QueryRow(ctx, completeConfigMutation, arg.RevisionID, arg.Result, arg.ID)
+	var i ConfigMutation
+	err := row.Scan(
+		&i.ID,
+		&i.ActorUserID,
+		&i.Action,
+		&i.IdempotencyKey,
+		&i.RequestFingerprint,
+		&i.RequestID,
+		&i.RevisionID,
+		&i.Result,
+		&i.CreatedAt,
+	)
+	return i, err
 }
 
 const createConfigRevision = `-- name: CreateConfigRevision :one
-INSERT INTO config_revisions (document, checksum, created_by)
-VALUES ($1, $2, $3) RETURNING id, revision, document, checksum, created_by, created_at, published_at, published_by
+INSERT INTO config_revisions (checksum, created_by)
+VALUES ($1, $2) RETURNING id, revision, checksum, created_by, created_at, published_at, published_by
 `
 
 type CreateConfigRevisionParams struct {
-	Document  []byte    `json:"document"`
 	Checksum  string    `json:"checksum"`
 	CreatedBy uuid.UUID `json:"created_by"`
 }
 
 func (q *Queries) CreateConfigRevision(ctx context.Context, arg CreateConfigRevisionParams) (ConfigRevision, error) {
-	row := q.db.QueryRow(ctx, createConfigRevision, arg.Document, arg.Checksum, arg.CreatedBy)
+	row := q.db.QueryRow(ctx, createConfigRevision, arg.Checksum, arg.CreatedBy)
 	var i ConfigRevision
 	err := row.Scan(
 		&i.ID,
 		&i.Revision,
-		&i.Document,
 		&i.Checksum,
 		&i.CreatedBy,
 		&i.CreatedAt,
@@ -55,15 +105,124 @@ func (q *Queries) CreateConfigRevision(ctx context.Context, arg CreateConfigRevi
 	return i, err
 }
 
+const createConfigRevisionCredential = `-- name: CreateConfigRevisionCredential :exec
+INSERT INTO config_revision_credentials (revision_id, credential_id, provider_id, resource_domain, rpm_limit, tpm_limit, concurrency_limit)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+`
+
+type CreateConfigRevisionCredentialParams struct {
+	RevisionID       uuid.UUID      `json:"revision_id"`
+	CredentialID     uuid.UUID      `json:"credential_id"`
+	ProviderID       uuid.UUID      `json:"provider_id"`
+	ResourceDomain   ResourceDomain `json:"resource_domain"`
+	RpmLimit         *int32         `json:"rpm_limit"`
+	TpmLimit         *int64         `json:"tpm_limit"`
+	ConcurrencyLimit *int32         `json:"concurrency_limit"`
+}
+
+func (q *Queries) CreateConfigRevisionCredential(ctx context.Context, arg CreateConfigRevisionCredentialParams) error {
+	_, err := q.db.Exec(ctx, createConfigRevisionCredential,
+		arg.RevisionID,
+		arg.CredentialID,
+		arg.ProviderID,
+		arg.ResourceDomain,
+		arg.RpmLimit,
+		arg.TpmLimit,
+		arg.ConcurrencyLimit,
+	)
+	return err
+}
+
+const createConfigRevisionModel = `-- name: CreateConfigRevisionModel :exec
+INSERT INTO config_revision_models (revision_id, model_id, provider_id, public_name, upstream_name, display_name, resource_domain, capabilities, created_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+`
+
+type CreateConfigRevisionModelParams struct {
+	RevisionID     uuid.UUID          `json:"revision_id"`
+	ModelID        uuid.UUID          `json:"model_id"`
+	ProviderID     uuid.UUID          `json:"provider_id"`
+	PublicName     string             `json:"public_name"`
+	UpstreamName   string             `json:"upstream_name"`
+	DisplayName    string             `json:"display_name"`
+	ResourceDomain ResourceDomain     `json:"resource_domain"`
+	Capabilities   []byte             `json:"capabilities"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
+func (q *Queries) CreateConfigRevisionModel(ctx context.Context, arg CreateConfigRevisionModelParams) error {
+	_, err := q.db.Exec(ctx, createConfigRevisionModel,
+		arg.RevisionID,
+		arg.ModelID,
+		arg.ProviderID,
+		arg.PublicName,
+		arg.UpstreamName,
+		arg.DisplayName,
+		arg.ResourceDomain,
+		arg.Capabilities,
+		arg.CreatedAt,
+	)
+	return err
+}
+
+const createConfigRevisionProvider = `-- name: CreateConfigRevisionProvider :exec
+INSERT INTO config_revision_providers (revision_id, provider_id, slug, name, kind, base_url)
+VALUES ($1, $2, $3, $4, $5, $6)
+`
+
+type CreateConfigRevisionProviderParams struct {
+	RevisionID uuid.UUID `json:"revision_id"`
+	ProviderID uuid.UUID `json:"provider_id"`
+	Slug       string    `json:"slug"`
+	Name       string    `json:"name"`
+	Kind       string    `json:"kind"`
+	BaseUrl    string    `json:"base_url"`
+}
+
+func (q *Queries) CreateConfigRevisionProvider(ctx context.Context, arg CreateConfigRevisionProviderParams) error {
+	_, err := q.db.Exec(ctx, createConfigRevisionProvider,
+		arg.RevisionID,
+		arg.ProviderID,
+		arg.Slug,
+		arg.Name,
+		arg.Kind,
+		arg.BaseUrl,
+	)
+	return err
+}
+
+const createConfigRevisionRoute = `-- name: CreateConfigRevisionRoute :exec
+INSERT INTO config_revision_routes (revision_id, model_id, credential_id, priority, weight)
+VALUES ($1, $2, $3, $4, $5)
+`
+
+type CreateConfigRevisionRouteParams struct {
+	RevisionID   uuid.UUID `json:"revision_id"`
+	ModelID      uuid.UUID `json:"model_id"`
+	CredentialID uuid.UUID `json:"credential_id"`
+	Priority     int32     `json:"priority"`
+	Weight       int32     `json:"weight"`
+}
+
+func (q *Queries) CreateConfigRevisionRoute(ctx context.Context, arg CreateConfigRevisionRouteParams) error {
+	_, err := q.db.Exec(ctx, createConfigRevisionRoute,
+		arg.RevisionID,
+		arg.ModelID,
+		arg.CredentialID,
+		arg.Priority,
+		arg.Weight,
+	)
+	return err
+}
+
 const getActiveConfig = `-- name: GetActiveConfig :one
-SELECT r.id, r.revision, r.document, r.checksum, r.created_by, r.created_at, r.published_at, r.published_by, a.version AS active_version, a.updated_at AS active_updated_at
+SELECT r.id, r.revision, r.checksum, r.created_by, r.created_at, r.published_at, r.published_by, a.version AS active_version, a.updated_at AS active_updated_at
 FROM active_config a JOIN config_revisions r ON r.id = a.revision_id WHERE a.singleton = true
 `
 
 type GetActiveConfigRow struct {
 	ID              uuid.UUID          `json:"id"`
 	Revision        *int64             `json:"revision"`
-	Document        []byte             `json:"document"`
 	Checksum        string             `json:"checksum"`
 	CreatedBy       uuid.UUID          `json:"created_by"`
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
@@ -79,7 +238,6 @@ func (q *Queries) GetActiveConfig(ctx context.Context) (GetActiveConfigRow, erro
 	err := row.Scan(
 		&i.ID,
 		&i.Revision,
-		&i.Document,
 		&i.Checksum,
 		&i.CreatedBy,
 		&i.CreatedAt,
@@ -91,8 +249,38 @@ func (q *Queries) GetActiveConfig(ctx context.Context) (GetActiveConfigRow, erro
 	return i, err
 }
 
+const getConfigMutation = `-- name: GetConfigMutation :one
+SELECT id, actor_user_id, action, idempotency_key, request_fingerprint, request_id, revision_id, result, created_at FROM config_mutations
+WHERE actor_user_id = $1
+  AND action = $2
+  AND idempotency_key = $3
+`
+
+type GetConfigMutationParams struct {
+	ActorUserID    uuid.UUID `json:"actor_user_id"`
+	Action         string    `json:"action"`
+	IdempotencyKey uuid.UUID `json:"idempotency_key"`
+}
+
+func (q *Queries) GetConfigMutation(ctx context.Context, arg GetConfigMutationParams) (ConfigMutation, error) {
+	row := q.db.QueryRow(ctx, getConfigMutation, arg.ActorUserID, arg.Action, arg.IdempotencyKey)
+	var i ConfigMutation
+	err := row.Scan(
+		&i.ID,
+		&i.ActorUserID,
+		&i.Action,
+		&i.IdempotencyKey,
+		&i.RequestFingerprint,
+		&i.RequestID,
+		&i.RevisionID,
+		&i.Result,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getConfigRevision = `-- name: GetConfigRevision :one
-SELECT id, revision, document, checksum, created_by, created_at, published_at, published_by FROM config_revisions WHERE id = $1
+SELECT id, revision, checksum, created_by, created_at, published_at, published_by FROM config_revisions WHERE id = $1
 `
 
 func (q *Queries) GetConfigRevision(ctx context.Context, id uuid.UUID) (ConfigRevision, error) {
@@ -101,12 +289,38 @@ func (q *Queries) GetConfigRevision(ctx context.Context, id uuid.UUID) (ConfigRe
 	err := row.Scan(
 		&i.ID,
 		&i.Revision,
-		&i.Document,
 		&i.Checksum,
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.PublishedAt,
 		&i.PublishedBy,
+	)
+	return i, err
+}
+
+const getConfigRevisionCatalogSummary = `-- name: GetConfigRevisionCatalogSummary :one
+SELECT
+  (SELECT count(*) FROM config_revision_providers provider WHERE provider.revision_id = $1) AS provider_count,
+  (SELECT count(*) FROM config_revision_models model WHERE model.revision_id = $1) AS model_count,
+  (SELECT count(*) FROM config_revision_credentials credential WHERE credential.revision_id = $1) AS credential_count,
+  (SELECT count(*) FROM config_revision_routes route WHERE route.revision_id = $1) AS route_count
+`
+
+type GetConfigRevisionCatalogSummaryRow struct {
+	ProviderCount   int64 `json:"provider_count"`
+	ModelCount      int64 `json:"model_count"`
+	CredentialCount int64 `json:"credential_count"`
+	RouteCount      int64 `json:"route_count"`
+}
+
+func (q *Queries) GetConfigRevisionCatalogSummary(ctx context.Context, targetRevisionID uuid.UUID) (GetConfigRevisionCatalogSummaryRow, error) {
+	row := q.db.QueryRow(ctx, getConfigRevisionCatalogSummary, targetRevisionID)
+	var i GetConfigRevisionCatalogSummaryRow
+	err := row.Scan(
+		&i.ProviderCount,
+		&i.ModelCount,
+		&i.CredentialCount,
+		&i.RouteCount,
 	)
 	return i, err
 }
@@ -123,8 +337,178 @@ func (q *Queries) InitializeActiveConfig(ctx context.Context, revisionID uuid.UU
 	return result.RowsAffected(), nil
 }
 
+const listConfigRevisionCredentials = `-- name: ListConfigRevisionCredentials :many
+SELECT credential_id, provider_id, resource_domain, rpm_limit, tpm_limit, concurrency_limit
+FROM config_revision_credentials
+WHERE revision_id = $1
+ORDER BY credential_id
+`
+
+type ListConfigRevisionCredentialsRow struct {
+	CredentialID     uuid.UUID      `json:"credential_id"`
+	ProviderID       uuid.UUID      `json:"provider_id"`
+	ResourceDomain   ResourceDomain `json:"resource_domain"`
+	RpmLimit         *int32         `json:"rpm_limit"`
+	TpmLimit         *int64         `json:"tpm_limit"`
+	ConcurrencyLimit *int32         `json:"concurrency_limit"`
+}
+
+func (q *Queries) ListConfigRevisionCredentials(ctx context.Context, revisionID uuid.UUID) ([]ListConfigRevisionCredentialsRow, error) {
+	rows, err := q.db.Query(ctx, listConfigRevisionCredentials, revisionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListConfigRevisionCredentialsRow{}
+	for rows.Next() {
+		var i ListConfigRevisionCredentialsRow
+		if err := rows.Scan(
+			&i.CredentialID,
+			&i.ProviderID,
+			&i.ResourceDomain,
+			&i.RpmLimit,
+			&i.TpmLimit,
+			&i.ConcurrencyLimit,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listConfigRevisionModels = `-- name: ListConfigRevisionModels :many
+SELECT model_id, provider_id, public_name, upstream_name, display_name, resource_domain, capabilities, created_at
+FROM config_revision_models
+WHERE revision_id = $1
+ORDER BY model_id
+`
+
+type ListConfigRevisionModelsRow struct {
+	ModelID        uuid.UUID          `json:"model_id"`
+	ProviderID     uuid.UUID          `json:"provider_id"`
+	PublicName     string             `json:"public_name"`
+	UpstreamName   string             `json:"upstream_name"`
+	DisplayName    string             `json:"display_name"`
+	ResourceDomain ResourceDomain     `json:"resource_domain"`
+	Capabilities   []byte             `json:"capabilities"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
+func (q *Queries) ListConfigRevisionModels(ctx context.Context, revisionID uuid.UUID) ([]ListConfigRevisionModelsRow, error) {
+	rows, err := q.db.Query(ctx, listConfigRevisionModels, revisionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListConfigRevisionModelsRow{}
+	for rows.Next() {
+		var i ListConfigRevisionModelsRow
+		if err := rows.Scan(
+			&i.ModelID,
+			&i.ProviderID,
+			&i.PublicName,
+			&i.UpstreamName,
+			&i.DisplayName,
+			&i.ResourceDomain,
+			&i.Capabilities,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listConfigRevisionProviders = `-- name: ListConfigRevisionProviders :many
+SELECT provider_id, slug, name, kind, base_url
+FROM config_revision_providers
+WHERE revision_id = $1
+ORDER BY provider_id
+`
+
+type ListConfigRevisionProvidersRow struct {
+	ProviderID uuid.UUID `json:"provider_id"`
+	Slug       string    `json:"slug"`
+	Name       string    `json:"name"`
+	Kind       string    `json:"kind"`
+	BaseUrl    string    `json:"base_url"`
+}
+
+func (q *Queries) ListConfigRevisionProviders(ctx context.Context, revisionID uuid.UUID) ([]ListConfigRevisionProvidersRow, error) {
+	rows, err := q.db.Query(ctx, listConfigRevisionProviders, revisionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListConfigRevisionProvidersRow{}
+	for rows.Next() {
+		var i ListConfigRevisionProvidersRow
+		if err := rows.Scan(
+			&i.ProviderID,
+			&i.Slug,
+			&i.Name,
+			&i.Kind,
+			&i.BaseUrl,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listConfigRevisionRoutes = `-- name: ListConfigRevisionRoutes :many
+SELECT model_id, credential_id, priority, weight
+FROM config_revision_routes
+WHERE revision_id = $1
+ORDER BY model_id, credential_id
+`
+
+type ListConfigRevisionRoutesRow struct {
+	ModelID      uuid.UUID `json:"model_id"`
+	CredentialID uuid.UUID `json:"credential_id"`
+	Priority     int32     `json:"priority"`
+	Weight       int32     `json:"weight"`
+}
+
+func (q *Queries) ListConfigRevisionRoutes(ctx context.Context, revisionID uuid.UUID) ([]ListConfigRevisionRoutesRow, error) {
+	rows, err := q.db.Query(ctx, listConfigRevisionRoutes, revisionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListConfigRevisionRoutesRow{}
+	for rows.Next() {
+		var i ListConfigRevisionRoutesRow
+		if err := rows.Scan(
+			&i.ModelID,
+			&i.CredentialID,
+			&i.Priority,
+			&i.Weight,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listConfigRevisions = `-- name: ListConfigRevisions :many
-SELECT id, revision, document, checksum, created_by, created_at, published_at, published_by FROM config_revisions ORDER BY revision DESC LIMIT $2 OFFSET $1
+SELECT id, revision, checksum, created_by, created_at, published_at, published_by FROM config_revisions ORDER BY revision DESC LIMIT $2 OFFSET $1
 `
 
 type ListConfigRevisionsParams struct {
@@ -144,7 +528,6 @@ func (q *Queries) ListConfigRevisions(ctx context.Context, arg ListConfigRevisio
 		if err := rows.Scan(
 			&i.ID,
 			&i.Revision,
-			&i.Document,
 			&i.Checksum,
 			&i.CreatedBy,
 			&i.CreatedAt,
@@ -161,28 +544,194 @@ func (q *Queries) ListConfigRevisions(ctx context.Context, arg ListConfigRevisio
 	return items, nil
 }
 
-const listPendingConfigOutbox = `-- name: ListPendingConfigOutbox :many
-SELECT id, revision_id, active_version, document, attempts, last_error, delivered_at, created_at FROM config_outbox WHERE delivered_at IS NULL ORDER BY id LIMIT $1
+const listRegistryCredentialsForSnapshot = `-- name: ListRegistryCredentialsForSnapshot :many
+SELECT c.id, c.provider_id, c.resource_domain, c.rpm_limit, c.tpm_limit, c.concurrency_limit
+FROM provider_credentials c
+JOIN providers p ON p.id = c.provider_id
+WHERE p.enabled
+  AND c.status <> 'disabled'
+  AND EXISTS (
+    SELECT 1
+    FROM credential_models cm
+    JOIN models m ON m.id = cm.model_id
+    WHERE cm.credential_id = c.id
+      AND m.enabled
+      AND m.provider_id = c.provider_id
+      AND m.resource_domain = c.resource_domain
+  )
+ORDER BY c.id
 `
 
-func (q *Queries) ListPendingConfigOutbox(ctx context.Context, batchSize int32) ([]ConfigOutbox, error) {
-	rows, err := q.db.Query(ctx, listPendingConfigOutbox, batchSize)
+type ListRegistryCredentialsForSnapshotRow struct {
+	ID               uuid.UUID      `json:"id"`
+	ProviderID       uuid.UUID      `json:"provider_id"`
+	ResourceDomain   ResourceDomain `json:"resource_domain"`
+	RpmLimit         *int32         `json:"rpm_limit"`
+	TpmLimit         *int64         `json:"tpm_limit"`
+	ConcurrencyLimit *int32         `json:"concurrency_limit"`
+}
+
+func (q *Queries) ListRegistryCredentialsForSnapshot(ctx context.Context) ([]ListRegistryCredentialsForSnapshotRow, error) {
+	rows, err := q.db.Query(ctx, listRegistryCredentialsForSnapshot)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ConfigOutbox{}
+	items := []ListRegistryCredentialsForSnapshotRow{}
 	for rows.Next() {
-		var i ConfigOutbox
+		var i ListRegistryCredentialsForSnapshotRow
 		if err := rows.Scan(
 			&i.ID,
-			&i.RevisionID,
-			&i.ActiveVersion,
-			&i.Document,
-			&i.Attempts,
-			&i.LastError,
-			&i.DeliveredAt,
+			&i.ProviderID,
+			&i.ResourceDomain,
+			&i.RpmLimit,
+			&i.TpmLimit,
+			&i.ConcurrencyLimit,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRegistryModelsForSnapshot = `-- name: ListRegistryModelsForSnapshot :many
+SELECT m.id, m.provider_id, m.public_name, m.upstream_name, m.display_name, m.resource_domain, m.capabilities, m.created_at
+FROM models m
+JOIN providers p ON p.id = m.provider_id
+WHERE p.enabled
+  AND m.enabled
+  AND EXISTS (
+    SELECT 1
+    FROM credential_models cm
+    JOIN provider_credentials credential ON credential.id = cm.credential_id
+    WHERE cm.model_id = m.id
+      AND credential.status <> 'disabled'
+      AND credential.provider_id = m.provider_id
+      AND credential.resource_domain = m.resource_domain
+  )
+ORDER BY m.id
+`
+
+type ListRegistryModelsForSnapshotRow struct {
+	ID             uuid.UUID          `json:"id"`
+	ProviderID     uuid.UUID          `json:"provider_id"`
+	PublicName     string             `json:"public_name"`
+	UpstreamName   string             `json:"upstream_name"`
+	DisplayName    string             `json:"display_name"`
+	ResourceDomain ResourceDomain     `json:"resource_domain"`
+	Capabilities   []byte             `json:"capabilities"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
+func (q *Queries) ListRegistryModelsForSnapshot(ctx context.Context) ([]ListRegistryModelsForSnapshotRow, error) {
+	rows, err := q.db.Query(ctx, listRegistryModelsForSnapshot)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRegistryModelsForSnapshotRow{}
+	for rows.Next() {
+		var i ListRegistryModelsForSnapshotRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProviderID,
+			&i.PublicName,
+			&i.UpstreamName,
+			&i.DisplayName,
+			&i.ResourceDomain,
+			&i.Capabilities,
 			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRegistryProvidersForSnapshot = `-- name: ListRegistryProvidersForSnapshot :many
+SELECT id, slug, name, kind, base_url
+FROM providers
+WHERE enabled
+ORDER BY id
+`
+
+type ListRegistryProvidersForSnapshotRow struct {
+	ID      uuid.UUID `json:"id"`
+	Slug    string    `json:"slug"`
+	Name    string    `json:"name"`
+	Kind    string    `json:"kind"`
+	BaseUrl string    `json:"base_url"`
+}
+
+func (q *Queries) ListRegistryProvidersForSnapshot(ctx context.Context) ([]ListRegistryProvidersForSnapshotRow, error) {
+	rows, err := q.db.Query(ctx, listRegistryProvidersForSnapshot)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRegistryProvidersForSnapshotRow{}
+	for rows.Next() {
+		var i ListRegistryProvidersForSnapshotRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Slug,
+			&i.Name,
+			&i.Kind,
+			&i.BaseUrl,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRegistryRoutesForSnapshot = `-- name: ListRegistryRoutesForSnapshot :many
+SELECT cm.model_id, cm.credential_id, cm.priority, cm.weight
+FROM credential_models cm
+JOIN models m ON m.id = cm.model_id
+JOIN providers p ON p.id = m.provider_id
+JOIN provider_credentials c ON c.id = cm.credential_id
+WHERE p.enabled
+  AND m.enabled
+  AND c.status <> 'disabled'
+  AND c.provider_id = m.provider_id
+  AND c.resource_domain = m.resource_domain
+ORDER BY cm.model_id, cm.credential_id
+`
+
+type ListRegistryRoutesForSnapshotRow struct {
+	ModelID      uuid.UUID `json:"model_id"`
+	CredentialID uuid.UUID `json:"credential_id"`
+	Priority     int32     `json:"priority"`
+	Weight       int32     `json:"weight"`
+}
+
+func (q *Queries) ListRegistryRoutesForSnapshot(ctx context.Context) ([]ListRegistryRoutesForSnapshotRow, error) {
+	rows, err := q.db.Query(ctx, listRegistryRoutesForSnapshot)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRegistryRoutesForSnapshotRow{}
+	for rows.Next() {
+		var i ListRegistryRoutesForSnapshotRow
+		if err := rows.Scan(
+			&i.ModelID,
+			&i.CredentialID,
+			&i.Priority,
+			&i.Weight,
 		); err != nil {
 			return nil, err
 		}
@@ -210,31 +759,11 @@ func (q *Queries) LockActiveConfig(ctx context.Context) (LockActiveConfigRow, er
 	return i, err
 }
 
-const markConfigOutboxDelivered = `-- name: MarkConfigOutboxDelivered :exec
-UPDATE config_outbox SET delivered_at = now(), attempts = attempts + 1, last_error = NULL WHERE id = $1
-`
-
-func (q *Queries) MarkConfigOutboxDelivered(ctx context.Context, id int64) error {
-	_, err := q.db.Exec(ctx, markConfigOutboxDelivered, id)
-	return err
-}
-
-const markConfigOutboxFailed = `-- name: MarkConfigOutboxFailed :exec
-UPDATE config_outbox SET attempts = attempts + 1, last_error = $1 WHERE id = $2
-`
-
-type MarkConfigOutboxFailedParams struct {
-	LastError *string `json:"last_error"`
-	ID        int64   `json:"id"`
-}
-
-func (q *Queries) MarkConfigOutboxFailed(ctx context.Context, arg MarkConfigOutboxFailedParams) error {
-	_, err := q.db.Exec(ctx, markConfigOutboxFailed, arg.LastError, arg.ID)
-	return err
-}
-
 const markConfigPublished = `-- name: MarkConfigPublished :exec
-UPDATE config_revisions SET published_at = now(), published_by = $1 WHERE id = $2
+UPDATE config_revisions
+SET published_at = COALESCE(published_at, now()),
+    published_by = COALESCE(published_by, $1)
+WHERE id = $2
 `
 
 type MarkConfigPublishedParams struct {

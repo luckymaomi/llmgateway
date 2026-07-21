@@ -5,7 +5,6 @@ import type {
   Invitation,
   ListQuery,
   Page,
-  Role,
   UserAccount,
 } from './types'
 
@@ -13,18 +12,18 @@ const base = '/api/control'
 const item = (path: string, id: string) => `${base}/${path}/${encodeURIComponent(id)}`
 
 export interface InvitationInput {
-  role: Role
   expiresAt: string
 }
 
-export interface CreatedInvitation extends Invitation {
+export interface CreatedInvitation {
+  invitation: Invitation
   code: string
 }
 
 export interface GatewayKeyInput {
   ownerId: string
   name: string
-  authorizedModels: string[]
+  authorizedModelIds: string[]
   expiresAt?: string
 }
 
@@ -45,10 +44,11 @@ export const accessApi = {
       query: listQuery(query),
       ...(signal ? { signal } : {}),
     }),
-  createInvitation: (input: InvitationInput) =>
+  createInvitation: (input: InvitationInput, idempotencyKey: string) =>
     apiClient.request<CreatedInvitation, InvitationInput>(`${base}/invitations`, {
       method: 'POST',
       body: input,
+      headers: { 'Idempotency-Key': idempotencyKey },
     }),
   revokeInvitation: (id: string) =>
     apiClient.request<Invitation>(`${item('invitations', id)}/revoke`, { method: 'POST' }),
@@ -58,10 +58,11 @@ export const accessApi = {
       query: listQuery(query),
       ...(signal ? { signal } : {}),
     }),
-  createKey: (input: GatewayKeyInput) =>
+  createKey: (input: GatewayKeyInput, idempotencyKey: string) =>
     apiClient.request<CreatedGatewayKey, GatewayKeyInput>(`${base}/keys`, {
       method: 'POST',
       body: input,
+      headers: { 'Idempotency-Key': idempotencyKey },
     }),
   revokeKey: (id: string) =>
     apiClient.request<GatewayKey>(`${item('keys', id)}/revoke`, { method: 'POST' }),

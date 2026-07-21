@@ -12,7 +12,7 @@ import {
 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
-import { operationsApi, type PlaygroundRunInput } from '@/api'
+import { accessApi, playgroundApi, type PlaygroundRunInput } from '@/api'
 import { Page, PageHeader } from '@/components/layout'
 import { Badge, StatusBadge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -26,9 +26,21 @@ const terminal = ['idle', 'completed', 'failed', 'canceled', 'uncertain']
 type PlaygroundView = 'conversation' | 'settings' | 'facts'
 
 export function PlaygroundPage() {
+  const keys = useQuery({
+    queryKey: ['playground-keys'],
+    queryFn: ({ signal }) => accessApi.keys({ page: 1, pageSize: 200 }, signal),
+  })
+  const activeKeys = useMemo(
+    () => keys.data?.items.filter((item) => item.status === 'active') ?? [],
+    [keys.data],
+  )
+  const [gatewayKeyId, setGatewayKeyId] = useState('')
+  const selectedKey = activeKeys.find((item) => item.id === gatewayKeyId) ?? activeKeys[0]
+  const activeGatewayKeyId = gatewayKeyId || selectedKey?.id || ''
   const models = useQuery({
-    queryKey: ['playground-models'],
-    queryFn: ({ signal }) => operationsApi.playgroundModels(signal),
+    queryKey: ['playground-models', activeGatewayKeyId],
+    queryFn: ({ signal }) => playgroundApi.models(activeGatewayKeyId, signal),
+    enabled: Boolean(activeGatewayKeyId),
   })
   const [model, setModel] = useState('')
   const [prompt, setPrompt] = useState('')
@@ -41,9 +53,11 @@ export function PlaygroundPage() {
   const run = usePlaygroundRun()
   const selectedModel = models.data?.find((item) => item.alias === model) ?? models.data?.[0]
   const activeModel = model || selectedModel?.alias || ''
+  const supportsReasoning = selectedModel?.capabilities.includes('reasoning') === true
   const running = !terminal.includes(run.facts.phase)
 
   const canSubmit = Boolean(activeModel && prompt.trim() && !running)
+
   const historyMessages = useMemo(
     () => run.messages.map(({ role, content }) => ({ role, content })),
     [run.messages],
@@ -69,10 +83,11 @@ export function PlaygroundPage() {
       { role: 'user', content: prompt.trim() },
     ]
     const input: PlaygroundRunInput = {
+      gatewayKeyId: activeGatewayKeyId,
       model: activeModel,
       stream,
       messages,
-      reasoningEffort,
+      ...(supportsReasoning ? { reasoningEffort } : {}),
       ...(tools ? { tools } : {}),
     }
     setPrompt('')
@@ -90,7 +105,9 @@ export function PlaygroundPage() {
           </Button>
         }
       />
-      {models.error ? (
+      {keys.error ? (
+        <ErrorState error={keys.error} onRetry={() => void keys.refetch()} />
+      ) : models.error ? (
         <ErrorState error={models.error} onRetry={() => void models.refetch()} />
       ) : (
         <div className="playground-workspace" data-mobile-view={mobileView}>
@@ -122,6 +139,22 @@ export function PlaygroundPage() {
           </div>
 
           <aside id="playground-settings" className="playground-controls" aria-label="请求设置">
+            <Field label="网关 Key" htmlFor="playground-key">
+              <NativeSelect
+                id="playground-key"
+                value={activeGatewayKeyId}
+                onChange={(event) => {
+                  setGatewayKeyId(event.target.value)
+                  setModel('')
+                }}
+              >
+                {activeKeys.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.name} · {item.prefix}…
+                  </option>
+                ))}
+              </NativeSelect>
+            </Field>
             <Field label="模型" htmlFor="playground-model">
               <NativeSelect
                 id="playground-model"
@@ -152,6 +185,7 @@ export function PlaygroundPage() {
               <NativeSelect
                 id="playground-reasoning"
                 value={reasoningEffort}
+                disabled={!supportsReasoning}
                 onChange={(event) =>
                   setReasoningEffort(event.target.value as typeof reasoningEffort)
                 }

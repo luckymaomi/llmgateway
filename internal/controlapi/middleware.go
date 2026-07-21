@@ -54,7 +54,7 @@ func (a *API) requireAdministrator(next http.Handler) http.Handler {
 	})
 }
 
-func (a *API) requireOperator(next http.Handler) http.Handler {
+func (a *API) requireProviderAdministrator(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !principalFromContext(r.Context()).CanOperateProviders() {
 			a.writeIdentityError(w, r, identity.ErrForbidden)

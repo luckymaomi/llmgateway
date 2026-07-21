@@ -15,6 +15,12 @@ SELECT * FROM users WHERE id = sqlc.arg(id);
 -- name: GetUserByEmail :one
 SELECT * FROM users WHERE lower(email) = lower(sqlc.arg(email));
 
+-- name: ListUserDisplayNames :many
+SELECT id, display_name
+FROM users
+WHERE id = ANY(sqlc.arg(user_ids)::uuid[])
+ORDER BY id;
+
 -- name: ListUsers :many
 SELECT * FROM users
 WHERE (sqlc.narg(status)::user_status IS NULL OR status = sqlc.narg(status))
@@ -34,8 +40,24 @@ WHERE id = sqlc.arg(id)
 RETURNING *;
 
 -- name: CreateInvitation :one
-INSERT INTO invitations (code_digest, code_prefix, created_by, role, expires_at)
-VALUES (sqlc.arg(code_digest), sqlc.arg(code_prefix), sqlc.arg(created_by), sqlc.arg(role), sqlc.arg(expires_at))
+INSERT INTO invitations (code_digest, code_prefix, created_by, expires_at)
+VALUES (sqlc.arg(code_digest), sqlc.arg(code_prefix), sqlc.arg(created_by), sqlc.arg(expires_at))
+RETURNING *;
+
+-- name: ClaimInvitationMutation :one
+INSERT INTO invitation_mutations (actor_user_id, idempotency_key, request_fingerprint, request_id)
+VALUES (sqlc.arg(actor_user_id), sqlc.arg(idempotency_key), sqlc.arg(request_fingerprint), sqlc.arg(request_id))
+ON CONFLICT (actor_user_id, idempotency_key) DO NOTHING
+RETURNING *;
+
+-- name: GetInvitationMutation :one
+SELECT * FROM invitation_mutations
+WHERE actor_user_id = sqlc.arg(actor_user_id) AND idempotency_key = sqlc.arg(idempotency_key);
+
+-- name: CompleteInvitationMutation :one
+UPDATE invitation_mutations
+SET invitation_id = sqlc.arg(invitation_id), result = sqlc.arg(result)
+WHERE id = sqlc.arg(id) AND invitation_id IS NULL
 RETURNING *;
 
 -- name: GetInvitationByDigestForUpdate :one
@@ -82,6 +104,63 @@ INSERT INTO gateway_keys (user_id, name, prefix, secret_digest, expires_at)
 VALUES (sqlc.arg(user_id), sqlc.arg(name), sqlc.arg(prefix), sqlc.arg(secret_digest), sqlc.narg(expires_at))
 RETURNING *;
 
+-- name: ClaimGatewayKeyMutation :one
+INSERT INTO gateway_key_mutations (actor_user_id, idempotency_key, request_fingerprint, request_id)
+VALUES (sqlc.arg(actor_user_id), sqlc.arg(idempotency_key), sqlc.arg(request_fingerprint), sqlc.arg(request_id))
+ON CONFLICT (actor_user_id, idempotency_key) DO NOTHING
+RETURNING *;
+
+-- name: GetGatewayKeyMutation :one
+SELECT * FROM gateway_key_mutations
+WHERE actor_user_id = sqlc.arg(actor_user_id) AND idempotency_key = sqlc.arg(idempotency_key);
+
+-- name: CompleteGatewayKeyMutation :one
+UPDATE gateway_key_mutations
+SET gateway_key_id = sqlc.arg(gateway_key_id), result = sqlc.arg(result)
+WHERE id = sqlc.arg(id)
+RETURNING *;
+
+-- name: GetUserForGatewayKeyCreation :one
+SELECT * FROM users WHERE id = sqlc.arg(id) FOR SHARE;
+
+-- name: GetModelForGatewayKeyBinding :one
+SELECT model.model_id AS id, model.public_name
+FROM active_config active
+JOIN config_revision_models model ON model.revision_id = active.revision_id
+WHERE active.singleton = true AND model.model_id = sqlc.arg(id)
+  AND EXISTS (
+    SELECT 1
+    FROM config_revision_routes route
+    WHERE route.revision_id = active.revision_id
+      AND route.model_id = model.model_id
+  )
+FOR SHARE OF active;
+
+-- name: BindGatewayKeyModel :exec
+INSERT INTO gateway_key_models (gateway_key_id, model_id)
+VALUES (sqlc.arg(gateway_key_id), sqlc.arg(model_id));
+
+-- name: ListGatewayKeyModelBindingsByUser :many
+SELECT gkm.gateway_key_id, gkm.model_id, published.public_name
+FROM gateway_key_models gkm
+JOIN gateway_keys k ON k.id = gkm.gateway_key_id
+JOIN LATERAL (
+  SELECT model.public_name
+  FROM config_revision_models model
+  JOIN config_revisions revision ON revision.id = model.revision_id
+  WHERE model.model_id = gkm.model_id AND revision.published_at IS NOT NULL
+  ORDER BY revision.revision DESC
+  LIMIT 1
+) published ON true
+WHERE k.user_id = sqlc.arg(user_id)
+ORDER BY gkm.gateway_key_id, published.public_name, gkm.model_id;
+
+-- name: IsGatewayKeyAuthorizedForModel :one
+SELECT EXISTS (
+  SELECT 1 FROM gateway_key_models
+  WHERE gateway_key_id = sqlc.arg(gateway_key_id) AND model_id = sqlc.arg(model_id)
+);
+
 -- name: GetGatewayKeyByDigest :one
 SELECT k.*, u.status AS user_status, u.role AS user_role
 FROM gateway_keys k
@@ -90,24 +169,31 @@ WHERE k.secret_digest = sqlc.arg(secret_digest)
   AND k.revoked_at IS NULL
   AND (k.expires_at IS NULL OR k.expires_at > now());
 
+-- name: GetGatewayKeyPrincipalByID :one
+SELECT k.*, u.status AS user_status, u.role AS user_role
+FROM gateway_keys k
+JOIN users u ON u.id = k.user_id
+WHERE k.id = sqlc.arg(id)
+  AND k.revoked_at IS NULL
+  AND (k.expires_at IS NULL OR k.expires_at > now());
+
 -- name: ListGatewayKeysByUser :many
 SELECT id, user_id, name, prefix, expires_at, revoked_at, last_used_at, created_at
 FROM gateway_keys WHERE user_id = sqlc.arg(user_id) ORDER BY created_at DESC, id;
 
--- name: RevokeGatewayKey :execrows
-UPDATE gateway_keys SET revoked_at = now() WHERE id = sqlc.arg(id) AND revoked_at IS NULL;
+-- name: GetGatewayKeyForRevocation :one
+SELECT id, user_id, revoked_at
+FROM gateway_keys
+WHERE id = sqlc.arg(id)
+FOR UPDATE;
 
--- name: RevokeOwnedGatewayKey :execrows
-UPDATE gateway_keys SET revoked_at = now() WHERE id = sqlc.arg(id) AND user_id = sqlc.arg(user_id) AND revoked_at IS NULL;
+-- name: GetGatewayKeyRevocationState :one
+SELECT user_id, revoked_at
+FROM gateway_keys
+WHERE id = sqlc.arg(id);
+
+-- name: MarkGatewayKeyRevoked :execrows
+UPDATE gateway_keys SET revoked_at = now() WHERE id = sqlc.arg(id) AND revoked_at IS NULL;
 
 -- name: TouchGatewayKey :exec
 UPDATE gateway_keys SET last_used_at = now() WHERE id = sqlc.arg(id);
-
--- name: AuthorizeUserModel :exec
-INSERT INTO model_authorizations (user_id, model_id) VALUES (sqlc.arg(user_id), sqlc.arg(model_id)) ON CONFLICT DO NOTHING;
-
--- name: RevokeUserModel :execrows
-DELETE FROM model_authorizations WHERE user_id = sqlc.arg(user_id) AND model_id = sqlc.arg(model_id);
-
--- name: IsUserAuthorizedForModel :one
-SELECT EXISTS (SELECT 1 FROM model_authorizations WHERE user_id = sqlc.arg(user_id) AND model_id = sqlc.arg(model_id));

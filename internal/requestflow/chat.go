@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/luckymaomi/llmgateway/internal/canonical"
+	"github.com/luckymaomi/llmgateway/internal/execution"
 	"github.com/luckymaomi/llmgateway/internal/providers"
 	"github.com/luckymaomi/llmgateway/internal/resilience"
 	"github.com/luckymaomi/llmgateway/internal/routing"
@@ -18,20 +19,37 @@ func (s *Service) Chat(ctx context.Context, command ChatCommand) (ChatResult, *c
 	if prepareError != nil {
 		return ChatResult{}, prepareError
 	}
+	defer run.releaseAdmission()
+	defer run.stopExecution()
+	ctx = run.context
 	if run.request.Stream {
-		_ = s.accounting.Release(ctx, run.accepted.RequestID, "invalid_request", "stream request used non-stream workflow")
+		_ = s.accounting.Release(context.WithoutCancel(ctx), run.claim, "invalid_request", "stream request used non-stream workflow")
 		return ChatResult{}, &canonical.Error{Kind: canonical.ErrorInvalidRequest, Code: "stream_requires_stream_endpoint", Message: "streaming request requires a stream sink", Parameter: "stream", HTTPStatus: http.StatusBadRequest}
 	}
 
 	excluded := make([]routing.CandidateID, 0, len(run.candidates))
 	startedAt := s.clock.Now().UTC()
 	for attemptNumber := 1; ; attemptNumber++ {
-		candidate, circuitPermit, selectionError := s.candidateDecision(run, excluded)
+		var candidate Candidate
+		var circuitPermit *resilience.Permit
+		var selectionError *canonical.Error
+		var lease Lease
+		if attemptNumber == 1 {
+			candidate = run.initialCandidate
+			lease = run.initialLease
+			run.initialLease = nil
+			circuitPermit, selectionError = s.acquireCircuit(candidate.ID)
+		} else {
+			candidate, circuitPermit, selectionError = s.candidateDecision(run, excluded)
+		}
 		if selectionError != nil {
-			_ = s.accounting.Release(ctx, run.accepted.RequestID, selectionError.Code, selectionError.Message)
+			if lease != nil {
+				_ = lease.Release(context.WithoutCancel(ctx))
+			}
+			_ = s.accounting.Release(context.WithoutCancel(ctx), run.claim, selectionError.Code, selectionError.Message)
 			return ChatResult{}, selectionError
 		}
-		result, attemptError := s.nonStreamAttempt(ctx, run, candidate, circuitPermit, attemptNumber)
+		result, attemptError := s.nonStreamAttempt(ctx, run, candidate, circuitPermit, attemptNumber, lease)
 		if attemptError == nil {
 			return result, nil
 		}
@@ -44,7 +62,7 @@ func (s *Service) Chat(ctx context.Context, command ChatCommand) (ChatResult, *c
 			RetryAfter: retryAfter(attemptError.RetryAfter, s.clock.Now().UTC()),
 		})
 		if err != nil || decision.Action != resilience.RetrySchedule {
-			_ = s.accounting.Release(ctx, run.accepted.RequestID, attemptError.Code, attemptError.Message)
+			_ = s.accounting.Release(context.WithoutCancel(ctx), run.claim, attemptError.Code, attemptError.Message)
 			return ChatResult{}, attemptError
 		}
 		excluded = append(excluded, routing.CandidateID(candidate.ID.String()))
@@ -52,57 +70,50 @@ func (s *Service) Chat(ctx context.Context, command ChatCommand) (ChatResult, *c
 			excluded = excluded[:0]
 		}
 		if err := waitUntil(ctx, decision.NextAttemptAt, s.clock.Now()); err != nil {
-			_ = s.accounting.Release(context.WithoutCancel(ctx), run.accepted.RequestID, "canceled", "request canceled during retry wait")
+			_ = s.accounting.Release(context.WithoutCancel(ctx), run.claim, "canceled", "request canceled during retry wait")
 			return ChatResult{}, &canonical.Error{Kind: canonical.ErrorInvalidRequest, Code: "request_canceled", Message: "request was canceled", Cause: err}
 		}
 	}
 }
 
-func (s *Service) nonStreamAttempt(ctx context.Context, run execution, candidate Candidate, circuitPermit *resilience.Permit, sequence int) (ChatResult, *canonical.Error) {
-	lease, _, err := s.coordinator.Acquire(ctx, LeaseRequest{
-		RequestID: run.accepted.RequestID, UserID: run.command.Principal.UserID, GatewayKeyID: run.command.Principal.KeyID,
-		ModelID: run.model.ID, ProviderID: run.model.ProviderID, CredentialID: candidate.ID, EstimatedTokens: run.estimatedTokens,
-		RPMLimit: candidate.RPMLimit, TPMLimit: candidate.TPMLimit, Concurrency: candidate.ConcurrencyLimit,
-	})
-	if err != nil {
-		circuitPermit.Complete(resilience.PermitReleased)
-		return ChatResult{}, &canonical.Error{Kind: canonical.ErrorRateLimit, Code: "admission_unavailable", Message: "request capacity is temporarily unavailable", Cause: err}
+func (s *Service) nonStreamAttempt(ctx context.Context, run workflowRun, candidate Candidate, circuitPermit *resilience.Permit, sequence int, lease Lease) (ChatResult, *canonical.Error) {
+	if lease == nil {
+		var err error
+		lease, _, err = s.coordinator.Acquire(ctx, s.leaseRequest(run.claim, run, candidate))
+		if err != nil {
+			circuitPermit.Complete(resilience.PermitReleased)
+			return ChatResult{}, admissionError(err)
+		}
 	}
 	defer func() { _ = lease.Release(context.WithoutCancel(ctx)) }()
+	attemptContext := lease.Context()
 
-	attemptID, err := s.repository.CreateAttempt(ctx, run.accepted.RequestID, candidate.ID, sequence)
+	attemptID, err := s.repository.CreateAttempt(ctx, run.claim, candidate.ID, sequence)
 	if err != nil {
 		circuitPermit.Complete(resilience.PermitReleased)
 		return ChatResult{}, storageError("attempt_create_failed", err)
 	}
-	adapter, client, request, buildError := s.buildUpstream(ctx, run, candidate)
+	adapter, client, request, buildError := s.buildUpstream(attemptContext, run, candidate)
 	if buildError != nil {
 		circuitPermit.Complete(resilience.PermitReleased)
-		_ = s.failAttempt(context.WithoutCancel(ctx), attemptID, buildError, nil)
+		_ = s.failAttempt(context.WithoutCancel(ctx), run.claim, attemptID, buildError, nil)
 		return ChatResult{}, buildError
 	}
 	sentAt := s.clock.Now().UTC()
-	if err := s.repository.UpdateAttempt(ctx, attemptID, AttemptUpdate{Status: "sending", SentAt: &sentAt}); err != nil {
+	if err := s.repository.UpdateAttempt(ctx, run.claim, attemptID, AttemptUpdate{Status: "sending", SentAt: &sentAt}); err != nil {
 		circuitPermit.Complete(resilience.PermitReleased)
 		return ChatResult{}, storageError("attempt_state_failed", err)
 	}
 	response, err := client.Do(request)
 	if err != nil {
 		circuitPermit.Complete(resilience.PermitFailed)
-		kind := string(canonical.ErrorUncertain)
-		completedAt := s.clock.Now().UTC()
-		_ = s.repository.UpdateAttempt(context.WithoutCancel(ctx), attemptID, AttemptUpdate{Status: "uncertain", ErrorKind: &kind, CompletedAt: &completedAt})
-		usage := Usage{InputTokens: EstimateInputTokens(run.request), OutputTokens: estimateOutputBudget(run.request), Source: canonical.UsageEstimated}
-		_ = s.accounting.Compensate(context.WithoutCancel(ctx), run.accepted.RequestID, usage, "upstream send outcome is uncertain")
-		return ChatResult{}, &canonical.Error{Kind: canonical.ErrorUncertain, Code: "upstream_outcome_uncertain", Message: "upstream request outcome is uncertain", Cause: err}
+		return ChatResult{}, s.markNonStreamUncertain(ctx, run, attemptID, nil, err)
 	}
 	defer response.Body.Close()
 	body, readError := readResponse(response, s.config.MaxResponseBytes)
 	if readError != nil {
 		circuitPermit.Complete(resilience.PermitFailed)
-		providerError := &canonical.Error{Kind: canonical.ErrorProviderTemporary, Code: "provider_response_read_failed", Message: "provider response could not be read", Cause: readError}
-		_ = s.failAttempt(context.WithoutCancel(ctx), attemptID, providerError, &response.StatusCode)
-		return ChatResult{}, providerError
+		return ChatResult{}, s.markNonStreamUncertain(ctx, run, attemptID, &response.StatusCode, readError)
 	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
 		providerError := adapter.ClassifyError(response.StatusCode, response.Header, body)
@@ -111,33 +122,60 @@ func (s *Service) nonStreamAttempt(ctx context.Context, run execution, candidate
 		} else {
 			circuitPermit.Complete(resilience.PermitReleased)
 		}
-		_ = s.failAttempt(context.WithoutCancel(ctx), attemptID, providerError, &response.StatusCode)
+		if response.StatusCode >= http.StatusInternalServerError {
+			return ChatResult{}, s.markNonStreamUncertain(ctx, run, attemptID, &response.StatusCode, providerError)
+		}
+		_ = s.failAttempt(context.WithoutCancel(ctx), run.claim, attemptID, providerError, &response.StatusCode)
 		return ChatResult{}, providerError
 	}
 	parsed, err := adapter.ParseResponse(response.StatusCode, response.Header, body)
 	if err != nil {
 		circuitPermit.Complete(resilience.PermitFailed)
-		providerError := asCanonical(err, "provider_contract_error")
-		_ = s.failAttempt(context.WithoutCancel(ctx), attemptID, providerError, &response.StatusCode)
-		return ChatResult{}, providerError
+		return ChatResult{}, s.markNonStreamUncertain(ctx, run, attemptID, &response.StatusCode, err)
 	}
 	completedAt := s.clock.Now().UTC()
 	status := response.StatusCode
-	if err := s.repository.UpdateAttempt(ctx, attemptID, AttemptUpdate{Status: "completed", HTTPStatus: &status, UpstreamRequestID: optionalString(parsed.RequestID), FirstByteAt: &completedAt, CompletedAt: &completedAt}); err != nil {
+	usage := responseUsage(run.request, parsed)
+	parsed.Model = run.model.PublicName
+	result := ChatResult{RequestID: run.accepted.RequestID, Response: parsed}
+	var resultPersistenceError error
+	if run.command.ResultSink != nil {
+		resultPersistenceError = run.command.ResultSink(context.WithoutCancel(ctx), result)
+	}
+	if err := s.repository.UpdateAttempt(ctx, run.claim, attemptID, AttemptUpdate{
+		Status: "completed", HTTPStatus: &status, UpstreamRequestID: optionalString(parsed.RequestID),
+		FirstByteAt: &completedAt, CompletedAt: &completedAt, Usage: &usage,
+		Credential: credentialSuccess(completedAt),
+	}); err != nil {
 		circuitPermit.Complete(resilience.PermitReleased)
-		_ = s.accounting.Compensate(context.WithoutCancel(ctx), run.accepted.RequestID, responseUsage(run.request, parsed), "attempt completion could not be persisted")
 		return ChatResult{}, storageError("attempt_completion_failed", err)
 	}
-	if err := s.accounting.Settle(ctx, run.accepted.RequestID, responseUsage(run.request, parsed)); err != nil {
+	if err := s.accounting.Settle(ctx, run.claim, usage); err != nil {
 		circuitPermit.Complete(resilience.PermitReleased)
 		return ChatResult{}, storageError("usage_settlement_failed", err)
 	}
 	circuitPermit.Complete(resilience.PermitSucceeded)
-	parsed.Model = run.model.PublicName
-	return ChatResult{RequestID: run.accepted.RequestID, Response: parsed}, nil
+	if resultPersistenceError != nil {
+		return ChatResult{}, storageError("result_persistence_failed", resultPersistenceError)
+	}
+	return result, nil
 }
 
-func (s *Service) buildUpstream(ctx context.Context, run execution, candidate Candidate) (providers.Adapter, *http.Client, *http.Request, *canonical.Error) {
+func (s *Service) markNonStreamUncertain(ctx context.Context, run workflowRun, attemptID uuid.UUID, status *int, cause error) *canonical.Error {
+	providerError := &canonical.Error{Kind: canonical.ErrorUncertain, Code: "upstream_outcome_uncertain", Message: "upstream request outcome is uncertain", Cause: cause}
+	kind := string(providerError.Kind)
+	completedAt := s.clock.Now().UTC()
+	stateErr := s.repository.MarkExecutionUncertain(context.WithoutCancel(ctx), run.claim, attemptID, AttemptUpdate{
+		Status: "uncertain", HTTPStatus: status, ErrorKind: &kind, CompletedAt: &completedAt,
+		Credential: s.credentialFailure(providerError, completedAt, ctx.Err() != nil || errors.Is(cause, context.Canceled)),
+	}, kind, providerError.Message)
+	if stateErr != nil && !errors.Is(stateErr, execution.ErrFenced) {
+		return storageError("uncertain_state_failed", stateErr)
+	}
+	return providerError
+}
+
+func (s *Service) buildUpstream(ctx context.Context, run workflowRun, candidate Candidate) (providers.Adapter, *http.Client, *http.Request, *canonical.Error) {
 	adapter, err := s.factory.Adapter(run.model)
 	if err != nil {
 		return nil, nil, nil, &canonical.Error{Kind: canonical.ErrorProviderConfiguration, Code: "adapter_configuration", Message: "provider adapter is invalid", Cause: err}
@@ -158,13 +196,39 @@ func (s *Service) buildUpstream(ctx context.Context, run execution, candidate Ca
 	return adapter, client, request, nil
 }
 
-func (s *Service) failAttempt(ctx context.Context, attemptID uuid.UUID, providerError *canonical.Error, status *int) error {
+func (s *Service) failAttempt(ctx context.Context, claim execution.Claim, attemptID uuid.UUID, providerError *canonical.Error, status *int) error {
 	completedAt := s.clock.Now().UTC()
 	kind := string(providerError.Kind)
-	return s.repository.UpdateAttempt(ctx, attemptID, AttemptUpdate{
+	return s.repository.UpdateAttempt(ctx, claim, attemptID, AttemptUpdate{
 		Status: "failed", HTTPStatus: status, ErrorKind: &kind,
 		RetryAfterAt: retryAfterAt(providerError.RetryAfter, completedAt), CompletedAt: &completedAt,
+		Credential: s.credentialFailure(providerError, completedAt, false),
 	})
+}
+
+func credentialSuccess(observedAt time.Time) *CredentialObservation {
+	return &CredentialObservation{Kind: CredentialSucceeded, ObservedAt: observedAt}
+}
+
+func (s *Service) credentialFailure(providerError *canonical.Error, observedAt time.Time, canceledLocally bool) *CredentialObservation {
+	if providerError == nil || canceledLocally || providerError.Code == "client_stream_interrupted" {
+		return nil
+	}
+	observation := &CredentialObservation{Kind: CredentialFailed, ObservedAt: observedAt, ErrorKind: string(providerError.Kind)}
+	switch providerError.Kind {
+	case canonical.ErrorRateLimit, canonical.ErrorProviderTemporary, canonical.ErrorStreamInterrupted, canonical.ErrorUncertain:
+		cooldownUntil := observedAt.Add(s.config.Circuit.OpenDuration)
+		if retryAt := retryAfterAt(providerError.RetryAfter, observedAt); retryAt != nil && retryAt.After(cooldownUntil) {
+			cooldownUntil = *retryAt
+		}
+		observation.CooldownUntil = &cooldownUntil
+	case canonical.ErrorAuthentication, canonical.ErrorPermission, canonical.ErrorQuota,
+		canonical.ErrorProviderConfiguration, canonical.ErrorProviderPermanent, canonical.ErrorUnsupportedCapability:
+		// A nil deadline keeps the credential unavailable until an administrator repairs and re-enables it.
+	default:
+		return nil
+	}
+	return observation
 }
 
 func responseUsage(request canonical.ChatRequest, response canonical.ChatResponse) Usage {

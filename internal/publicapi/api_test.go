@@ -25,12 +25,17 @@ func (f fakeIdentity) AuthenticateGatewayKey(context.Context, string) (identity.
 	return f.principal, f.err
 }
 
+func (f fakeIdentity) GatewayPrincipalByID(context.Context, uuid.UUID) (identity.GatewayPrincipal, error) {
+	return f.principal, f.err
+}
+
 type fakeWorkflow struct {
-	models       []requestflow.Model
-	chatResult   requestflow.ChatResult
-	chatError    *canonical.Error
-	streamEvents []canonical.StreamEvent
-	streamError  *canonical.Error
+	models          []requestflow.Model
+	chatResult      requestflow.ChatResult
+	chatError       *canonical.Error
+	streamRequestID uuid.UUID
+	streamEvents    []canonical.StreamEvent
+	streamError     *canonical.Error
 }
 
 func (f fakeWorkflow) Models(context.Context, uuid.UUID) ([]requestflow.Model, error) {
@@ -42,8 +47,12 @@ func (f fakeWorkflow) Chat(context.Context, requestflow.ChatCommand) (requestflo
 }
 
 func (f fakeWorkflow) Stream(_ context.Context, _ requestflow.ChatCommand, sink requestflow.StreamSink) *canonical.Error {
+	requestID := f.streamRequestID
+	if requestID == uuid.Nil {
+		requestID = uuid.New()
+	}
 	for _, event := range f.streamEvents {
-		if err := sink(uuid.New(), event); err != nil {
+		if err := sink(requestID, event); err != nil {
 			return &canonical.Error{Kind: canonical.ErrorStreamInterrupted, Code: "sink", Message: err.Error()}
 		}
 	}
@@ -84,7 +93,8 @@ func TestChatCompletionPresentsCanonicalResponse(t *testing.T) {
 }
 
 func TestStreamCommitsOnlyWhenWorkflowEmits(t *testing.T) {
-	api := New(fakeIdentity{principal: identity.GatewayPrincipal{UserID: uuid.New(), KeyID: uuid.New()}}, fakeWorkflow{streamEvents: []canonical.StreamEvent{
+	streamRequestID := uuid.New()
+	api := New(fakeIdentity{principal: identity.GatewayPrincipal{UserID: uuid.New(), KeyID: uuid.New()}}, fakeWorkflow{streamRequestID: streamRequestID, streamEvents: []canonical.StreamEvent{
 		{Type: canonical.StreamMessageStart, CompletionID: "chatcmpl_stream", Model: "glm-free", Role: canonical.RoleAssistant},
 		{Type: canonical.StreamContentDelta, CompletionID: "chatcmpl_stream", Model: "glm-free", ContentDelta: "hello"},
 		{Type: canonical.StreamDone, CompletionID: "chatcmpl_stream", Model: "glm-free"},
@@ -93,7 +103,7 @@ func TestStreamCommitsOnlyWhenWorkflowEmits(t *testing.T) {
 	request.Header.Set("Authorization", "Bearer llmg_test")
 	response := httptest.NewRecorder()
 	api.Routes().ServeHTTP(response, request)
-	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "text/event-stream" || !strings.Contains(response.Body.String(), "data: [DONE]") {
+	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "text/event-stream" || response.Header().Get("X-Gateway-Request-ID") != streamRequestID.String() || !strings.Contains(response.Body.String(), "data: [DONE]") {
 		t.Fatalf("unexpected stream response: %d %s", response.Code, response.Body.String())
 	}
 }

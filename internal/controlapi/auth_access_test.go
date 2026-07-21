@@ -3,6 +3,7 @@ package controlapi
 import (
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -91,22 +92,108 @@ func TestAccessManagementContract(t *testing.T) {
 	}
 
 	expiresAt := time.Now().UTC().Add(48 * time.Hour)
-	invitationResponse := request(t, fixture.handler, http.MethodPost, "/api/control/invitations", map[string]any{
-		"role": identity.RoleMember, "expiresAt": expiresAt,
-	}, true, true)
+	invitationResponse := request(t, fixture.handler, http.MethodPost, "/api/control/invitations", map[string]any{"expiresAt": expiresAt}, true, true)
 	requireStatus(t, invitationResponse, http.StatusCreated)
-	invitation := decodeData[invitationView](t, invitationResponse)
-	if invitation.Status != "issued" || invitation.Role != identity.RoleMember || invitation.Code != "invite_once_secret" || fixture.identity.createdInvitationFor <= 0 {
-		t.Fatalf("unexpected invitation: %+v", invitation)
+	invitation := decodeData[createdInvitationView](t, invitationResponse)
+	if invitation.Invitation.Status != "issued" || invitation.Invitation.CreatedBy != "Admin" ||
+		invitation.Code != "invite_once_secret" || !fixture.identity.createdInvitationAt.Equal(expiresAt) || fixture.identity.createdInvitationKey.IdempotencyKey == uuid.Nil || fixture.identity.createdInvitationKey.RequestID == "" {
+		t.Fatal("invitation creation did not preserve its command, presentation, and one-time response boundary")
+	}
+	if invitationResponse.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("invitation secret response was cacheable")
+	}
+	if len(fixture.identity.displayNameCalls) != 0 {
+		t.Fatal("invitation creation performed a display-name lookup after its mutation")
+	}
+	claimTime := fixture.now.Add(2 * time.Minute)
+	fixture.identity.invitations[0].ClaimedBy = &fixture.memberID
+	fixture.identity.invitations[0].ClaimedAt = &claimTime
+	listResponse := request(t, fixture.handler, http.MethodGet, "/api/control/invitations?page=1&pageSize=20", nil, true, false)
+	requireStatus(t, listResponse, http.StatusOK)
+	listed := decodeData[pageView[invitationView]](t, listResponse)
+	if listed.Total != 1 || len(listed.Items) != 1 || listed.Items[0].CreatedBy != "Admin" || listed.Items[0].ClaimedBy == nil || *listed.Items[0].ClaimedBy != "Member" {
+		t.Fatalf("invitation identity presentation = %+v", listed)
+	}
+	if len(fixture.identity.displayNameCalls) != 1 || !slices.Equal(fixture.identity.displayNameCalls[0], []uuid.UUID{fixture.adminID, fixture.memberID}) {
+		t.Fatalf("invitation display-name batches = %v", fixture.identity.displayNameCalls)
+	}
+	if strings.Contains(listResponse.Body.String(), "invite_once_secret") || strings.Contains(listResponse.Body.String(), `"code"`) {
+		t.Fatal("invitation list exposed the one-time code field")
 	}
 
-	keyResponse := request(t, fixture.handler, http.MethodPost, "/api/control/keys", map[string]any{
-		"ownerId": fixture.memberID.String(), "name": "CI", "authorizedModels": []string{},
-	}, true, true)
+	modelID := fixture.activeModelID
+	idempotencyKey := uuid.New()
+	keyResponse := requestWithIdempotencyKey(t, fixture.handler, http.MethodPost, "/api/control/keys", map[string]any{
+		"ownerId": fixture.memberID.String(), "name": "CI", "authorizedModelIds": []string{modelID.String()},
+	}, true, true, idempotencyKey.String())
 	requireStatus(t, keyResponse, http.StatusCreated)
 	created := decodeData[createdGatewayKeyView](t, keyResponse)
-	if created.Secret != "llmg_one_time_secret" || created.Key.OwnerID != fixture.memberID.String() || created.Key.OwnerName != "Member" || created.Key.Status != "active" {
+	if keyResponse.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("gateway-key secret response was cacheable")
+	}
+	if created.Secret != "llmg_one_time_secret" || created.Key.OwnerID != fixture.memberID.String() || created.Key.OwnerName != "Member" || created.Key.Status != "active" ||
+		!slices.Equal(created.Key.AuthorizedModelIDs, []string{modelID.String()}) || !slices.Equal(created.Key.AuthorizedModels, []string{"fast"}) {
 		t.Fatalf("unexpected gateway key: %+v", created)
+	}
+	if fixture.identity.createdKeyOwnerID != fixture.memberID || fixture.identity.createdKeyName != "CI" ||
+		!slices.Equal(fixture.identity.createdKeyModelIDs, []uuid.UUID{modelID}) || fixture.identity.createdKeyMutation.IdempotencyKey != idempotencyKey || fixture.identity.createdKeyMutation.RequestID == "" {
+		t.Fatalf("unexpected gateway key command: owner=%s name=%q models=%v mutation=%+v", fixture.identity.createdKeyOwnerID, fixture.identity.createdKeyName, fixture.identity.createdKeyModelIDs, fixture.identity.createdKeyMutation)
+	}
+}
+
+func TestInvitationMutationRequiresIdempotencyKey(t *testing.T) {
+	fixture := newControlFixture(t)
+	body := map[string]any{"expiresAt": time.Now().UTC().Add(24 * time.Hour)}
+	for _, key := range []string{"", "not-a-uuid", uuid.Nil.String()} {
+		response := requestWithIdempotencyKey(t, fixture.handler, http.MethodPost, "/api/control/invitations", body, true, true, key)
+		requireStatus(t, response, http.StatusBadRequest)
+	}
+	if !fixture.identity.createdInvitationAt.IsZero() {
+		t.Fatal("invitation command reached identity without a valid idempotency key")
+	}
+}
+
+func TestGatewayKeyMutationRequiresIdempotencyKey(t *testing.T) {
+	fixture := newControlFixture(t)
+
+	response := requestWithIdempotencyKey(t, fixture.handler, http.MethodPost, "/api/control/keys", map[string]any{
+		"ownerId": fixture.memberID.String(), "name": "CI", "authorizedModelIds": []string{fixture.activeModelID.String()},
+	}, true, true, "")
+	requireStatus(t, response, http.StatusBadRequest)
+	if fixture.identity.createdKeyOwnerID != uuid.Nil {
+		t.Fatalf("gateway key command reached identity without an idempotency key: %s", fixture.identity.createdKeyOwnerID)
+	}
+}
+
+func TestGatewayKeyRevocationHTTPIsReplayableAndHidesForeignKeys(t *testing.T) {
+	fixture := newControlFixture(t)
+	fixture.identity.principal.UserID = fixture.memberID
+	fixture.identity.principal.DisplayName = "Member"
+	fixture.identity.principal.Role = identity.RoleMember
+	ownedKeyID := uuid.New()
+	foreignKeyID := uuid.New()
+	fixture.identity.keys[fixture.memberID] = []identity.GatewayKey{{
+		ID: ownedKeyID, UserID: fixture.memberID, Name: "Owned", Prefix: "llmg_owned", CreatedAt: fixture.now,
+	}}
+	fixture.identity.keys[fixture.adminID] = []identity.GatewayKey{{
+		ID: foreignKeyID, UserID: fixture.adminID, Name: "Foreign", Prefix: "llmg_foreign", CreatedAt: fixture.now,
+	}}
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		response := request(t, fixture.handler, http.MethodPost, "/api/control/keys/"+ownedKeyID.String()+"/revoke", nil, true, true)
+		requireStatus(t, response, http.StatusOK)
+		revoked := decodeData[gatewayKeyView](t, response)
+		if revoked.ID != ownedKeyID.String() || revoked.Status != "revoked" {
+			t.Fatalf("revocation attempt %d response = %+v", attempt, revoked)
+		}
+	}
+
+	foreignResponse := request(t, fixture.handler, http.MethodPost, "/api/control/keys/"+foreignKeyID.String()+"/revoke", nil, true, true)
+	requireStatus(t, foreignResponse, http.StatusNotFound)
+	missingResponse := request(t, fixture.handler, http.MethodPost, "/api/control/keys/"+uuid.NewString()+"/revoke", nil, true, true)
+	requireStatus(t, missingResponse, http.StatusNotFound)
+	if fixture.identity.keys[fixture.adminID][0].RevokedAt != nil {
+		t.Fatal("foreign gateway key was modified through the member control route")
 	}
 }
 
@@ -116,9 +203,8 @@ func TestSessionCapabilityContract(t *testing.T) {
 		role         identity.Role
 		capabilities []string
 	}{
-		{name: "administrator", role: identity.RoleAdministrator, capabilities: []string{"providers:read", "providers:write", "access:read", "access:write", "revisions:publish"}},
-		{name: "operator", role: identity.RoleOperator, capabilities: []string{"providers:read", "providers:write", "revisions:publish"}},
-		{name: "member", role: identity.RoleMember, capabilities: []string{"access:read"}},
+		{name: "administrator", role: identity.RoleAdministrator, capabilities: []string{"providers:read", "providers:write", "credentials:read", "credentials:write", "access:read", "access:write", "ledger:read", "ledger:write", "playground:use", "revisions:publish"}},
+		{name: "member", role: identity.RoleMember, capabilities: []string{"access:read", "ledger:read", "playground:use"}},
 	}
 
 	for _, test := range tests {

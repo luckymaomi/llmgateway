@@ -11,25 +11,28 @@ import (
 )
 
 type ResponsesRequest struct {
-	Chat         canonical.ChatRequest
-	Instructions string
-	Store        bool
-	Input        json.RawMessage
+	Chat               canonical.ChatRequest
+	Instructions       string
+	PreviousResponseID string
+	Store              bool
+	Background         bool
+	Input              json.RawMessage
 }
 
 type responsesWireRequest struct {
-	Model           string          `json:"model"`
-	Input           json.RawMessage `json:"input"`
-	Instructions    string          `json:"instructions,omitempty"`
-	Tools           []responseTool  `json:"tools,omitempty"`
-	ToolChoice      json.RawMessage `json:"tool_choice,omitempty"`
-	Stream          bool            `json:"stream,omitempty"`
-	Store           *bool           `json:"store,omitempty"`
-	Background      bool            `json:"background,omitempty"`
-	MaxOutputTokens *int64          `json:"max_output_tokens,omitempty"`
-	Temperature     *float64        `json:"temperature,omitempty"`
-	TopP            *float64        `json:"top_p,omitempty"`
-	Reasoning       *struct {
+	Model              string          `json:"model"`
+	Input              json.RawMessage `json:"input"`
+	Instructions       string          `json:"instructions,omitempty"`
+	Tools              []responseTool  `json:"tools,omitempty"`
+	ToolChoice         json.RawMessage `json:"tool_choice,omitempty"`
+	Stream             bool            `json:"stream,omitempty"`
+	Store              *bool           `json:"store,omitempty"`
+	Background         bool            `json:"background,omitempty"`
+	PreviousResponseID string          `json:"previous_response_id,omitempty"`
+	MaxOutputTokens    *int64          `json:"max_output_tokens,omitempty"`
+	Temperature        *float64        `json:"temperature,omitempty"`
+	TopP               *float64        `json:"top_p,omitempty"`
+	Reasoning          *struct {
 		Effort string `json:"effort,omitempty"`
 	} `json:"reasoning,omitempty"`
 	Text *struct {
@@ -73,8 +76,8 @@ func ParseResponsesRequest(body io.Reader, requestID string) (ResponsesRequest, 
 	if wire.Model == "" {
 		return ResponsesRequest{}, invalid("missing_model", "model is required", "model", nil)
 	}
-	if wire.Background {
-		return ResponsesRequest{}, invalid("unsupported_background", "background Responses are not supported", "background", nil)
+	if wire.Background && wire.Stream {
+		return ResponsesRequest{}, invalid("unsupported_background_stream", "background streaming is not supported", "stream", nil)
 	}
 	messages, parseError := parseResponseInput(wire.Input)
 	if parseError != nil {
@@ -117,7 +120,65 @@ func ParseResponsesRequest(body io.Reader, requestID string) (ResponsesRequest, 
 	if wire.Store != nil {
 		store = *wire.Store
 	}
-	return ResponsesRequest{Chat: request, Instructions: wire.Instructions, Store: store, Input: append(json.RawMessage(nil), wire.Input...)}, nil
+	return ResponsesRequest{Chat: request, Instructions: wire.Instructions, PreviousResponseID: wire.PreviousResponseID, Store: store, Background: wire.Background, Input: append(json.RawMessage(nil), wire.Input...)}, nil
+}
+
+func StoredResponseMessages(input, output json.RawMessage) ([]canonical.Message, *canonical.Error) {
+	messages, parseError := parseResponseInput(input)
+	if parseError != nil {
+		return nil, parseError
+	}
+	var response struct {
+		Output []struct {
+			Type      string `json:"type"`
+			Role      string `json:"role"`
+			CallID    string `json:"call_id"`
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+			Content   []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+			Summary []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"summary"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(output, &response); err != nil {
+		return nil, invalid("stored_response_invalid", "previous response output is invalid", "previous_response_id", err)
+	}
+	assistant := canonical.Message{Role: canonical.RoleAssistant}
+	for _, item := range response.Output {
+		switch item.Type {
+		case "reasoning":
+			for _, summary := range item.Summary {
+				if summary.Type == "summary_text" {
+					if assistant.Reasoning == nil {
+						assistant.Reasoning = &canonical.ReasoningContent{}
+					}
+					assistant.Reasoning.Text += summary.Text
+				}
+			}
+		case "message":
+			if item.Role != "assistant" {
+				continue
+			}
+			for _, part := range item.Content {
+				if part.Type == "output_text" {
+					assistant.Content = append(assistant.Content, canonical.ContentPart{Type: canonical.ContentPartText, Text: part.Text})
+				}
+			}
+		case "function_call":
+			if item.CallID != "" && item.Name != "" && json.Valid([]byte(item.Arguments)) {
+				assistant.ToolCalls = append(assistant.ToolCalls, canonical.ToolCall{ID: item.CallID, Type: "function", Function: canonical.ToolFunctionCall{Name: item.Name, Arguments: item.Arguments}})
+			}
+		}
+	}
+	if len(assistant.Content) > 0 || len(assistant.ToolCalls) > 0 || assistant.Reasoning != nil {
+		messages = append(messages, assistant)
+	}
+	return messages, nil
 }
 
 func parseResponseInput(raw json.RawMessage) ([]canonical.Message, *canonical.Error) {

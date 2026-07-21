@@ -23,16 +23,6 @@ func TestProviderResponsesBecomeCanonicalFacts(t *testing.T) {
 		wantInput     int64
 	}{
 		{
-			name:    "DeepSeek reasoning and usage",
-			adapter: NewDeepSeek(),
-			body: `{
-				"id":"chat-ds-1","created":1710000000,"model":"deepseek-v4-pro",
-				"choices":[{"index":0,"message":{"role":"assistant","content":"Cloudy tomorrow.","reasoning_content":"The tool result says cloudy."},"finish_reason":"stop"}],
-				"usage":{"prompt_tokens":21,"completion_tokens":9,"total_tokens":30,"prompt_cache_hit_tokens":7,"prompt_cache_miss_tokens":14,"completion_tokens_details":{"reasoning_tokens":4}}
-			}`,
-			wantContent: "Cloudy tomorrow.", wantReasoning: "The tool result says cloudy.", wantInput: 21,
-		},
-		{
 			name:    "Zhipu request identity and reasoning",
 			adapter: NewZhipu(),
 			body: `{
@@ -113,17 +103,30 @@ func TestOpenAICompatibleParsesToolResponseAndDeclaredRequestID(t *testing.T) {
 	}
 }
 
-func TestDeepSeekStreamReassemblesReasoningToolsAndUsage(t *testing.T) {
+func TestOpenAICompatibleStreamReassemblesReasoningToolsAndUsage(t *testing.T) {
 	t.Parallel()
+	capabilities := NarrowOpenAICompatibleCapabilities()
+	capabilities.Streaming = true
+	capabilities.Tools = true
+	capabilities.ToolStreaming = true
+	capabilities.ReasoningContent = true
+	capabilities.ResponseUsage = true
+	capabilities.StreamUsage = true
+	adapter, err := NewOpenAICompatible(OpenAICompatibleOptions{
+		BaseURL: "https://llm.example/v1", Capabilities: capabilities,
+	})
+	if err != nil {
+		t.Fatalf("create adapter: %v", err)
+	}
 
 	input := []byte(
-		"data: {\"id\":\"stream-1\",\"created\":1710000100,\"model\":\"deepseek-v4-pro\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"reasoning_content\":\"Need weather.\"},\"finish_reason\":null}]}\r\n\r\n" +
-			"data: {\"id\":\"stream-1\",\"created\":1710000100,\"model\":\"deepseek-v4-pro\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_weather\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\"}}]},\"finish_reason\":null}]}\n\n" +
-			"data: {\"id\":\"stream-1\",\"created\":1710000100,\"model\":\"deepseek-v4-pro\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"Hangzhou\\\"}\"}}]},\"finish_reason\":null}]}\n\n" +
-			"data: {\"id\":\"stream-1\",\"created\":1710000100,\"model\":\"deepseek-v4-pro\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":8,\"total_tokens\":28}}\n\n" +
+		"data: {\"id\":\"stream-1\",\"created\":1710000100,\"model\":\"reasoning-chat\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"reasoning_content\":\"Need weather.\"},\"finish_reason\":null}]}\r\n\r\n" +
+			"data: {\"id\":\"stream-1\",\"created\":1710000100,\"model\":\"reasoning-chat\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_weather\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\"}}]},\"finish_reason\":null}]}\n\n" +
+			"data: {\"id\":\"stream-1\",\"created\":1710000100,\"model\":\"reasoning-chat\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"Hangzhou\\\"}\"}}]},\"finish_reason\":null}]}\n\n" +
+			"data: {\"id\":\"stream-1\",\"created\":1710000100,\"model\":\"reasoning-chat\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":8,\"total_tokens\":28}}\n\n" +
 			"data: [DONE]\n\n")
 
-	parser := NewDeepSeek().ParseStream()
+	parser := adapter.ParseStream()
 	var events []canonical.StreamEvent
 	pattern := []int{1, 7, 2, 13, 3, 5}
 	for offset, patternIndex := 0, 0; offset < len(input); patternIndex++ {
@@ -160,7 +163,7 @@ func TestDeepSeekStreamReassemblesReasoningToolsAndUsage(t *testing.T) {
 		if events[index].Type != wantType {
 			t.Fatalf("event %d type = %q, want %q", index, events[index].Type, wantType)
 		}
-		if events[index].CompletionID != "stream-1" || events[index].Model != "deepseek-v4-pro" {
+		if events[index].CompletionID != "stream-1" || events[index].Model != "reasoning-chat" {
 			t.Fatalf("event %d metadata = %#v", index, events[index])
 		}
 		if events[index].CreatedAt != time.Unix(1710000100, 0).UTC() {
@@ -245,7 +248,7 @@ func TestExplicitStreamErrorIsTerminalFailureFact(t *testing.T) {
 func TestMalformedSuccessJSONReturnsProviderContractError(t *testing.T) {
 	t.Parallel()
 
-	_, err := NewDeepSeek().ParseResponse(http.StatusOK, nil, []byte(`{"id":"one"}{"id":"two"}`))
+	_, err := NewAgnes().ParseResponse(http.StatusOK, nil, []byte(`{"id":"one"}{"id":"two"}`))
 	var providerError *canonical.Error
 	if !errors.As(err, &providerError) || providerError.Kind != canonical.ErrorProviderPermanent || providerError.Code != "malformed_response" {
 		t.Fatalf("error = %#v", err)

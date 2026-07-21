@@ -1,11 +1,8 @@
 import {
-  Activity,
   BookOpenCheck,
   Boxes,
   FlaskConical,
   KeyRound,
-  ScrollText,
-  Settings2,
   UsersRound,
   type LucideIcon,
 } from 'lucide-react'
@@ -21,13 +18,6 @@ export interface NavigationItem {
 }
 
 const managementNavigation: NavigationItem[] = [
-  {
-    label: '总览',
-    to: '/overview',
-    capability: 'overview:read',
-    icon: Activity,
-    activePrefix: '/overview',
-  },
   {
     label: 'Provider 与模型',
     to: '/providers/providers',
@@ -51,17 +41,10 @@ const managementNavigation: NavigationItem[] = [
   },
   {
     label: '用量与账本',
-    to: '/ledger/usage',
+    to: '/ledger/entitlements',
     capability: 'ledger:read',
     icon: BookOpenCheck,
     activePrefix: '/ledger',
-  },
-  {
-    label: '请求与审计',
-    to: '/operations/requests',
-    capability: 'operations:read',
-    icon: ScrollText,
-    activePrefix: '/operations',
   },
   {
     label: 'Playground',
@@ -69,13 +52,6 @@ const managementNavigation: NavigationItem[] = [
     capability: 'playground:use',
     icon: FlaskConical,
     activePrefix: '/playground',
-  },
-  {
-    label: '系统设置',
-    to: '/settings/security',
-    capability: 'settings:read',
-    icon: Settings2,
-    activePrefix: '/settings',
   },
 ]
 

@@ -7,30 +7,18 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/luckymaomi/llmgateway/internal/execution"
 	"github.com/luckymaomi/llmgateway/internal/identity"
 )
 
 type repositoryStub struct {
-	authorized      bool
 	created         *NewEntitlement
 	listedUserID    *uuid.UUID
+	usageUserID     *uuid.UUID
 	accepted        *AcceptInput
 	settleCalls     int
 	releaseKind     string
 	compensateCalls int
-}
-
-func (r *repositoryStub) AuthorizeModel(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) error {
-	r.authorized = true
-	return nil
-}
-
-func (r *repositoryStub) RevokeModel(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) error {
-	return nil
-}
-
-func (r *repositoryStub) ListModelAuthorizations(context.Context, uuid.UUID) ([]ModelAuthorization, error) {
-	return []ModelAuthorization{}, nil
 }
 
 func (r *repositoryStub) CreateEntitlement(_ context.Context, input NewEntitlement, _ uuid.UUID) (Entitlement, error) {
@@ -47,22 +35,32 @@ func (r *repositoryStub) ListLedger(context.Context, LedgerFilter) ([]LedgerEven
 	return []LedgerEvent{}, nil
 }
 
+func (r *repositoryStub) ListUsage(_ context.Context, userID *uuid.UUID, _ Page) ([]UsageRecord, error) {
+	r.usageUserID = userID
+	return []UsageRecord{}, nil
+}
+
 func (r *repositoryStub) AcceptRequest(_ context.Context, input AcceptInput) (AcceptedRequest, error) {
 	r.accepted = &input
 	return AcceptedRequest{}, nil
 }
 
-func (r *repositoryStub) Settle(context.Context, uuid.UUID, int64, int64, UsageSource) (Resolution, error) {
+func (r *repositoryStub) Settle(context.Context, uuid.UUID, execution.Claim, int64, int64, UsageSource) (Resolution, error) {
 	r.settleCalls++
 	return Resolution{}, nil
 }
 
-func (r *repositoryStub) Release(_ context.Context, _ uuid.UUID, kind, _ string) (Resolution, error) {
+func (r *repositoryStub) Release(_ context.Context, _ uuid.UUID, _ execution.Claim, kind, _ string) (Resolution, error) {
 	r.releaseKind = kind
 	return Resolution{}, nil
 }
 
-func (r *repositoryStub) Compensate(context.Context, uuid.UUID, int64, int64, UsageSource, string, string) (Resolution, error) {
+func (r *repositoryStub) ReleaseAccepted(_ context.Context, _ uuid.UUID, kind, _ string) (Resolution, error) {
+	r.releaseKind = kind
+	return Resolution{}, nil
+}
+
+func (r *repositoryStub) Compensate(context.Context, uuid.UUID, execution.Claim, int64, int64, UsageSource, string, string) (Resolution, error) {
 	r.compensateCalls++
 	return Resolution{}, nil
 }
@@ -80,7 +78,7 @@ func TestAdministratorCreatesAnEntitlementWithExplicitScopeAndReason(t *testing.
 	adminID, userID := uuid.New(), uuid.New()
 	now := time.Date(2026, 7, 19, 12, 0, 0, 0, time.FixedZone("test", 8*60*60))
 	created, err := service.CreateEntitlement(context.Background(), activePrincipal(identity.RoleAdministrator, adminID), NewEntitlement{
-		IdempotencyKey: uuid.New(), UserID: userID, Plan: PlanCoding, ResourceDomain: ResourceFree, GrantedTokens: 10_000,
+		IdempotencyKey: uuid.New(), RequestID: "quota-service-grant", UserID: userID, Plan: PlanCoding, ResourceDomain: ResourceFree, GrantedTokens: 10_000,
 		StartsAt: now, ExpiresAt: now.Add(30 * 24 * time.Hour), ConcurrencyLimit: 2, Note: "  team coding allocation  ",
 	})
 	if err != nil {
@@ -104,6 +102,12 @@ func TestMemberQuotaReadsAreScopedToTheAuthenticatedOwner(t *testing.T) {
 	if repository.listedUserID == nil || *repository.listedUserID != memberID {
 		t.Fatalf("repository user filter = %v, want %s", repository.listedUserID, memberID)
 	}
+	if _, err := service.ListUsage(context.Background(), activePrincipal(identity.RoleMember, memberID), nil, Page{}); err != nil {
+		t.Fatalf("ListUsage() error = %v", err)
+	}
+	if repository.usageUserID == nil || *repository.usageUserID != memberID {
+		t.Fatalf("usage repository user filter = %v, want %s", repository.usageUserID, memberID)
+	}
 }
 
 func TestAcceptRequestPassesAStableDigestAndNormalizedIdempotencyKey(t *testing.T) {
@@ -111,38 +115,44 @@ func TestAcceptRequestPassesAStableDigestAndNormalizedIdempotencyKey(t *testing.
 	service, _ := NewService(repository)
 	digest := make([]byte, 32)
 	key := "  retry-42  "
+	configRevisionID := uuid.New()
 	_, err := service.AcceptRequest(context.Background(), AcceptInput{
-		UserID: uuid.New(), GatewayKeyID: uuid.New(), ModelID: uuid.New(), ResourceDomain: ResourceProfessional,
-		RequestDigest: digest, IdempotencyKey: &key, ReservedTokens: 512,
+		RequestID: uuid.New(), UserID: uuid.New(), GatewayKeyID: uuid.New(), ModelID: uuid.New(), ResourceDomain: ResourceProfessional,
+		ConfigRevisionID: &configRevisionID, RequestDigest: digest, IdempotencyKey: &key, ReservedTokens: 512,
 	})
 	if err != nil {
 		t.Fatalf("AcceptRequest() error = %v", err)
 	}
 	digest[0] = 1
-	if repository.accepted == nil || *repository.accepted.IdempotencyKey != "retry-42" || repository.accepted.RequestDigest[0] != 0 {
+	if repository.accepted == nil || repository.accepted.ConfigRevisionID == nil || *repository.accepted.ConfigRevisionID != configRevisionID || *repository.accepted.IdempotencyKey != "retry-42" || repository.accepted.RequestDigest[0] != 0 {
 		t.Fatalf("accepted input = %#v", repository.accepted)
+	}
+}
+
+func TestAcceptRequestRejectsAMissingPublishedConfigurationRevision(t *testing.T) {
+	repository := &repositoryStub{}
+	service, _ := NewService(repository)
+	_, err := service.AcceptRequest(context.Background(), AcceptInput{
+		UserID: uuid.New(), GatewayKeyID: uuid.New(), ModelID: uuid.New(), ResourceDomain: ResourceProfessional,
+		RequestDigest: make([]byte, 32), ReservedTokens: 512,
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("AcceptRequest() error = %v, want ErrInvalidInput", err)
+	}
+	if repository.accepted != nil {
+		t.Fatal("request without a published configuration revision reached persistence")
 	}
 }
 
 func TestUnknownUsageKeepsTheReservationForRecovery(t *testing.T) {
 	repository := &repositoryStub{}
 	service, _ := NewService(repository)
-	_, err := service.Settle(context.Background(), uuid.New(), 0, 0, UsageUnknown)
+	requestID := uuid.New()
+	_, err := service.Settle(context.Background(), requestID, execution.Claim{RequestID: requestID, ExecutionID: uuid.New(), Generation: 1}, 0, 0, UsageUnknown)
 	if !errors.Is(err, ErrUsageUnknown) {
 		t.Fatalf("Settle() error = %v, want ErrUsageUnknown", err)
 	}
 	if repository.settleCalls != 0 {
 		t.Fatalf("repository settle calls = %d, want 0", repository.settleCalls)
-	}
-}
-
-func TestRepeatedAdministrativeModelAuthorizationUsesTheQuotaOwner(t *testing.T) {
-	repository := &repositoryStub{}
-	service, _ := NewService(repository)
-	if err := service.AuthorizeModel(context.Background(), activePrincipal(identity.RoleAdministrator, uuid.New()), uuid.New(), uuid.New()); err != nil {
-		t.Fatalf("AuthorizeModel() error = %v", err)
-	}
-	if !repository.authorized {
-		t.Fatal("quota repository did not receive the model authorization")
 	}
 }

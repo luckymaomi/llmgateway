@@ -3,9 +3,11 @@ package identity
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/mail"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -20,6 +22,7 @@ const (
 	maximumNameRunes      = 80
 	credentialPrefixBytes = 13
 	defaultSessionLength  = 12 * time.Hour
+	maximumKeyModels      = 100
 )
 
 type Service struct {
@@ -138,59 +141,134 @@ func (s *Service) Logout(ctx context.Context, principal Principal) error {
 	return s.repository.RevokeSession(ctx, principal.SessionID)
 }
 
-func (s *Service) CreateInvitation(ctx context.Context, actor Principal, role Role, validFor time.Duration) (Invitation, error) {
-	if !actor.CanManageUsers() {
+func (s *Service) UserDisplayNames(ctx context.Context, actor Principal, userIDs []uuid.UUID) (map[uuid.UUID]string, error) {
+	if actor.Status != StatusActive || !actor.CanOperateProviders() {
+		return nil, ErrForbidden
+	}
+	uniqueUserIDs := make([]uuid.UUID, 0, len(userIDs))
+	seen := make(map[uuid.UUID]struct{}, len(userIDs))
+	for _, userID := range userIDs {
+		if userID == uuid.Nil {
+			return nil, ErrInvalidInput
+		}
+		if _, exists := seen[userID]; exists {
+			continue
+		}
+		seen[userID] = struct{}{}
+		uniqueUserIDs = append(uniqueUserIDs, userID)
+	}
+	return s.repository.UserDisplayNames(ctx, uniqueUserIDs)
+}
+
+func (s *Service) CreateInvitation(ctx context.Context, actor Principal, expiresAt time.Time, request MutationRequest) (Invitation, error) {
+	if actor.UserID == uuid.Nil || actor.Status != StatusActive || !actor.CanManageUsers() {
 		return Invitation{}, ErrForbidden
 	}
-	if role != RoleAdministrator && role != RoleOperator && role != RoleMember {
-		return Invitation{}, ErrInvalidInput
-	}
-	if validFor < time.Hour || validFor > 30*24*time.Hour {
-		return Invitation{}, ErrInvalidInput
-	}
-	random, err := security.GenerateToken()
+	normalizedExpiresAt := expiresAt.UTC().Truncate(time.Microsecond)
+	mutation, err := newInvitationMutation(request, normalizedExpiresAt)
 	if err != nil {
 		return Invitation{}, err
 	}
-	code := "invite_" + random
+	code, err := s.deriveInvitationCode(actor.UserID, request.IdempotencyKey)
+	if err != nil {
+		return Invitation{}, err
+	}
+	replayed, found, err := s.repository.ReplayInvitationMutation(ctx, actor.UserID, mutation)
+	if err != nil {
+		return Invitation{}, err
+	}
+	if found {
+		return attachInvitationCode(replayed, actor.UserID, code)
+	}
+	now := s.now().UTC()
+	if normalizedExpiresAt.Sub(now) < time.Hour || normalizedExpiresAt.Sub(now) > 30*24*time.Hour {
+		return Invitation{}, ErrInvalidInput
+	}
 	digest, err := security.HMACSHA256(s.sessionPepper, []byte(code))
 	if err != nil {
 		return Invitation{}, err
 	}
-	invitation, err := s.repository.CreateInvitation(ctx, actor.UserID, digest[:], credentialPrefix(code), role, s.now().Add(validFor))
+	invitation, err := s.repository.CreateInvitation(ctx, NewInvitation{
+		CodeDigest: digest[:], CodePrefix: credentialPrefix(code), ExpiresAt: normalizedExpiresAt,
+	}, actor.UserID, mutation)
 	if err != nil {
 		return Invitation{}, err
+	}
+	return attachInvitationCode(invitation, actor.UserID, code)
+}
+
+func (s *Service) deriveInvitationCode(actorID, idempotencyKey uuid.UUID) (string, error) {
+	material := "llmgateway:invitation-code:" + actorID.String() + ":" + idempotencyKey.String()
+	derived, err := security.HMACSHA256(s.sessionPepper, []byte(material))
+	if err != nil {
+		return "", err
+	}
+	return "invite_" + base64.RawURLEncoding.EncodeToString(derived[:]), nil
+}
+
+func attachInvitationCode(invitation Invitation, actorID uuid.UUID, code string) (Invitation, error) {
+	if invitation.ID == uuid.Nil || invitation.CreatedBy != actorID || invitation.Code != "" || invitation.CodePrefix != credentialPrefix(code) {
+		return Invitation{}, fmt.Errorf("identity: invalid invitation mutation result")
 	}
 	invitation.Code = code
 	return invitation, nil
 }
 
-func (s *Service) CreateGatewayKey(ctx context.Context, actor Principal, userID uuid.UUID, name string, expiresAt *time.Time) (GatewayKey, error) {
-	if actor.UserID != userID && !actor.CanManageUsers() {
+func (s *Service) CreateGatewayKey(ctx context.Context, actor Principal, userID uuid.UUID, name string, authorizedModelIDs []uuid.UUID, expiresAt *time.Time, request MutationRequest) (GatewayKey, error) {
+	if actor.Status != StatusActive || actor.Role != RoleAdministrator {
 		return GatewayKey{}, ErrForbidden
 	}
 	name = strings.TrimSpace(name)
-	if name == "" || utf8.RuneCountInString(name) > 80 {
+	if userID == uuid.Nil || name == "" || utf8.RuneCountInString(name) > maximumNameRunes || len(authorizedModelIDs) == 0 || len(authorizedModelIDs) > maximumKeyModels {
 		return GatewayKey{}, ErrInvalidInput
 	}
-	if expiresAt != nil && !expiresAt.After(s.now()) {
+	normalizedModelIDs := append([]uuid.UUID(nil), authorizedModelIDs...)
+	sort.Slice(normalizedModelIDs, func(i, j int) bool {
+		return normalizedModelIDs[i].String() < normalizedModelIDs[j].String()
+	})
+	for index, modelID := range normalizedModelIDs {
+		if modelID == uuid.Nil || index > 0 && modelID == normalizedModelIDs[index-1] {
+			return GatewayKey{}, ErrInvalidInput
+		}
+	}
+	var normalizedExpiresAt *time.Time
+	if expiresAt != nil {
+		value := expiresAt.UTC()
+		normalizedExpiresAt = &value
+	}
+	if normalizedExpiresAt != nil && !normalizedExpiresAt.After(s.now()) {
 		return GatewayKey{}, ErrInvalidInput
 	}
-	random, err := security.GenerateToken()
+	mutation, err := newGatewayKeyMutation(request, userID, name, normalizedModelIDs, normalizedExpiresAt)
 	if err != nil {
 		return GatewayKey{}, err
 	}
-	secret := "llmg_" + random
+	secret, err := s.deriveGatewayKeySecret(actor.UserID, request.IdempotencyKey)
+	if err != nil {
+		return GatewayKey{}, err
+	}
 	digest, err := security.HMACSHA256(s.apiKeyPepper, []byte(secret))
 	if err != nil {
 		return GatewayKey{}, err
 	}
-	key, err := s.repository.CreateGatewayKey(ctx, userID, name, credentialPrefix(secret), digest[:], expiresAt, actor.UserID)
+	key, err := s.repository.CreateGatewayKey(ctx, NewGatewayKey{
+		UserID: userID, Name: name, Prefix: credentialPrefix(secret), SecretDigest: digest[:],
+		AuthorizedModelIDs: normalizedModelIDs, ExpiresAt: normalizedExpiresAt,
+	}, actor.UserID, mutation)
 	if err != nil {
 		return GatewayKey{}, err
 	}
 	key.Secret = secret
 	return key, nil
+}
+
+func (s *Service) deriveGatewayKeySecret(actorID, idempotencyKey uuid.UUID) (string, error) {
+	material := "llmgateway:gateway-key-secret:" + actorID.String() + ":" + idempotencyKey.String()
+	derived, err := security.HMACSHA256(s.apiKeyPepper, []byte(material))
+	if err != nil {
+		return "", err
+	}
+	return "llmg_" + base64.RawURLEncoding.EncodeToString(derived[:]), nil
 }
 
 func credentialPrefix(value string) string {
@@ -213,6 +291,17 @@ func (s *Service) AuthenticateGatewayKey(ctx context.Context, secret string) (Ga
 		return GatewayPrincipal{}, ErrInvalidCredential
 	}
 	_ = s.repository.TouchGatewayKey(ctx, principal.KeyID)
+	return principal, nil
+}
+
+func (s *Service) GatewayPrincipalByID(ctx context.Context, keyID uuid.UUID) (GatewayPrincipal, error) {
+	if keyID == uuid.Nil {
+		return GatewayPrincipal{}, ErrInvalidCredential
+	}
+	principal, err := s.repository.FindGatewayPrincipalByID(ctx, keyID)
+	if err != nil || principal.Status != StatusActive {
+		return GatewayPrincipal{}, ErrInvalidCredential
+	}
 	return principal, nil
 }
 
@@ -325,5 +414,5 @@ func normalizePage(page Page) Page {
 }
 
 func IsExpectedError(err error) bool {
-	return errors.Is(err, ErrConflict) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrInvalidCredential) || errors.Is(err, ErrInvalidInvitation) || errors.Is(err, ErrApprovalRequired) || errors.Is(err, ErrDisabled) || errors.Is(err, ErrForbidden) || errors.Is(err, ErrInvalidInput)
+	return errors.Is(err, ErrConflict) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrInvalidCredential) || errors.Is(err, ErrInvalidInvitation) || errors.Is(err, ErrApprovalRequired) || errors.Is(err, ErrDisabled) || errors.Is(err, ErrForbidden) || errors.Is(err, ErrInvalidInput) || errors.Is(err, ErrIdempotencyConflict) || errors.Is(err, ErrOutcomeUnknown)
 }

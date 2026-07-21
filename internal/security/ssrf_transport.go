@@ -2,6 +2,7 @@ package security
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -34,6 +35,7 @@ func NewSSRFSafeTransport(policy SSRFPolicy) (*SSRFSafeTransport, error) {
 		validator: validator,
 		dialer:    &net.Dialer{},
 	}
+	transport.base.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: policy.RootCAs}
 	// Environment proxy variables must not silently create a second outbound
 	// policy. A configured proxy is represented as an explicitly validated
 	// upstream in the owning Provider policy.

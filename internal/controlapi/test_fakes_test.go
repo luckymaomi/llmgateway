@@ -23,7 +23,15 @@ type identityStub struct {
 	registrationCode     string
 	reviewedUserID       uuid.UUID
 	reviewedStatus       identity.Status
-	createdInvitationFor time.Duration
+	createdInvitationAt  time.Time
+	createdInvitationKey identity.MutationRequest
+	createdKeyOwnerID    uuid.UUID
+	createdKeyName       string
+	createdKeyModelIDs   []uuid.UUID
+	createdKeyExpiresAt  *time.Time
+	createdKeyMutation   identity.MutationRequest
+	displayNameCalls     [][]uuid.UUID
+	displayNameError     error
 	loggedOut            bool
 }
 
@@ -48,6 +56,23 @@ func (s *identityStub) Login(context.Context, string, string) (identity.SessionC
 
 func (s *identityStub) AuthenticateSession(context.Context, string) (identity.Principal, error) {
 	return s.principal, nil
+}
+
+func (s *identityStub) UserDisplayNames(_ context.Context, _ identity.Principal, userIDs []uuid.UUID) (map[uuid.UUID]string, error) {
+	s.displayNameCalls = append(s.displayNameCalls, append([]uuid.UUID(nil), userIDs...))
+	if s.displayNameError != nil {
+		return nil, s.displayNameError
+	}
+	result := make(map[uuid.UUID]string, len(userIDs))
+	for _, userID := range userIDs {
+		for _, user := range s.users {
+			if user.ID == userID {
+				result[userID] = user.DisplayName
+				break
+			}
+		}
+	}
+	return result, nil
 }
 
 func (s *identityStub) VerifyCSRF(_ identity.Principal, token string) bool {
@@ -89,9 +114,13 @@ func (s *identityStub) SetUserStatus(_ context.Context, _ identity.Principal, us
 	return identity.User{}, identity.ErrNotFound
 }
 
-func (s *identityStub) CreateInvitation(_ context.Context, actor identity.Principal, role identity.Role, validFor time.Duration) (identity.Invitation, error) {
-	s.createdInvitationFor = validFor
-	item := identity.Invitation{ID: uuid.New(), Role: role, ExpiresAt: time.Now().UTC().Add(validFor), CreatedAt: time.Now().UTC(), CodePrefix: "invite_once_s", Code: "invite_once_secret"}
+func (s *identityStub) CreateInvitation(_ context.Context, actor identity.Principal, expiresAt time.Time, mutation identity.MutationRequest) (identity.Invitation, error) {
+	s.createdInvitationAt = expiresAt
+	s.createdInvitationKey = mutation
+	item := identity.Invitation{
+		ID: uuid.New(), CreatedBy: actor.UserID, ExpiresAt: expiresAt.UTC(), CreatedAt: time.Now().UTC(),
+		CodePrefix: "invite_once_s", Code: "invite_once_secret",
+	}
 	s.invitations = append(s.invitations, item)
 	_ = actor
 	return item, nil
@@ -120,8 +149,23 @@ func (s *identityStub) RevokeInvitation(_ context.Context, _ identity.Principal,
 	return identity.ErrNotFound
 }
 
-func (s *identityStub) CreateGatewayKey(_ context.Context, _ identity.Principal, userID uuid.UUID, name string, expiresAt *time.Time) (identity.GatewayKey, error) {
-	item := identity.GatewayKey{ID: uuid.New(), UserID: userID, Name: name, Prefix: "llmg_test_key", Secret: "llmg_one_time_secret", ExpiresAt: expiresAt, CreatedAt: time.Now().UTC()}
+func (s *identityStub) CreateGatewayKey(_ context.Context, _ identity.Principal, userID uuid.UUID, name string, authorizedModelIDs []uuid.UUID, expiresAt *time.Time, mutation identity.MutationRequest) (identity.GatewayKey, error) {
+	s.createdKeyOwnerID = userID
+	s.createdKeyName = name
+	s.createdKeyModelIDs = append([]uuid.UUID(nil), authorizedModelIDs...)
+	s.createdKeyExpiresAt = expiresAt
+	s.createdKeyMutation = mutation
+	item := identity.GatewayKey{
+		ID:                 uuid.New(),
+		UserID:             userID,
+		Name:               name,
+		Prefix:             "llmg_test_key",
+		Secret:             "llmg_one_time_secret",
+		AuthorizedModelIDs: append([]uuid.UUID(nil), authorizedModelIDs...),
+		AuthorizedModels:   []string{"fast"},
+		ExpiresAt:          expiresAt,
+		CreatedAt:          time.Now().UTC(),
+	}
 	s.keys[userID] = append(s.keys[userID], item)
 	return item, nil
 }
@@ -237,10 +281,68 @@ func (s *registryStub) ListModels(context.Context, identity.Principal) ([]regist
 	return append([]registry.Model(nil), s.models...), nil
 }
 
-func (s *registryStub) CreateCredential(_ context.Context, _ identity.Principal, input registry.NewCredential, _ string) (registry.Credential, error) {
-	item := registry.Credential{ID: uuid.New(), ProviderID: input.ProviderID, Name: input.Name, ResourceDomain: input.ResourceDomain, Status: registry.CredentialActive}
+func (s *registryStub) CreateCredential(_ context.Context, _ identity.Principal, input registry.NewCredential, _ string, _ registry.MutationRequest) (registry.Credential, error) {
+	item := registry.Credential{ID: uuid.New(), ProviderID: input.ProviderID, Name: input.Name, ResourceDomain: input.ResourceDomain, Status: registry.CredentialActive, AuthorizedModelIDs: append([]uuid.UUID(nil), input.AuthorizedModelIDs...)}
+	for _, modelID := range input.AuthorizedModelIDs {
+		for _, model := range s.models {
+			if model.ID == modelID {
+				item.AuthorizedModels = append(item.AuthorizedModels, model.PublicName)
+			}
+		}
+	}
 	s.credentials = append(s.credentials, item)
 	return item, nil
+}
+
+func (s *registryStub) UpdateCredential(_ context.Context, _ identity.Principal, input registry.CredentialChange, _ string, _ registry.MutationRequest) (registry.Credential, error) {
+	for index := range s.credentials {
+		if s.credentials[index].ID != input.ID {
+			continue
+		}
+		if !s.credentials[index].UpdatedAt.Equal(input.ExpectedUpdatedAt) {
+			return registry.Credential{}, registry.ErrConflict
+		}
+		item := s.credentials[index]
+		item.Name = input.Name
+		item.ResourceDomain = input.ResourceDomain
+		item.RPMLimit = input.RPMLimit
+		item.TPMLimit = input.TPMLimit
+		item.ConcurrencyLimit = input.ConcurrencyLimit
+		item.AuthorizedModelIDs = append([]uuid.UUID(nil), input.AuthorizedModelIDs...)
+		item.UpdatedAt = s.nextProviderTime(item.UpdatedAt)
+		s.credentials[index] = item
+		return item, nil
+	}
+	return registry.Credential{}, registry.ErrNotFound
+}
+
+func (s *registryStub) SetCredentialEnabled(_ context.Context, _ identity.Principal, credentialID uuid.UUID, enabled bool, expectedUpdatedAt time.Time, _ registry.MutationRequest) (registry.Credential, error) {
+	for index := range s.credentials {
+		item := s.credentials[index]
+		if item.ID != credentialID {
+			continue
+		}
+		if !item.UpdatedAt.Equal(expectedUpdatedAt) {
+			return registry.Credential{}, registry.ErrConflict
+		}
+		item.Status = registry.CredentialDisabled
+		if enabled {
+			item.Status = registry.CredentialActive
+		}
+		item.UpdatedAt = s.nextProviderTime(item.UpdatedAt)
+		s.credentials[index] = item
+		return item, nil
+	}
+	return registry.Credential{}, registry.ErrNotFound
+}
+
+func (s *registryStub) ProbeCredential(_ context.Context, _ identity.Principal, credentialID uuid.UUID, _ string) (registry.CredentialProbeExecution, registry.Credential, error) {
+	for _, item := range s.credentials {
+		if item.ID == credentialID {
+			return registry.CredentialProbeExecution{Kind: "models", Status: "succeeded"}, item, nil
+		}
+	}
+	return registry.CredentialProbeExecution{}, registry.Credential{}, registry.ErrNotFound
 }
 
 func (s *registryStub) ListCredentials(context.Context, identity.Principal) ([]registry.Credential, error) {
@@ -263,15 +365,25 @@ func (s *registryStub) nextProviderTime(current time.Time) time.Time {
 }
 
 type configurationStub struct {
-	active          configuration.Active
-	activeErr       error
-	revisions       []configuration.Revision
-	publishedID     uuid.UUID
-	expectedVersion int64
+	active            configuration.Active
+	activeErr         error
+	catalog           configuration.Catalog
+	revisions         []configuration.Revision
+	capturedMutation  configuration.MutationRequest
+	publishedID       uuid.UUID
+	expectedVersion   int64
+	publishedAction   configuration.MutationAction
+	publishedMutation configuration.MutationRequest
+	afterCapture      func()
+	afterPublish      func()
 }
 
 func (s *configurationStub) Active(context.Context, identity.Principal) (configuration.Active, error) {
 	return s.active, s.activeErr
+}
+
+func (s *configurationStub) ActiveCatalog(context.Context, identity.Principal) (configuration.Active, configuration.Catalog, error) {
+	return s.active, s.catalog, s.activeErr
 }
 
 func (s *configurationStub) ListRevisions(_ context.Context, _ identity.Principal, offset, size int32) ([]configuration.Revision, error) {
@@ -286,15 +398,38 @@ func (s *configurationStub) ListRevisions(_ context.Context, _ identity.Principa
 	return append([]configuration.Revision(nil), s.revisions[start:end]...), nil
 }
 
-func (s *configurationStub) Publish(_ context.Context, _ identity.Principal, revisionID uuid.UUID, expectedVersion int64) (configuration.Active, error) {
+func (s *configurationStub) CreateRevision(_ context.Context, actor identity.Principal, mutation configuration.MutationRequest) (configuration.Revision, error) {
+	s.capturedMutation = mutation
+	now := time.Now().UTC()
+	revision := configuration.Revision{
+		ID:        uuid.New(),
+		Revision:  int64(len(s.revisions) + 1),
+		Checksum:  "captured-checksum",
+		Catalog:   configuration.CatalogSummary{ProviderCount: 1, ModelCount: 1, CredentialCount: 1, RouteCount: 1},
+		CreatedBy: actor.UserID,
+		CreatedAt: now,
+	}
+	s.revisions = append(s.revisions, revision)
+	if s.afterCapture != nil {
+		s.afterCapture()
+	}
+	return revision, nil
+}
+
+func (s *configurationStub) Publish(_ context.Context, _ identity.Principal, revisionID uuid.UUID, expectedVersion int64, action configuration.MutationAction, mutation configuration.MutationRequest) (configuration.Active, error) {
 	s.publishedID = revisionID
 	s.expectedVersion = expectedVersion
+	s.publishedAction = action
+	s.publishedMutation = mutation
 	for _, revision := range s.revisions {
 		if revision.ID == revisionID {
 			now := time.Now().UTC()
 			revision.PublishedAt = &now
 			s.active = configuration.Active{Revision: revision, Version: expectedVersion + 1, UpdatedAt: now}
 			s.activeErr = nil
+			if s.afterPublish != nil {
+				s.afterPublish()
+			}
 			return s.active, nil
 		}
 	}

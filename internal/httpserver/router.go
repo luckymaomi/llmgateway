@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"context"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"time"
@@ -16,7 +17,7 @@ type Readiness interface {
 	Ready(context.Context) error
 }
 
-func NewRouter(cfg config.Config, logger *slog.Logger, readiness Readiness, registry *prometheus.Registry, controlAPI http.Handler) http.Handler {
+func NewRouter(cfg config.Config, logger *slog.Logger, readiness Readiness, registry *prometheus.Registry, controlAPI, publicAPI http.Handler, webAssets ...fs.FS) http.Handler {
 	router := chi.NewRouter()
 	metrics := NewHTTPMetrics(registry)
 	router.Use(RequestID)
@@ -40,6 +41,17 @@ func NewRouter(cfg config.Config, logger *slog.Logger, readiness Readiness, regi
 	router.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
 	if controlAPI != nil {
 		router.Mount("/api", controlAPI)
+	}
+	if publicAPI != nil {
+		router.Mount("/v1", publicAPI)
+	}
+	if len(webAssets) > 0 && webAssets[0] != nil {
+		web, err := NewWebHandler(webAssets[0])
+		if err != nil {
+			panic(err)
+		}
+		router.Handle("/", web)
+		router.Handle("/*", web)
 	}
 
 	router.NotFound(func(w http.ResponseWriter, r *http.Request) {

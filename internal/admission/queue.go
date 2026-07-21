@@ -69,7 +69,6 @@ func (q *Queue) Enqueue(request Request) (Ticket, error) {
 	ticket := Ticket{
 		ID:         request.ID,
 		UserID:     request.UserID,
-		Priority:   request.Priority,
 		EnqueuedAt: now,
 		Deadline:   now.Add(timeout),
 	}
@@ -83,7 +82,7 @@ func (q *Queue) Enqueue(request Request) (Ticket, error) {
 }
 
 // Dispatch expires elapsed tickets and fills every currently available slot.
-// Within a priority level, users rotate; each user's own queue remains FIFO.
+// Users rotate while each user's own queue remains FIFO.
 func (q *Queue) Dispatch() Dispatch {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -179,27 +178,11 @@ func (q *Queue) takeNextLocked() (Ticket, bool) {
 		return Ticket{}, false
 	}
 
-	var highest Priority
-	hasEligible := false
-	for _, userID := range q.userOrder {
-		queue := q.waiting[userID]
-		if len(queue) == 0 || q.activeByUser[userID] >= q.config.MaxActivePerUser {
-			continue
-		}
-		if !hasEligible || queue[0].Priority > highest {
-			highest = queue[0].Priority
-			hasEligible = true
-		}
-	}
-	if !hasEligible {
-		return Ticket{}, false
-	}
-
 	for offset := 0; offset < len(q.userOrder); offset++ {
 		index := (q.cursor + offset) % len(q.userOrder)
 		userID := q.userOrder[index]
 		queue := q.waiting[userID]
-		if len(queue) == 0 || q.activeByUser[userID] >= q.config.MaxActivePerUser || queue[0].Priority != highest {
+		if len(queue) == 0 || q.activeByUser[userID] >= q.config.MaxActivePerUser {
 			continue
 		}
 		ticket := queue[0]

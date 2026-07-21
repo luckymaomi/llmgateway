@@ -12,12 +12,15 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/luckymaomi/llmgateway/internal/config"
+	"github.com/luckymaomi/llmgateway/internal/security"
+	"github.com/luckymaomi/llmgateway/internal/store"
 	"github.com/luckymaomi/llmgateway/migrations"
 )
 
 func main() {
-	action := flag.String("action", "status", "migration action: status, up, or rebuild")
+	action := flag.String("action", "status", "database action: status, up, rebuild, or rotate-credentials")
 	confirmDataLoss := flag.Bool("confirm-development-data-loss", false, "confirm rebuilding the configured development or test database")
+	confirmKeyRotation := flag.Bool("confirm-key-rotation", false, "confirm re-encrypting Provider credentials with the active master key")
 	flag.Parse()
 
 	cfg, err := config.Load()
@@ -41,6 +44,21 @@ func main() {
 	case "rebuild":
 		if err = authorizeRebuild(cfg, *confirmDataLoss); err == nil {
 			err = migrations.Reset(ctx, database)
+		}
+	case "rotate-credentials":
+		if !*confirmKeyRotation {
+			err = fmt.Errorf("credential rotation requires --confirm-key-rotation")
+			break
+		}
+		var envelope *security.EnvelopeCipher
+		envelope, err = security.NewEnvelopeCipher(cfg.Security.ActiveMasterKeyVersion, cfg.Security.MasterKeys)
+		if err != nil {
+			break
+		}
+		var result store.CredentialRotationResult
+		result, err = store.RotateProviderCredentialEncryption(ctx, database, envelope)
+		if err == nil {
+			fmt.Printf("credential rotation complete: scanned=%d rotated=%d active_key_version=%d\n", result.Scanned, result.Rotated, result.ActiveKeyVersion)
 		}
 	default:
 		err = fmt.Errorf("unsupported action %q", *action)

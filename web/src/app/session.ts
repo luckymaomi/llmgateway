@@ -2,6 +2,8 @@ import { queryOptions, useSuspenseQuery, type QueryClient } from '@tanstack/reac
 
 import { apiClient, authApi, type Capability, type Session } from '@/api'
 
+import { clearPendingBrowserOperations } from './pending-operations'
+
 export const sessionQuery = queryOptions({
   queryKey: ['session'] as const,
   queryFn: authApi.session,
@@ -18,12 +20,14 @@ export function hasCapability(session: Session, capability: Capability): boolean
 }
 
 export function establishAuthenticatedSession(queryClient: QueryClient, session: Session): void {
+  clearPendingBrowserOperations()
   queryClient.clear()
   apiClient.setCsrfToken(session.csrfToken)
   queryClient.setQueryData(sessionQuery.queryKey, session)
 }
 
 export function clearAuthenticatedSession(queryClient: QueryClient): void {
+  clearPendingBrowserOperations()
   queryClient.clear()
   apiClient.setCsrfToken('')
 }

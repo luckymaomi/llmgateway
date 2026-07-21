@@ -10,16 +10,17 @@ import (
 )
 
 type gatewayKeyView struct {
-	ID               string     `json:"id"`
-	OwnerID          string     `json:"ownerId"`
-	OwnerName        string     `json:"ownerName"`
-	Name             string     `json:"name"`
-	Prefix           string     `json:"prefix"`
-	Status           string     `json:"status"`
-	AuthorizedModels []string   `json:"authorizedModels"`
-	ExpiresAt        *time.Time `json:"expiresAt,omitempty"`
-	CreatedAt        time.Time  `json:"createdAt"`
-	LastUsedAt       *time.Time `json:"lastUsedAt,omitempty"`
+	ID                 string     `json:"id"`
+	OwnerID            string     `json:"ownerId"`
+	OwnerName          string     `json:"ownerName"`
+	Name               string     `json:"name"`
+	Prefix             string     `json:"prefix"`
+	Status             string     `json:"status"`
+	AuthorizedModelIDs []string   `json:"authorizedModelIds"`
+	AuthorizedModels   []string   `json:"authorizedModels"`
+	ExpiresAt          *time.Time `json:"expiresAt,omitempty"`
+	CreatedAt          time.Time  `json:"createdAt"`
+	LastUsedAt         *time.Time `json:"lastUsedAt,omitempty"`
 }
 
 type createdGatewayKeyView struct {
@@ -34,29 +35,21 @@ type ownedGatewayKey struct {
 
 func (a *API) createKey(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		OwnerID          uuid.UUID  `json:"ownerId"`
-		Name             string     `json:"name"`
-		AuthorizedModels []string   `json:"authorizedModels"`
-		ExpiresAt        *time.Time `json:"expiresAt"`
+		OwnerID            uuid.UUID   `json:"ownerId"`
+		Name               string      `json:"name"`
+		AuthorizedModelIDs []uuid.UUID `json:"authorizedModelIds"`
+		ExpiresAt          *time.Time  `json:"expiresAt"`
 	}
 	if err := decodeJSON(w, r, &input); err != nil {
 		writeDecodeError(w, r, err)
 		return
 	}
-	if len(input.AuthorizedModels) != 0 {
-		writeProblem(w, r, problem{
-			Status:  http.StatusNotImplemented,
-			Code:    "feature_not_implemented",
-			Message: "Gateway-key model authorization does not have a persistence owner yet.",
-			Stage:   "key_model_authorization",
-		})
+	mutation, ok := identityMutationRequest(w, r)
+	if !ok {
 		return
 	}
 	principal := principalFromContext(r.Context())
 	ownerID := input.OwnerID
-	if ownerID == uuid.Nil && principal.Role == identity.RoleMember {
-		ownerID = principal.UserID
-	}
 	ownerName := principal.DisplayName
 	if ownerID != principal.UserID {
 		users, err := a.collectUsers(r)
@@ -76,12 +69,13 @@ func (a *API) createKey(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	key, err := a.identity.CreateGatewayKey(r.Context(), principal, ownerID, input.Name, input.ExpiresAt)
+	key, err := a.identity.CreateGatewayKey(r.Context(), principal, ownerID, input.Name, input.AuthorizedModelIDs, input.ExpiresAt, mutation)
 	if err != nil {
 		a.writeIdentityError(w, r, err)
 		return
 	}
 	view := presentGatewayKey(key, ownerName, "")
+	w.Header().Set("Cache-Control", "no-store")
 	writeData(w, http.StatusCreated, createdGatewayKeyView{Key: view, Secret: key.Secret})
 }
 
@@ -177,17 +171,22 @@ func presentGatewayKey(key identity.GatewayKey, ownerName, forcedStatus string) 
 			status = "active"
 		}
 	}
+	modelIDs := make([]string, 0, len(key.AuthorizedModelIDs))
+	for _, modelID := range key.AuthorizedModelIDs {
+		modelIDs = append(modelIDs, modelID.String())
+	}
 	return gatewayKeyView{
-		ID:               key.ID.String(),
-		OwnerID:          key.UserID.String(),
-		OwnerName:        ownerName,
-		Name:             key.Name,
-		Prefix:           key.Prefix,
-		Status:           status,
-		AuthorizedModels: []string{},
-		ExpiresAt:        utcTimePointer(key.ExpiresAt),
-		CreatedAt:        key.CreatedAt.UTC(),
-		LastUsedAt:       utcTimePointer(key.LastUsedAt),
+		ID:                 key.ID.String(),
+		OwnerID:            key.UserID.String(),
+		OwnerName:          ownerName,
+		Name:               key.Name,
+		Prefix:             key.Prefix,
+		Status:             status,
+		AuthorizedModelIDs: modelIDs,
+		AuthorizedModels:   append([]string(nil), key.AuthorizedModels...),
+		ExpiresAt:          utcTimePointer(key.ExpiresAt),
+		CreatedAt:          key.CreatedAt.UTC(),
+		LastUsedAt:         utcTimePointer(key.LastUsedAt),
 	}
 }
 

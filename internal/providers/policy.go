@@ -6,7 +6,6 @@ type reasoningWire string
 
 const (
 	reasoningWireStandard reasoningWire = "standard"
-	reasoningWireDeepSeek reasoningWire = "deepseek"
 	reasoningWireZhipu    reasoningWire = "zhipu"
 	reasoningWireAgnes    reasoningWire = "agnes"
 )
@@ -61,44 +60,6 @@ func openAICompatiblePolicy(capabilities Capabilities, requestIDHeader string) w
 		presencePenalty:         numberRange{set: true, min: -2, max: 2},
 		frequencyPenalty:        numberRange{set: true, min: -2, max: 2},
 		classify:                classifyHTTPError,
-	}
-}
-
-func deepSeekPolicy() wirePolicy {
-	return wirePolicy{
-		kind: KindDeepSeek,
-		capabilities: Capabilities{
-			Chat:               true,
-			Models:             true,
-			Streaming:          true,
-			Tools:              true,
-			ToolStreaming:      true,
-			ToolChoiceNone:     true,
-			ToolChoiceAuto:     true,
-			ToolChoiceRequired: true,
-			ToolChoiceNamed:    true,
-			StrictTools:        true,
-			JSONOutput:         true,
-			ReasoningToggle:    true,
-			ReasoningEffort:    true,
-			ReasoningContent:   true,
-			ReasoningReplay:    true,
-			ResponseUsage:      true,
-			StreamUsage:        true,
-		},
-		chatPath:                    "chat/completions",
-		modelsPath:                  "models",
-		reasoning:                   reasoningWireDeepSeek,
-		includeStreamUsage:          true,
-		maxTools:                    128,
-		maxStops:                    16,
-		maxOutputTokens:             integerRange{set: true, min: 1},
-		temperature:                 numberRange{set: true, min: 0, max: 2},
-		topP:                        numberRange{set: true, min: 0, max: 1},
-		presencePenalty:             numberRange{set: true, min: -2, max: 2},
-		frequencyPenalty:            numberRange{set: true, min: -2, max: 2},
-		rejectSamplingWithReasoning: true,
-		classify:                    classifyDeepSeekError,
 	}
 }
 

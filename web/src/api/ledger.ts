@@ -33,9 +33,10 @@ export const ledgerApi = {
       query: listQuery(query),
       ...(signal ? { signal } : {}),
     }),
-  createEntitlement: (input: EntitlementInput) =>
+  createEntitlement: (input: EntitlementInput, idempotencyKey: string) =>
     apiClient.request<Entitlement, EntitlementInput>(`${base}/entitlements`, {
       method: 'POST',
       body: input,
+      headers: { 'Idempotency-Key': idempotencyKey },
     }),
 }

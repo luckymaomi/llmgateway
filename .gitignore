@@ -2,6 +2,10 @@
 .env
 .env.*
 !.env.example
+/key.txt
+
+# Kitty runtime state
+.kitty/
 
 # Editor and operating system
 .idea/
@@ -11,6 +15,9 @@ Thumbs.db
 # Logs
 *.log
 .build/
+web/playwright-report/
+web/test-results/
+web/dist/
 
 # Local reference repositories. The nested module boundary keeps root Go tooling out.
 ref/repos/

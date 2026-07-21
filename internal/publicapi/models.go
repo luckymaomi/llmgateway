@@ -8,7 +8,7 @@ import (
 
 func (a *API) models(w http.ResponseWriter, r *http.Request) {
 	principal := principalFromContext(r.Context())
-	models, err := a.workflow.Models(r.Context(), principal.UserID)
+	models, err := a.catalog.Models(r.Context(), principal.KeyID)
 	if err != nil {
 		a.logger.Error("list public models failed", "request_id", httpserver.RequestIDFromContext(r.Context()), "error", err)
 		httpserver.WriteProblem(w, httpserver.Problem{Type: "about:blank", Title: "Service unavailable", Status: http.StatusServiceUnavailable, Code: "model_catalog_unavailable", RequestID: httpserver.RequestIDFromContext(r.Context())})

@@ -22,7 +22,7 @@ func (s readinessStub) Ready(context.Context) error { return s.err }
 func TestHealthEndpointsExposeRuntimeState(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := config.Config{HTTP: config.HTTP{MaxBodyBytes: 1024}}
-	router := NewRouter(cfg, logger, readinessStub{}, prometheus.NewRegistry(), nil)
+	router := NewRouter(cfg, logger, readinessStub{}, prometheus.NewRegistry(), nil, nil)
 
 	for _, path := range []string{"/health/live", "/health/ready"} {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
@@ -40,7 +40,7 @@ func TestHealthEndpointsExposeRuntimeState(t *testing.T) {
 func TestReadinessReportsDependencyFailure(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := config.Config{HTTP: config.HTTP{MaxBodyBytes: 1024}}
-	router := NewRouter(cfg, logger, readinessStub{err: errors.New("database offline")}, prometheus.NewRegistry(), nil)
+	router := NewRouter(cfg, logger, readinessStub{err: errors.New("database offline")}, prometheus.NewRegistry(), nil, nil)
 
 	request := httptest.NewRequest(http.MethodGet, "/health/ready", nil)
 	response := httptest.NewRecorder()
@@ -54,7 +54,7 @@ func TestReadinessReportsDependencyFailure(t *testing.T) {
 func TestRequestIDRejectsUnsafeInput(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := config.Config{HTTP: config.HTTP{MaxBodyBytes: 1024}}
-	router := NewRouter(cfg, logger, readinessStub{}, prometheus.NewRegistry(), nil)
+	router := NewRouter(cfg, logger, readinessStub{}, prometheus.NewRegistry(), nil, nil)
 
 	request := httptest.NewRequest(http.MethodGet, "/health/live", nil)
 	request.Header.Set("X-Request-ID", "unsafe\nvalue")

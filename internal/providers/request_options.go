@@ -33,11 +33,6 @@ func (a *openAIAdapter) encodeReasoning(reasoning *canonical.ReasoningConfig, re
 	switch a.policy.reasoning {
 	case reasoningWireStandard:
 		request.ReasoningEffort = string(reasoning.Effort)
-	case reasoningWireDeepSeek:
-		if reasoning.Enabled != nil {
-			request.Thinking = &wireThinking{Type: enabledType(*reasoning.Enabled)}
-		}
-		request.ReasoningEffort = string(reasoning.Effort)
 	case reasoningWireZhipu:
 		if reasoning.Enabled != nil || reasoning.Preserve != nil {
 			thinking := &wireThinking{}
@@ -63,16 +58,7 @@ func (a *openAIAdapter) supportsReasoningEffort(effort canonical.ReasoningEffort
 	if !validReasoningEffort(effort) {
 		return false
 	}
-	if a.policy.reasoning != reasoningWireDeepSeek {
-		return true
-	}
-	switch effort {
-	case canonical.ReasoningEffortLow, canonical.ReasoningEffortMedium, canonical.ReasoningEffortHigh,
-		canonical.ReasoningEffortXHigh, canonical.ReasoningEffortMax:
-		return true
-	default:
-		return false
-	}
+	return true
 }
 
 func (a *openAIAdapter) validateParameters(request canonical.ChatRequest) error {
@@ -124,8 +110,6 @@ func (a *openAIAdapter) validateParameters(request canonical.ChatRequest) error 
 func (a *openAIAdapter) validateReasoningReplay(request canonical.ChatRequest) error {
 	replayRequired := false
 	switch a.policy.reasoning {
-	case reasoningWireDeepSeek:
-		replayRequired = request.Reasoning == nil || request.Reasoning.Enabled == nil || *request.Reasoning.Enabled
 	case reasoningWireZhipu:
 		replayRequired = request.Reasoning != nil && request.Reasoning.Enabled != nil && *request.Reasoning.Enabled &&
 			request.Reasoning.Preserve != nil && *request.Reasoning.Preserve

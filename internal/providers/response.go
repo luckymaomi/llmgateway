@@ -199,11 +199,6 @@ func (a *openAIAdapter) parseFinishReason(reason string) (canonical.FinishReason
 			return "", a.finishReasonError(reason, canonical.ErrorInvalidRequest)
 		}
 		return "", a.finishReasonError(reason, canonical.ErrorProviderPermanent)
-	case "insufficient_system_resource":
-		if a.policy.kind == KindDeepSeek {
-			return "", a.finishReasonError(reason, canonical.ErrorProviderTemporary)
-		}
-		return "", a.finishReasonError(reason, canonical.ErrorProviderPermanent)
 	default:
 		return "", a.finishReasonError(reason, canonical.ErrorProviderPermanent)
 	}

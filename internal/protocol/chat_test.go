@@ -9,7 +9,7 @@ import (
 
 func TestParseChatRequestPreservesToolAndReasoningRoundTrip(t *testing.T) {
 	body := `{
-  "model":"deepseek-chat",
+  "model":"reasoning-chat",
   "messages":[
     {"role":"assistant","content":null,"reasoning_content":"checked","tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"id\":1}"}}]},
     {"role":"tool","tool_call_id":"call_1","content":"found"}
@@ -24,7 +24,7 @@ func TestParseChatRequestPreservesToolAndReasoningRoundTrip(t *testing.T) {
 	if parseError != nil {
 		t.Fatal(parseError)
 	}
-	if request.Model != "deepseek-chat" || !request.Stream || len(request.Tools) != 1 || request.Reasoning == nil || request.Reasoning.Effort != canonical.ReasoningEffortHigh || request.Reasoning.Preserve == nil || !*request.Reasoning.Preserve {
+	if request.Model != "reasoning-chat" || !request.Stream || len(request.Tools) != 1 || request.Reasoning == nil || request.Reasoning.Effort != canonical.ReasoningEffortHigh || request.Reasoning.Preserve == nil || !*request.Reasoning.Preserve {
 		t.Fatalf("parsed request lost a canonical contract: %#v", request)
 	}
 	if len(request.Messages[0].ToolCalls) != 1 || request.Messages[1].ToolCallID != "call_1" {

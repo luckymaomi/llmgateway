@@ -22,6 +22,7 @@ type Service struct {
 	repository Repository
 	envelope   *security.EnvelopeCipher
 	urls       *security.URLValidator
+	prober     CredentialProbeExecutor
 }
 
 func NewService(repository Repository, envelope *security.EnvelopeCipher, urls *security.URLValidator) (*Service, error) {
@@ -29,6 +30,11 @@ func NewService(repository Repository, envelope *security.EnvelopeCipher, urls *
 		return nil, fmt.Errorf("registry dependencies are required")
 	}
 	return &Service{repository: repository, envelope: envelope, urls: urls}, nil
+}
+
+func (s *Service) WithCredentialProbeExecutor(prober CredentialProbeExecutor) *Service {
+	s.prober = prober
+	return s
 }
 
 func (s *Service) CreateProvider(ctx context.Context, actor identity.Principal, provider Provider, request MutationRequest) (Provider, error) {
@@ -143,7 +149,7 @@ func (s *Service) ListModels(ctx context.Context, actor identity.Principal) ([]M
 	return s.repository.ListModels(ctx)
 }
 
-func (s *Service) CreateCredential(ctx context.Context, actor identity.Principal, input NewCredential, secret string) (Credential, error) {
+func (s *Service) CreateCredential(ctx context.Context, actor identity.Principal, input NewCredential, secret string, request MutationRequest) (Credential, error) {
 	if !actor.CanOperateProviders() {
 		return Credential{}, ErrForbidden
 	}
@@ -158,19 +164,112 @@ func (s *Service) CreateCredential(ctx context.Context, actor identity.Principal
 	if input.RPMLimit != nil && *input.RPMLimit < 1 || input.TPMLimit != nil && *input.TPMLimit < 1 || input.ConcurrencyLimit != nil && *input.ConcurrencyLimit < 1 {
 		return Credential{}, ErrInvalidInput
 	}
-	if input.FixedProxyURL != nil {
-		trimmed := strings.TrimSpace(*input.FixedProxyURL)
-		if _, err := s.urls.ValidateString(ctx, trimmed); err != nil {
-			return Credential{}, fmt.Errorf("%w: fixed proxy URL", ErrInvalidInput)
-		}
-		input.FixedProxyURL = &trimmed
+	if len(input.AuthorizedModelIDs) == 0 || len(input.AuthorizedModelIDs) > 100 {
+		return Credential{}, ErrInvalidInput
 	}
-	encrypted, err := s.envelope.Encrypt([]byte(secret), credentialAAD(input.ID))
+	seenModels := make(map[uuid.UUID]struct{}, len(input.AuthorizedModelIDs))
+	for _, modelID := range input.AuthorizedModelIDs {
+		if modelID == uuid.Nil {
+			return Credential{}, ErrInvalidInput
+		}
+		if _, exists := seenModels[modelID]; exists {
+			return Credential{}, ErrInvalidInput
+		}
+		seenModels[modelID] = struct{}{}
+	}
+	mutation, err := newCredentialMutation(request, input, secret)
+	if err != nil {
+		return Credential{}, err
+	}
+	if replayed, found, err := s.repository.ReplayCredentialMutation(ctx, actor.UserID, mutation); err != nil || found {
+		return replayed, err
+	}
+	encrypted, err := s.envelope.Encrypt([]byte(secret), CredentialEncryptionContext(input.ID))
 	if err != nil {
 		return Credential{}, fmt.Errorf("encrypt credential: %w", err)
 	}
 	input.EncryptedSecret = encrypted
-	return s.repository.CreateCredential(ctx, input, actor.UserID)
+	return s.repository.CreateCredential(ctx, input, actor.UserID, mutation)
+}
+
+func (s *Service) UpdateCredential(ctx context.Context, actor identity.Principal, input CredentialChange, secret string, request MutationRequest) (Credential, error) {
+	if !actor.CanOperateProviders() {
+		return Credential{}, ErrForbidden
+	}
+	input.Name = strings.TrimSpace(input.Name)
+	input.ReplaceSecret = secret != ""
+	if input.ID == uuid.Nil || input.ExpectedUpdatedAt.IsZero() || !validCredentialFields(input.Name, input.ResourceDomain, input.RPMLimit, input.TPMLimit, input.ConcurrencyLimit, input.AuthorizedModelIDs) {
+		return Credential{}, ErrInvalidInput
+	}
+	if input.ReplaceSecret && (len(secret) < 8 || len(secret) > 8192) {
+		return Credential{}, ErrInvalidInput
+	}
+	mutation, err := updateCredentialMutation(request, input, secret)
+	if err != nil {
+		return Credential{}, err
+	}
+	if replayed, found, err := s.repository.ReplayCredentialMutation(ctx, actor.UserID, mutation); err != nil || found {
+		return replayed, err
+	}
+	if input.ReplaceSecret {
+		encrypted, err := s.envelope.Encrypt([]byte(secret), CredentialEncryptionContext(input.ID))
+		if err != nil {
+			return Credential{}, fmt.Errorf("encrypt credential: %w", err)
+		}
+		input.EncryptedSecret = encrypted
+	}
+	return s.repository.UpdateCredential(ctx, input, actor.UserID, mutation)
+}
+
+func (s *Service) SetCredentialEnabled(ctx context.Context, actor identity.Principal, credentialID uuid.UUID, enabled bool, expectedUpdatedAt time.Time, request MutationRequest) (Credential, error) {
+	if !actor.CanOperateProviders() {
+		return Credential{}, ErrForbidden
+	}
+	if credentialID == uuid.Nil || expectedUpdatedAt.IsZero() {
+		return Credential{}, ErrInvalidInput
+	}
+	status := CredentialDisabled
+	if enabled {
+		status = CredentialActive
+	}
+	mutation, err := statusCredentialMutation(request, credentialID, status, expectedUpdatedAt)
+	if err != nil {
+		return Credential{}, err
+	}
+	if replayed, found, err := s.repository.ReplayCredentialMutation(ctx, actor.UserID, mutation); err != nil || found {
+		return replayed, err
+	}
+	return s.repository.SetCredentialStatus(ctx, credentialID, status, expectedUpdatedAt, actor.UserID, mutation)
+}
+
+func (s *Service) ProbeCredential(ctx context.Context, actor identity.Principal, credentialID uuid.UUID, requestID string) (CredentialProbeExecution, Credential, error) {
+	if !actor.CanOperateProviders() {
+		return CredentialProbeExecution{}, Credential{}, ErrForbidden
+	}
+	if credentialID == uuid.Nil || requestID == "" || len(requestID) > 128 {
+		return CredentialProbeExecution{}, Credential{}, ErrInvalidInput
+	}
+	credential, err := s.repository.GetCredential(ctx, credentialID)
+	if err != nil {
+		return CredentialProbeExecution{}, Credential{}, err
+	}
+	provider, err := s.repository.GetProvider(ctx, credential.ProviderID)
+	if err != nil {
+		return CredentialProbeExecution{}, Credential{}, err
+	}
+	execution := CredentialProbeExecution{Kind: "models", Status: "unavailable", MayUseTokens: false}
+	unavailable := "probe_runtime_unavailable"
+	execution.ErrorKind = &unavailable
+	if s.prober != nil {
+		secret, err := s.CredentialSecret(ctx, credentialID)
+		if err != nil {
+			return CredentialProbeExecution{}, Credential{}, err
+		}
+		execution = s.prober.Execute(ctx, CredentialProbeTarget{Provider: provider, CredentialID: credentialID, Secret: secret})
+	}
+	checkedAt := time.Now().UTC()
+	credential, err = s.repository.RecordCredentialProbe(ctx, credentialID, checkedAt, execution, actor.UserID, requestID)
+	return execution, credential, err
 }
 
 func (s *Service) ListCredentials(ctx context.Context, actor identity.Principal) ([]Credential, error) {
@@ -185,7 +284,7 @@ func (s *Service) CredentialSecret(ctx context.Context, credentialID uuid.UUID) 
 	if err != nil {
 		return "", err
 	}
-	plaintext, err := s.envelope.Decrypt(encrypted, credentialAAD(credentialID))
+	plaintext, err := s.envelope.Decrypt(encrypted, CredentialEncryptionContext(credentialID))
 	if err != nil {
 		return "", fmt.Errorf("decrypt credential: %w", err)
 	}
@@ -207,9 +306,7 @@ func (s *Service) validateProviderDetails(ctx context.Context, provider Provider
 	if nameRunes < 2 || nameRunes > 100 || len(provider.BaseURL) > 2048 {
 		return ErrInvalidInput
 	}
-	switch provider.Kind {
-	case providers.KindOpenAICompatible, providers.KindDeepSeek, providers.KindZhipu, providers.KindAgnes:
-	default:
+	if !providers.DefaultCatalog().Supports(provider.Kind) {
 		return ErrInvalidInput
 	}
 	baseURL, err := s.urls.ValidateString(ctx, provider.BaseURL)
@@ -268,6 +365,29 @@ func validateModel(model Model) error {
 	return nil
 }
 
-func credentialAAD(id uuid.UUID) []byte {
+func validCredentialFields(name string, domain ResourceDomain, rpmLimit *int32, tpmLimit *int64, concurrencyLimit *int32, modelIDs []uuid.UUID) bool {
+	if name == "" || utf8.RuneCountInString(name) > 80 || domain != ResourceFree && domain != ResourceProfessional {
+		return false
+	}
+	if rpmLimit != nil && *rpmLimit < 1 || tpmLimit != nil && *tpmLimit < 1 || concurrencyLimit != nil && *concurrencyLimit < 1 {
+		return false
+	}
+	if len(modelIDs) == 0 || len(modelIDs) > 100 {
+		return false
+	}
+	seen := make(map[uuid.UUID]struct{}, len(modelIDs))
+	for _, modelID := range modelIDs {
+		if modelID == uuid.Nil {
+			return false
+		}
+		if _, exists := seen[modelID]; exists {
+			return false
+		}
+		seen[modelID] = struct{}{}
+	}
+	return true
+}
+
+func CredentialEncryptionContext(id uuid.UUID) []byte {
 	return []byte("provider-credential:" + id.String())
 }

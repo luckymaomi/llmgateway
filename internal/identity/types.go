@@ -9,21 +9,22 @@ import (
 )
 
 var (
-	ErrConflict          = errors.New("identity conflict")
-	ErrNotFound          = errors.New("identity record not found")
-	ErrInvalidCredential = errors.New("invalid credential")
-	ErrInvalidInvitation = errors.New("invalid invitation")
-	ErrApprovalRequired  = errors.New("account approval required")
-	ErrDisabled          = errors.New("account disabled")
-	ErrForbidden         = errors.New("operation forbidden")
-	ErrInvalidInput      = errors.New("invalid identity input")
+	ErrConflict            = errors.New("identity conflict")
+	ErrNotFound            = errors.New("identity record not found")
+	ErrInvalidCredential   = errors.New("invalid credential")
+	ErrInvalidInvitation   = errors.New("invalid invitation")
+	ErrApprovalRequired    = errors.New("account approval required")
+	ErrDisabled            = errors.New("account disabled")
+	ErrForbidden           = errors.New("operation forbidden")
+	ErrInvalidInput        = errors.New("invalid identity input")
+	ErrIdempotencyConflict = errors.New("identity idempotency key conflict")
+	ErrOutcomeUnknown      = errors.New("identity operation outcome is unknown")
 )
 
 type Role string
 
 const (
 	RoleAdministrator Role = "administrator"
-	RoleOperator      Role = "operator"
 	RoleMember        Role = "member"
 )
 
@@ -64,7 +65,7 @@ func (p Principal) CanManageUsers() bool {
 }
 
 func (p Principal) CanOperateProviders() bool {
-	return p.Role == RoleAdministrator || p.Role == RoleOperator
+	return p.Role == RoleAdministrator
 }
 
 type GatewayPrincipal struct {
@@ -84,7 +85,8 @@ type SessionCredentials struct {
 
 type Invitation struct {
 	ID         uuid.UUID  `json:"id"`
-	Role       Role       `json:"role"`
+	CreatedBy  uuid.UUID  `json:"created_by"`
+	ClaimedBy  *uuid.UUID `json:"claimed_by,omitempty"`
 	ExpiresAt  time.Time  `json:"expires_at"`
 	ClaimedAt  *time.Time `json:"claimed_at,omitempty"`
 	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
@@ -94,15 +96,49 @@ type Invitation struct {
 }
 
 type GatewayKey struct {
-	ID         uuid.UUID  `json:"id"`
-	UserID     uuid.UUID  `json:"user_id"`
-	Name       string     `json:"name"`
-	Prefix     string     `json:"prefix"`
-	Secret     string     `json:"secret,omitempty"`
-	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
-	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
-	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
-	CreatedAt  time.Time  `json:"created_at"`
+	ID                 uuid.UUID   `json:"id"`
+	UserID             uuid.UUID   `json:"user_id"`
+	Name               string      `json:"name"`
+	Prefix             string      `json:"prefix"`
+	Secret             string      `json:"secret,omitempty"`
+	AuthorizedModelIDs []uuid.UUID `json:"authorized_model_ids"`
+	AuthorizedModels   []string    `json:"authorized_models"`
+	ExpiresAt          *time.Time  `json:"expires_at,omitempty"`
+	RevokedAt          *time.Time  `json:"revoked_at,omitempty"`
+	LastUsedAt         *time.Time  `json:"last_used_at,omitempty"`
+	CreatedAt          time.Time   `json:"created_at"`
+}
+
+type MutationRequest struct {
+	IdempotencyKey uuid.UUID
+	RequestID      string
+}
+
+type GatewayKeyMutation struct {
+	IdempotencyKey     uuid.UUID
+	RequestFingerprint []byte
+	RequestID          string
+}
+
+type InvitationMutation struct {
+	IdempotencyKey     uuid.UUID
+	RequestFingerprint []byte
+	RequestID          string
+}
+
+type NewInvitation struct {
+	CodeDigest []byte
+	CodePrefix string
+	ExpiresAt  time.Time
+}
+
+type NewGatewayKey struct {
+	UserID             uuid.UUID
+	Name               string
+	Prefix             string
+	SecretDigest       []byte
+	AuthorizedModelIDs []uuid.UUID
+	ExpiresAt          *time.Time
 }
 
 type NewUser struct {
@@ -128,6 +164,7 @@ type Repository interface {
 	Bootstrap(context.Context, NewUser) (User, error)
 	Register(context.Context, []byte, NewUser) (User, error)
 	FindUserByEmail(context.Context, string) (User, error)
+	UserDisplayNames(context.Context, []uuid.UUID) (map[uuid.UUID]string, error)
 	ListUsers(context.Context, *Status, Page) (UserPage, error)
 	SetUserStatus(context.Context, uuid.UUID, Status, uuid.UUID) (User, error)
 
@@ -136,13 +173,15 @@ type Repository interface {
 	TouchSession(context.Context, uuid.UUID) error
 	RevokeSession(context.Context, uuid.UUID) error
 
-	CreateInvitation(context.Context, uuid.UUID, []byte, string, Role, time.Time) (Invitation, error)
+	ReplayInvitationMutation(context.Context, uuid.UUID, InvitationMutation) (Invitation, bool, error)
+	CreateInvitation(context.Context, NewInvitation, uuid.UUID, InvitationMutation) (Invitation, error)
 	ListInvitations(context.Context, Page) ([]Invitation, error)
 	RevokeInvitation(context.Context, uuid.UUID, uuid.UUID) error
 
-	CreateGatewayKey(context.Context, uuid.UUID, string, string, []byte, *time.Time, uuid.UUID) (GatewayKey, error)
+	CreateGatewayKey(context.Context, NewGatewayKey, uuid.UUID, GatewayKeyMutation) (GatewayKey, error)
 	ListGatewayKeys(context.Context, uuid.UUID) ([]GatewayKey, error)
 	RevokeGatewayKey(context.Context, uuid.UUID, uuid.UUID, bool) error
 	FindGatewayPrincipal(context.Context, []byte) (GatewayPrincipal, error)
+	FindGatewayPrincipalByID(context.Context, uuid.UUID) (GatewayPrincipal, error)
 	TouchGatewayKey(context.Context, uuid.UUID) error
 }

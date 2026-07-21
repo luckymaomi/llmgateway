@@ -200,10 +200,40 @@
   gap: 7px;
 }
 
+.revision-bar--error {
+  border-color: #e7b9b3;
+  background: var(--danger-soft);
+}
+
+.revision-bar__revision-id {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+}
+
+.revision-bar__revision-id code {
+  overflow-wrap: anywhere;
+}
+
+.revision-bar__revision-id .icon-button {
+  width: 28px;
+  height: 28px;
+}
+
+.revision-bar__copy-error {
+  color: var(--danger) !important;
+}
+
 .revision-bar span,
 .settings-meta {
   color: var(--muted);
   font-size: 11px;
+}
+
+.mobile-summary__warning {
+  color: var(--warning) !important;
+  font-weight: 700;
 }
 
 .secret-reveal {

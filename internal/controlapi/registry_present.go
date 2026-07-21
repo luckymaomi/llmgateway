@@ -39,21 +39,38 @@ type modelView struct {
 }
 
 type credentialView struct {
-	ID                string                    `json:"id"`
-	ProviderID        string                    `json:"providerId"`
-	ProviderName      string                    `json:"providerName"`
-	Label             string                    `json:"label"`
-	MaskedSecret      string                    `json:"maskedSecret"`
-	ResourceDomain    registry.ResourceDomain   `json:"resourceDomain"`
-	Status            registry.CredentialStatus `json:"status"`
-	AuthorizedModels  []string                  `json:"authorizedModels"`
-	RPMLimit          *int32                    `json:"rpmLimit,omitempty"`
-	TPMLimit          *int64                    `json:"tpmLimit,omitempty"`
-	ConcurrencyLimit  *int32                    `json:"concurrencyLimit,omitempty"`
-	FixedProxy        *string                   `json:"fixedProxy,omitempty"`
-	CooldownUntil     *time.Time                `json:"cooldownUntil,omitempty"`
-	LastCheckedAt     *time.Time                `json:"lastCheckedAt,omitempty"`
-	RecentSuccessRate *float64                  `json:"recentSuccessRate,omitempty"`
+	ID                 string                    `json:"id"`
+	ProviderID         string                    `json:"providerId"`
+	ProviderName       string                    `json:"providerName"`
+	Label              string                    `json:"label"`
+	MaskedSecret       string                    `json:"maskedSecret"`
+	ResourceDomain     registry.ResourceDomain   `json:"resourceDomain"`
+	Status             registry.CredentialStatus `json:"status"`
+	AuthorizedModelIDs []string                  `json:"authorizedModelIds"`
+	AuthorizedModels   []string                  `json:"authorizedModels"`
+	RPMLimit           *int32                    `json:"rpmLimit,omitempty"`
+	TPMLimit           *int64                    `json:"tpmLimit,omitempty"`
+	ConcurrencyLimit   *int32                    `json:"concurrencyLimit,omitempty"`
+	CooldownUntil      *time.Time                `json:"cooldownUntil,omitempty"`
+	LastCheckedAt      *time.Time                `json:"lastCheckedAt,omitempty"`
+	RecentSuccessRate  *float64                  `json:"recentSuccessRate,omitempty"`
+	LastProbeAt        *time.Time                `json:"lastProbeAt,omitempty"`
+	LastProbeLatencyMs *int64                    `json:"lastProbeLatencyMs,omitempty"`
+	LastProbeKind      *string                   `json:"lastProbeKind,omitempty"`
+	LastProbeStatus    *string                   `json:"lastProbeStatus,omitempty"`
+	LastProbeErrorKind *string                   `json:"lastProbeErrorKind,omitempty"`
+	UpdatedAt          time.Time                 `json:"updatedAt"`
+}
+
+type credentialProbeView struct {
+	Credential    credentialView `json:"credential"`
+	Kind          string         `json:"kind"`
+	Status        string         `json:"status"`
+	ErrorKind     *string        `json:"errorKind,omitempty"`
+	Retryable     bool           `json:"retryable"`
+	MayUseTokens  bool           `json:"mayUseTokens"`
+	LatencyMillis int64          `json:"latencyMillis"`
+	RequestID     string         `json:"requestId"`
 }
 
 type registrySnapshot struct {
@@ -161,20 +178,30 @@ func (s registrySnapshot) presentModel(model registry.Model) modelView {
 }
 
 func (s registrySnapshot) presentCredential(credential registry.Credential) credentialView {
+	modelIDs := make([]string, 0, len(credential.AuthorizedModelIDs))
+	for _, modelID := range credential.AuthorizedModelIDs {
+		modelIDs = append(modelIDs, modelID.String())
+	}
 	return credentialView{
-		ID:               credential.ID.String(),
-		ProviderID:       credential.ProviderID.String(),
-		ProviderName:     s.providerNames[credential.ProviderID],
-		Label:            credential.Name,
-		MaskedSecret:     "********",
-		ResourceDomain:   credential.ResourceDomain,
-		Status:           credential.Status,
-		AuthorizedModels: []string{},
-		RPMLimit:         credential.RPMLimit,
-		TPMLimit:         credential.TPMLimit,
-		ConcurrencyLimit: credential.ConcurrencyLimit,
-		FixedProxy:       credential.FixedProxyURL,
-		CooldownUntil:    utcTimePointer(credential.CooldownUntil),
+		ID:                 credential.ID.String(),
+		ProviderID:         credential.ProviderID.String(),
+		ProviderName:       s.providerNames[credential.ProviderID],
+		Label:              credential.Name,
+		MaskedSecret:       "********",
+		ResourceDomain:     credential.ResourceDomain,
+		Status:             credential.Status,
+		AuthorizedModelIDs: modelIDs,
+		AuthorizedModels:   append([]string(nil), credential.AuthorizedModels...),
+		RPMLimit:           credential.RPMLimit,
+		TPMLimit:           credential.TPMLimit,
+		ConcurrencyLimit:   credential.ConcurrencyLimit,
+		CooldownUntil:      utcTimePointer(credential.CooldownUntil),
+		LastProbeAt:        utcTimePointer(credential.LastProbeAt),
+		LastProbeLatencyMs: credential.LastProbeLatencyMs,
+		LastProbeKind:      credential.LastProbeKind,
+		LastProbeStatus:    credential.LastProbeStatus,
+		LastProbeErrorKind: credential.LastProbeErrorKind,
+		UpdatedAt:          credential.UpdatedAt.UTC(),
 	}
 }
 

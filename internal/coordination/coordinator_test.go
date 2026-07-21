@@ -13,16 +13,18 @@ import (
 
 func TestAcquireRateUsesStableOpaqueKeysForEveryScope(t *testing.T) {
 	serverTime := time.Date(2026, 7, 19, 14, 0, 0, 0, time.UTC)
-	runner := &recordingScripter{result: scriptValues(1, serverTime.UnixMilli(), 0, 9, 9, 9, 9, 9, 9)}
+	runner := &recordingScripter{result: scriptValues(1, serverTime.UnixMilli(), 0, 9, 9, 9, 9, 9, 9, 9, 9)}
 	coordinator := mustCoordinator(t, runner, "scope-test")
-	identifiers := []string{"", "person@example.com", "llmg_secret-key", "model/body-text", "provider-id", "credential-id"}
+	identifiers := []string{"", "free", "person@example.com", "entitlement-id", "llmg_secret-key", "model/body-text", "provider-id", "credential-id"}
 	limits := []BucketLimit{
 		rateLimit(GlobalDimension(), MetricRequests, 10),
-		rateLimit(Dimension{Scope: ScopeUser, SubjectID: identifiers[1]}, MetricRequests, 10),
-		rateLimit(Dimension{Scope: ScopeGatewayKey, SubjectID: identifiers[2]}, MetricRequests, 10),
-		rateLimit(Dimension{Scope: ScopeModel, SubjectID: identifiers[3]}, MetricTokens, 10),
-		rateLimit(Dimension{Scope: ScopeProvider, SubjectID: identifiers[4]}, MetricRequests, 10),
-		rateLimit(Dimension{Scope: ScopeCredential, SubjectID: identifiers[5]}, MetricRequests, 10),
+		rateLimit(Dimension{Scope: ScopeResourceDomain, SubjectID: identifiers[1]}, MetricRequests, 10),
+		rateLimit(Dimension{Scope: ScopeUser, SubjectID: identifiers[2]}, MetricRequests, 10),
+		rateLimit(Dimension{Scope: ScopeEntitlement, SubjectID: identifiers[3]}, MetricTokens, 10),
+		rateLimit(Dimension{Scope: ScopeGatewayKey, SubjectID: identifiers[4]}, MetricRequests, 10),
+		rateLimit(Dimension{Scope: ScopeModel, SubjectID: identifiers[5]}, MetricTokens, 10),
+		rateLimit(Dimension{Scope: ScopeProvider, SubjectID: identifiers[6]}, MetricRequests, 10),
+		rateLimit(Dimension{Scope: ScopeCredential, SubjectID: identifiers[7]}, MetricRequests, 10),
 	}
 
 	decision, err := coordinator.AcquireRate(context.Background(), limits)

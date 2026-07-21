@@ -87,6 +87,8 @@ type responseRecorder struct {
 	bytes  int
 }
 
+func (r *responseRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
 func (r *responseRecorder) WriteHeader(status int) {
 	r.status = status
 	r.ResponseWriter.WriteHeader(status)
@@ -102,8 +104,4 @@ func (r *responseRecorder) Flush() {
 	if flusher, ok := r.ResponseWriter.(http.Flusher); ok {
 		flusher.Flush()
 	}
-}
-
-func (r *responseRecorder) Unwrap() http.ResponseWriter {
-	return r.ResponseWriter
 }

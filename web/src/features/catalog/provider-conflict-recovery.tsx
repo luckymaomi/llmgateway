@@ -94,8 +94,6 @@ function displayValue(field: ProviderEditableField, value: string): string {
       return 'OpenAI-compatible'
     case 'zhipu':
       return '智谱 GLM'
-    case 'deepseek':
-      return 'DeepSeek'
     case 'agnes':
       return 'Agnes'
     default:

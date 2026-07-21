@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/luckymaomi/llmgateway/internal/execution"
 	domainledger "github.com/luckymaomi/llmgateway/internal/ledger"
 	"github.com/luckymaomi/llmgateway/internal/quota"
 	db "github.com/luckymaomi/llmgateway/internal/store/db"
@@ -13,20 +14,25 @@ import (
 
 const quotaTransactionAttempts = 4
 
-func (r *QuotaRepository) Settle(ctx context.Context, requestID uuid.UUID, inputTokens, outputTokens int64, source quota.UsageSource) (quota.Resolution, error) {
-	return r.resolve(ctx, resolutionCommand{requestID: requestID, state: db.ReservationStateSettled, kind: db.LedgerEventKindSettlement, inputTokens: inputTokens, outputTokens: outputTokens, usageSource: source})
+func (r *QuotaRepository) Settle(ctx context.Context, requestID uuid.UUID, claim execution.Claim, inputTokens, outputTokens int64, source quota.UsageSource) (quota.Resolution, error) {
+	return r.resolve(ctx, resolutionCommand{requestID: requestID, claim: &claim, state: db.ReservationStateSettled, kind: db.LedgerEventKindSettlement, inputTokens: inputTokens, outputTokens: outputTokens, usageSource: source})
 }
 
-func (r *QuotaRepository) Release(ctx context.Context, requestID uuid.UUID, errorKind, errorDetail string) (quota.Resolution, error) {
+func (r *QuotaRepository) Release(ctx context.Context, requestID uuid.UUID, claim execution.Claim, errorKind, errorDetail string) (quota.Resolution, error) {
+	return r.resolve(ctx, resolutionCommand{requestID: requestID, claim: &claim, state: db.ReservationStateReleased, kind: db.LedgerEventKindRelease, usageSource: quota.UsageUnknown, errorKind: errorKind, errorDetail: errorDetail})
+}
+
+func (r *QuotaRepository) ReleaseAccepted(ctx context.Context, requestID uuid.UUID, errorKind, errorDetail string) (quota.Resolution, error) {
 	return r.resolve(ctx, resolutionCommand{requestID: requestID, state: db.ReservationStateReleased, kind: db.LedgerEventKindRelease, usageSource: quota.UsageUnknown, errorKind: errorKind, errorDetail: errorDetail})
 }
 
-func (r *QuotaRepository) Compensate(ctx context.Context, requestID uuid.UUID, inputTokens, outputTokens int64, source quota.UsageSource, errorKind, errorDetail string) (quota.Resolution, error) {
-	return r.resolve(ctx, resolutionCommand{requestID: requestID, state: db.ReservationStateCompensated, kind: db.LedgerEventKindCompensation, inputTokens: inputTokens, outputTokens: outputTokens, usageSource: source, errorKind: errorKind, errorDetail: errorDetail})
+func (r *QuotaRepository) Compensate(ctx context.Context, requestID uuid.UUID, claim execution.Claim, inputTokens, outputTokens int64, source quota.UsageSource, errorKind, errorDetail string) (quota.Resolution, error) {
+	return r.resolve(ctx, resolutionCommand{requestID: requestID, claim: &claim, state: db.ReservationStateCompensated, kind: db.LedgerEventKindCompensation, inputTokens: inputTokens, outputTokens: outputTokens, usageSource: source, errorKind: errorKind, errorDetail: errorDetail})
 }
 
 type resolutionCommand struct {
 	requestID                 uuid.UUID
+	claim                     *execution.Claim
 	state                     db.ReservationState
 	kind                      db.LedgerEventKind
 	inputTokens, outputTokens int64
@@ -68,6 +74,9 @@ func (r *QuotaRepository) resolveOnce(ctx context.Context, command resolutionCom
 		return quota.Resolution{}, err
 	}
 	if _, err := queries.GetEntitlementForUpdate(ctx, reservationRecord.EntitlementID); err != nil {
+		return quota.Resolution{}, err
+	}
+	if err := validateResolutionFence(requestRecord, reservationRecord, command); err != nil {
 		return quota.Resolution{}, err
 	}
 
@@ -130,18 +139,54 @@ func chargeFor(command resolutionCommand) (int64, error) {
 
 func resolveRequestRecord(ctx context.Context, queries *db.Queries, requestID uuid.UUID, command resolutionCommand) (db.Request, error) {
 	inputTokens, outputTokens := command.inputTokens, command.outputTokens
+	var executionID *uuid.UUID
+	var executionGeneration int64
+	if command.claim != nil {
+		executionID = &command.claim.ExecutionID
+		executionGeneration = command.claim.Generation
+	}
 	switch command.state {
 	case db.ReservationStateSettled:
-		return queries.CompleteRequest(ctx, db.CompleteRequestParams{InputTokens: &inputTokens, OutputTokens: &outputTokens, UsageSource: db.UsageSource(command.usageSource), ID: requestID})
+		return queries.CompleteRequest(ctx, db.CompleteRequestParams{
+			InputTokens: &inputTokens, OutputTokens: &outputTokens, UsageSource: db.UsageSource(command.usageSource),
+			ID: requestID, ExecutionID: executionID, ExecutionGeneration: executionGeneration,
+		})
 	case db.ReservationStateReleased:
 		errorKind := command.errorKind
-		return queries.UpdateRequestStatus(ctx, db.UpdateRequestStatusParams{Status: db.RequestStatusFailed, ErrorKind: &errorKind, ErrorDetail: optionalString(command.errorDetail), ID: requestID})
+		return queries.FailRequest(ctx, db.FailRequestParams{
+			ErrorKind: &errorKind, ErrorDetail: optionalString(command.errorDetail), ID: requestID,
+			ExecutionID: executionID, ExecutionGeneration: executionGeneration,
+		})
 	case db.ReservationStateCompensated:
 		errorKind := command.errorKind
-		return queries.FailRequestWithUsage(ctx, db.FailRequestWithUsageParams{InputTokens: &inputTokens, OutputTokens: &outputTokens, UsageSource: db.UsageSource(command.usageSource), ErrorKind: &errorKind, ErrorDetail: optionalString(command.errorDetail), ID: requestID})
+		return queries.FailRequestWithUsage(ctx, db.FailRequestWithUsageParams{
+			InputTokens: &inputTokens, OutputTokens: &outputTokens, UsageSource: db.UsageSource(command.usageSource),
+			ErrorKind: &errorKind, ErrorDetail: optionalString(command.errorDetail), ID: requestID,
+			ExecutionID: executionID, ExecutionGeneration: executionGeneration,
+		})
 	default:
 		return db.Request{}, quota.ErrInvariant
 	}
+}
+
+func validateResolutionFence(request db.Request, reservation db.LedgerReservation, command resolutionCommand) error {
+	if command.claim == nil {
+		if request.ExecutionID != nil || request.ExecutionGeneration != 0 {
+			return execution.ErrFenced
+		}
+		if reservation.State == db.ReservationStateReserved && request.Status != db.RequestStatusQueued {
+			return execution.ErrFenced
+		}
+		return nil
+	}
+	claim := *command.claim
+	if !claim.Valid() || claim.RequestID != request.ID || request.ExecutionID == nil || *request.ExecutionID != claim.ExecutionID || request.ExecutionGeneration != claim.Generation {
+		return execution.ErrFenced
+	}
+	if reservation.State == db.ReservationStateReserved && request.Status != db.RequestStatusDispatching && request.Status != db.RequestStatusStreaming {
+		return execution.ErrFenced
+	}
+	return nil
 }
 
 func matchesTerminal(request db.Request, reservation db.LedgerReservation, command resolutionCommand, chargeTokens int64) bool {

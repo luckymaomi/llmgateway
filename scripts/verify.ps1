@@ -6,6 +6,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 $pnpmCommand = if ($env:OS -eq "Windows_NT") { "pnpm.cmd" } else { "pnpm" }
+$powerShellCommand = if ($env:OS -eq "Windows_NT") { "powershell" } else { "pwsh" }
+
+. "$PSScriptRoot\isolated-services.ps1"
 
 function Invoke-Step {
   param(
@@ -19,9 +22,27 @@ function Invoke-Step {
   }
 }
 
+$environmentSnapshot = Save-LLMGatewayEnvironment
+$goEnvironmentSnapshot = @{}
+foreach ($name in @("GOOS", "GOARCH", "CGO_ENABLED")) {
+  $item = Get-Item "Env:$name" -ErrorAction SilentlyContinue
+  $goEnvironmentSnapshot[$name] = if ($null -eq $item) {
+    @{ Exists = $false; Value = "" }
+  } else {
+    @{ Exists = $true; Value = $item.Value }
+  }
+}
+$verificationFailure = $null
 Push-Location (Join-Path $PSScriptRoot "..")
 try {
-  Invoke-Step "Environment" { powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-environment.ps1 }
+  Clear-LLMGatewayEnvironment
+  Invoke-Step "Environment" {
+    if ($SkipIntegration -and $SkipBrowser) {
+      & $powerShellCommand -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-environment.ps1 -SkipServices -SkipDockerDaemon
+    } else {
+      & $powerShellCommand -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-environment.ps1 -SkipServices
+    }
+  }
 
   Invoke-Step "Go formatting" {
     $unformatted = & gofmt -l .\cmd .\internal .\migrations
@@ -36,7 +57,7 @@ try {
   Invoke-Step "sqlc generation" {
     $before = Get-ChildItem .\internal\store\db -File | Sort-Object FullName | ForEach-Object { "$($_.Name):$((Get-FileHash -Algorithm SHA256 $_.FullName).Hash)" }
     go tool sqlc generate
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    if ($LASTEXITCODE -ne 0) { throw "sqlc generation failed with exit code $LASTEXITCODE." }
     $after = Get-ChildItem .\internal\store\db -File | Sort-Object FullName | ForEach-Object { "$($_.Name):$((Get-FileHash -Algorithm SHA256 $_.FullName).Hash)" }
     if (Compare-Object $before $after) { throw "sqlc generated output drifted." }
   }
@@ -45,14 +66,17 @@ try {
     Invoke-Step "Frontend install integrity" { & $pnpmCommand --dir web install --frozen-lockfile }
     Invoke-Step "Frontend checks" { & $pnpmCommand --dir web run verify }
     if (-not $SkipBrowser) {
-      Invoke-Step "Headed browser acceptance" { & $pnpmCommand --dir web run test:e2e }
+      Invoke-Step "Headed mock browser regression" { & $pnpmCommand --dir web run test:e2e }
+      Invoke-Step "Real headed Provider browser acceptance" { & $powerShellCommand -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-browser-real.ps1 }
     }
   }
 
   Invoke-Step "Compose configuration" { docker compose config --quiet }
   if (-not $SkipIntegration) {
-    Invoke-Step "Migration round-trip" { powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-migrations.ps1 }
-    Invoke-Step "Core gateway flow" { powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-core.ps1 }
+    Invoke-Step "Migration round-trip" { & $powerShellCommand -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-migrations.ps1 }
+    Invoke-Step "Control API persistence" { & $powerShellCommand -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-control.ps1 }
+    Invoke-Step "Core gateway flow" { & $powerShellCommand -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-core.ps1 }
+    Invoke-Step "Credential rotation and PostgreSQL recovery" { & $powerShellCommand -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-operations.ps1 }
   }
 
   if (-not $SkipBuildMatrix) {
@@ -68,18 +92,51 @@ try {
       foreach ($target in $targets) {
         $env:GOOS = $target.OS
         $env:GOARCH = $target.Arch
+        $env:CGO_ENABLED = "0"
         $output = ".\.build\llmgateway-$($target.OS)-$($target.Arch)$($target.Suffix)"
-        go build -trimpath -o $output .\cmd\gateway
-        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        go build -tags webembed -trimpath -o $output .\cmd\gateway
+        if ($LASTEXITCODE -ne 0) { throw "Go build failed for $($target.OS)/$($target.Arch) with exit code $LASTEXITCODE." }
       }
       Remove-Item Env:GOOS -ErrorAction SilentlyContinue
       Remove-Item Env:GOARCH -ErrorAction SilentlyContinue
+      Remove-Item Env:CGO_ENABLED -ErrorAction SilentlyContinue
     }
   }
 
-  Write-Host "`nLLMGateway verification passed."
+} catch {
+  $verificationFailure = $_
 } finally {
-  Remove-Item Env:GOOS -ErrorAction SilentlyContinue
-  Remove-Item Env:GOARCH -ErrorAction SilentlyContinue
-  Pop-Location
+  $cleanupFailures = @()
+  foreach ($name in @("GOOS", "GOARCH", "CGO_ENABLED")) {
+    try {
+      if ($goEnvironmentSnapshot[$name].Exists) {
+        [Environment]::SetEnvironmentVariable($name, $goEnvironmentSnapshot[$name].Value, "Process")
+      } else {
+        [Environment]::SetEnvironmentVariable($name, $null, "Process")
+      }
+    } catch {
+      $cleanupFailures += "$name restore: $($_.Exception.Message)"
+    }
+  }
+  try {
+    Restore-LLMGatewayEnvironment -Snapshot $environmentSnapshot
+  } catch {
+    $cleanupFailures += "LLMGATEWAY environment restore: $($_.Exception.Message)"
+  }
+  try {
+    Pop-Location
+  } catch {
+    $cleanupFailures += "location restore: $($_.Exception.Message)"
+  }
+  if ($null -ne $verificationFailure) {
+    if ($cleanupFailures.Count -gt 0) {
+      throw "Verification failed: $($verificationFailure.Exception.Message) Cleanup also failed: $($cleanupFailures -join '; ')"
+    }
+    throw $verificationFailure
+  }
+  if ($cleanupFailures.Count -gt 0) {
+    throw "Verification cleanup failed: $($cleanupFailures -join '; ')"
+  }
 }
+
+Write-Host "`nLLMGateway verification passed."

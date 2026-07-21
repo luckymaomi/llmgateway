@@ -9,6 +9,7 @@ import (
 
 	"github.com/luckymaomi/llmgateway/internal/app"
 	"github.com/luckymaomi/llmgateway/internal/config"
+	"github.com/luckymaomi/llmgateway/internal/security"
 )
 
 func main() {
@@ -18,7 +19,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel()}))
+	logger := slog.New(security.NewRedactingHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel()})))
 	slog.SetDefault(logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

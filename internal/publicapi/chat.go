@@ -53,14 +53,15 @@ func (a *API) chatCompletions(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) streamChat(w http.ResponseWriter, r *http.Request, command requestflow.ChatCommand) {
 	requestID := httpserver.RequestIDFromContext(r.Context())
-	flusher, ok := w.(http.Flusher)
-	if !ok {
+	if _, ok := w.(http.Flusher); !ok {
 		protocol.WriteError(w, requestID, &canonical.Error{Kind: canonical.ErrorInternalInvariant, Code: "streaming_unavailable", Message: "HTTP streaming is unavailable"})
 		return
 	}
 	committed := false
-	sink := func(_ uuid.UUID, event canonical.StreamEvent) error {
+	controller := http.NewResponseController(w)
+	sink := func(logicalRequestID uuid.UUID, event canonical.StreamEvent) error {
 		if !committed {
+			w.Header().Set("X-Gateway-Request-ID", logicalRequestID.String())
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.Header().Set("Cache-Control", "no-cache, no-transform")
 			w.Header().Set("X-Accel-Buffering", "no")
@@ -73,8 +74,10 @@ func (a *API) streamChat(w http.ResponseWriter, r *http.Request, command request
 		} else {
 			err = protocol.WriteSSE(w, protocol.PresentStreamEvent(event))
 		}
-		flusher.Flush()
-		return err
+		if err != nil {
+			return err
+		}
+		return controller.Flush()
 	}
 	workflowError := a.workflow.Stream(r.Context(), command, sink)
 	if workflowError == nil {
@@ -86,7 +89,7 @@ func (a *API) streamChat(w http.ResponseWriter, r *http.Request, command request
 	}
 	_ = protocol.WriteSSE(w, streamErrorEnvelope(workflowError, requestID))
 	_ = protocol.WriteSSEDone(w)
-	flusher.Flush()
+	_ = controller.Flush()
 }
 
 func parseIdempotencyKey(raw string) (*string, *canonical.Error) {

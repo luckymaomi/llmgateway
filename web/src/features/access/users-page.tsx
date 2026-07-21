@@ -160,4 +160,4 @@ export function UsersPage() {
   )
 }
 
-const roleLabel = { administrator: '管理员', operator: '运维人员', member: '成员' } as const
+const roleLabel = { administrator: '管理员', member: '成员' } as const

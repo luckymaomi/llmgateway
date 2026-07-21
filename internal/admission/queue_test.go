@@ -33,9 +33,9 @@ func newTestQueue(t *testing.T, config Config) (*Queue, *testClock) {
 	return queue, clock
 }
 
-func enqueue(t *testing.T, queue *Queue, id, user string, priority Priority) Ticket {
+func enqueue(t *testing.T, queue *Queue, id, user string) Ticket {
 	t.Helper()
-	ticket, err := queue.Enqueue(Request{ID: TicketID(id), UserID: UserID(user), Priority: priority})
+	ticket, err := queue.Enqueue(Request{ID: TicketID(id), UserID: UserID(user)})
 	if err != nil {
 		t.Fatalf("Enqueue(%s) error = %v", id, err)
 	}
@@ -52,10 +52,10 @@ func admittedIDs(dispatch Dispatch) []TicketID {
 
 func TestQueueRotatesUsersWhileKeepingEachUserFIFO(t *testing.T) {
 	queue, _ := newTestQueue(t, Config{MaxQueued: 8, MaxActive: 4, MaxActivePerUser: 2, MaxQueueWait: time.Minute})
-	enqueue(t, queue, "a1", "alice", 10)
-	enqueue(t, queue, "a2", "alice", 10)
-	enqueue(t, queue, "b1", "bob", 10)
-	enqueue(t, queue, "b2", "bob", 10)
+	enqueue(t, queue, "a1", "alice")
+	enqueue(t, queue, "a2", "alice")
+	enqueue(t, queue, "b1", "bob")
+	enqueue(t, queue, "b2", "bob")
 
 	got := admittedIDs(queue.Dispatch())
 	want := []TicketID{"a1", "b1", "a2", "b2"}
@@ -69,26 +69,11 @@ func TestQueueRotatesUsersWhileKeepingEachUserFIFO(t *testing.T) {
 	}
 }
 
-func TestQueueHonorsHeadPriorityWithoutReorderingAUser(t *testing.T) {
-	queue, _ := newTestQueue(t, Config{MaxQueued: 8, MaxActive: 3, MaxActivePerUser: 2, MaxQueueWait: time.Minute})
-	enqueue(t, queue, "a1", "alice", 1)
-	enqueue(t, queue, "a2", "alice", 100)
-	enqueue(t, queue, "b1", "bob", 50)
-
-	got := admittedIDs(queue.Dispatch())
-	want := []TicketID{"b1", "a1", "a2"}
-	for index := range want {
-		if got[index] != want[index] {
-			t.Fatalf("admitted IDs = %v, want %v", got, want)
-		}
-	}
-}
-
 func TestQueueBoundsOneUsersActiveShare(t *testing.T) {
 	queue, _ := newTestQueue(t, Config{MaxQueued: 8, MaxActive: 2, MaxActivePerUser: 1, MaxQueueWait: time.Minute})
-	enqueue(t, queue, "a1", "alice", 1)
-	enqueue(t, queue, "a2", "alice", 1)
-	enqueue(t, queue, "b1", "bob", 1)
+	enqueue(t, queue, "a1", "alice")
+	enqueue(t, queue, "a2", "alice")
+	enqueue(t, queue, "b1", "bob")
 
 	first := admittedIDs(queue.Dispatch())
 	want := []TicketID{"a1", "b1"}
@@ -108,9 +93,9 @@ func TestQueueBoundsOneUsersActiveShare(t *testing.T) {
 
 func TestQueueReportsCancellationAndTimeout(t *testing.T) {
 	queue, clock := newTestQueue(t, Config{MaxQueued: 3, MaxActive: 1, MaxActivePerUser: 1, MaxQueueWait: time.Minute})
-	enqueue(t, queue, "active", "alice", 1)
-	enqueue(t, queue, "cancel", "bob", 1)
-	_, err := queue.Enqueue(Request{ID: "expire", UserID: "carol", Priority: 1, QueueTimeout: 10 * time.Second})
+	enqueue(t, queue, "active", "alice")
+	enqueue(t, queue, "cancel", "bob")
+	_, err := queue.Enqueue(Request{ID: "expire", UserID: "carol", QueueTimeout: 10 * time.Second})
 	if err != nil {
 		t.Fatalf("Enqueue(expire) error = %v", err)
 	}
@@ -140,8 +125,8 @@ func TestQueueReportsCancellationAndTimeout(t *testing.T) {
 
 func TestQueueCancellationReleasesAnActivePermit(t *testing.T) {
 	queue, _ := newTestQueue(t, Config{MaxQueued: 2, MaxActive: 1, MaxActivePerUser: 1, MaxQueueWait: time.Minute})
-	enqueue(t, queue, "first", "alice", 1)
-	enqueue(t, queue, "second", "bob", 1)
+	enqueue(t, queue, "first", "alice")
+	enqueue(t, queue, "second", "bob")
 	queue.Dispatch()
 
 	cancellation, canceled := queue.Cancel("first")

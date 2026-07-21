@@ -43,6 +43,10 @@ func (a *API) writeConfigurationError(w http.ResponseWriter, r *http.Request, er
 		value.Status, value.Code, value.Message, value.Retryable = http.StatusNotFound, "not_found", "Configuration revision was not found.", false
 	case errors.Is(err, configuration.ErrConflict):
 		value.Status, value.Code, value.Message, value.Retryable = http.StatusConflict, "configuration_conflict", "The active configuration changed.", false
+	case errors.Is(err, configuration.ErrIdempotencyConflict):
+		value.Status, value.Code, value.Message, value.Retryable = http.StatusConflict, "idempotency_conflict", "Idempotency-Key was already used for different configuration input.", false
+	case errors.Is(err, configuration.ErrOutcomeUnknown):
+		value.Status, value.Code, value.Message, value.Retryable = http.StatusServiceUnavailable, "operation_outcome_unknown", "The configuration operation may have committed. Retry with the same Idempotency-Key.", true
 	default:
 		a.logFailure("configuration operation failed", r, err)
 	}
@@ -61,7 +65,7 @@ func (a *API) writeRegistryError(w http.ResponseWriter, r *http.Request, err err
 	case errors.Is(err, registry.ErrConflict):
 		value.Status, value.Code, value.Message, value.Retryable = http.StatusConflict, "conflict", "Registry facts changed.", false
 	case errors.Is(err, registry.ErrIdempotencyConflict):
-		value.Status, value.Code, value.Message, value.Retryable = http.StatusConflict, "idempotency_conflict", "Idempotency-Key was already used for different Provider input.", false
+		value.Status, value.Code, value.Message, value.Retryable = http.StatusConflict, "idempotency_conflict", "Idempotency-Key was already used for different registry input.", false
 	case errors.Is(err, registry.ErrProviderEnabled):
 		value.Status, value.Code, value.Message, value.Retryable = http.StatusConflict, "provider_must_be_disabled", "Disable the Provider before changing its type or Base URL.", false
 	case errors.Is(err, registry.ErrValidationUnavailable):
@@ -99,6 +103,10 @@ func (a *API) writeIdentityError(w http.ResponseWriter, r *http.Request, err err
 		value.Status, value.Code, value.Message, value.Retryable = http.StatusConflict, "invitation_unavailable", "The invitation cannot be claimed.", false
 	case errors.Is(err, identity.ErrConflict):
 		value.Status, value.Code, value.Message, value.Retryable = http.StatusConflict, "conflict", "Identity facts changed.", false
+	case errors.Is(err, identity.ErrIdempotencyConflict):
+		value.Status, value.Code, value.Message, value.Retryable = http.StatusConflict, "idempotency_conflict", "Idempotency-Key was already used for different identity input.", false
+	case errors.Is(err, identity.ErrOutcomeUnknown):
+		value.Status, value.Code, value.Message, value.Retryable = http.StatusServiceUnavailable, "operation_outcome_unknown", "The identity operation may have committed. Retry with the same Idempotency-Key.", true
 	case errors.Is(err, identity.ErrNotFound):
 		value.Status, value.Code, value.Message, value.Retryable = http.StatusNotFound, "not_found", "Identity record was not found.", false
 	default:

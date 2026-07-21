@@ -141,7 +141,11 @@ export function usePlaygroundRun() {
   const cancel = useCallback(() => {
     controllerRef.current?.abort()
     controllerRef.current = null
-    setFacts((current) => ({ ...current, phase: 'canceled', step: '请求已取消' }))
+    setFacts((current) => ({
+      ...current,
+      phase: 'uncertain',
+      step: '客户端已停止等待，服务端结果待确认',
+    }))
   }, [])
 
   const clear = useCallback(() => {

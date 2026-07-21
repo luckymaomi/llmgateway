@@ -1,55 +1,99 @@
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useQueryClient } from '@tanstack/react-query'
 import { Check, Copy } from 'lucide-react'
-import { useState, type FormEvent } from 'react'
+import { useState, type FormEvent, type MouseEvent } from 'react'
 import { useForm } from 'react-hook-form'
 import { z } from 'zod'
 
-import { accessApi, type CreatedInvitation } from '@/api'
-import { FormProblem } from '@/features/auth/form-problem'
+import { accessApi, ApiProblem, type CreatedInvitation, type InvitationInput } from '@/api'
+import {
+  clearPendingInvitationOperation,
+  loadPendingInvitationOperation,
+  storePendingInvitationOperation,
+} from '@/app/pending-operations'
+import { useSession } from '@/app/session'
 import { Button } from '@/components/ui/button'
 import { DialogFrame } from '@/components/ui/dialog'
-import { Field, Input, NativeSelect } from '@/components/ui/field'
+import { Field, Input } from '@/components/ui/field'
+import { FormProblem } from '@/features/auth/form-problem'
 
 const schema = z.object({
-  role: z.enum(['operator', 'member']),
   expiresAt: z.string().min(1, '请选择到期时间'),
 })
 
 type Values = z.infer<typeof schema>
 type CopyState = 'idle' | 'copied' | 'failed'
+type Submission = { input: InvitationInput; idempotencyKey: string }
+const pendingSubmissionSchema = z.object({
+  input: z.object({
+    expiresAt: z.iso.datetime(),
+  }),
+  idempotencyKey: z.string().uuid(),
+})
 
 export function InvitationForm({
   open,
   onOpenChange,
+  onPendingChange,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
+  onPendingChange: (pending: boolean) => void
 }) {
+  const session = useSession()
   const queryClient = useQueryClient()
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<unknown>()
   const [created, setCreated] = useState<CreatedInvitation | null>(null)
   const [copyState, setCopyState] = useState<CopyState>('idle')
+  const [uncertain, setUncertain] = useState<Submission | undefined>(() =>
+    readPendingSubmission(session.userId),
+  )
+  const [persistenceFailed, setPersistenceFailed] = useState(false)
   const form = useForm<Values>({
     resolver: zodResolver(schema),
-    defaultValues: { role: 'member', expiresAt: defaultExpiry() },
+    defaultValues: valuesFromPending(uncertain),
   })
 
   async function submit(values: Values): Promise<void> {
+    if (uncertain) return
+    const submission: Submission = {
+      input: {
+        expiresAt: new Date(values.expiresAt).toISOString(),
+      },
+      idempotencyKey: crypto.randomUUID(),
+    }
+    if (!storePendingInvitationOperation(session.userId, submission)) {
+      setPersistenceFailed(true)
+      return
+    }
+    setPersistenceFailed(false)
+    onPendingChange(true)
+    await run(submission)
+  }
+
+  async function run(submission: Submission): Promise<void> {
     setSubmitting(true)
     setSubmitError(undefined)
     try {
-      const result = await accessApi.createInvitation({
-        ...values,
-        expiresAt: new Date(values.expiresAt).toISOString(),
-      })
+      const result = await accessApi.createInvitation(submission.input, submission.idempotencyKey)
+      clearPendingInvitationOperation(session.userId)
+      setUncertain(undefined)
+      onPendingChange(false)
       setCreated(result)
       setCopyState('idle')
       form.reset(defaultValues())
       void queryClient.invalidateQueries({ queryKey: ['invitations'] })
     } catch (error) {
       setSubmitError(error)
+      if (isUnknownOutcome(error)) {
+        setUncertain(submission)
+        onPendingChange(true)
+      } else {
+        clearPendingInvitationOperation(session.userId)
+        setUncertain(undefined)
+        onPendingChange(false)
+      }
     } finally {
       setSubmitting(false)
     }
@@ -80,12 +124,26 @@ export function InvitationForm({
   }
 
   function close(): void {
-    if (submitting) return
+    if (submitting || uncertain) return
+    clearPendingInvitationOperation(session.userId)
+    onPendingChange(false)
     setCreated(null)
     setCopyState('idle')
     setSubmitError(undefined)
+    setPersistenceFailed(false)
     form.reset(defaultValues())
     onOpenChange(false)
+  }
+
+  async function retryUncertain(event: MouseEvent<HTMLButtonElement>): Promise<void> {
+    if (!uncertain || event.currentTarget.dataset.submissionPending === 'true') return
+    const button = event.currentTarget
+    button.dataset.submissionPending = 'true'
+    try {
+      await run(uncertain)
+    } finally {
+      delete button.dataset.submissionPending
+    }
   }
 
   if (created) {
@@ -126,6 +184,8 @@ export function InvitationForm({
     )
   }
 
+  const controlsLocked = submitting || Boolean(uncertain)
+
   return (
     <DialogFrame
       open={open}
@@ -133,16 +193,22 @@ export function InvitationForm({
         if (!nextOpen) close()
       }}
       title="创建邀请"
-      dismissible={!submitting}
+      dismissible={!controlsLocked}
       footer={
-        <>
-          <Button variant="secondary" disabled={submitting} onClick={close}>
-            取消
+        uncertain ? (
+          <Button disabled={submitting} onClick={(event) => void retryUncertain(event)}>
+            {submitting ? '正在确认' : '确认原操作'}
           </Button>
-          <Button type="submit" form="invitation-form" disabled={submitting}>
-            {submitting ? '创建中' : '创建'}
-          </Button>
-        </>
+        ) : (
+          <>
+            <Button variant="secondary" disabled={submitting} onClick={close}>
+              取消
+            </Button>
+            <Button type="submit" form="invitation-form" disabled={submitting}>
+              {submitting ? '创建中' : '创建'}
+            </Button>
+          </>
+        )
       }
     >
       <form
@@ -150,20 +216,37 @@ export function InvitationForm({
         className="form-grid"
         onSubmit={(event) => void handleSubmit(event)}
       >
-        <Field label="角色" htmlFor="invitation-role" error={form.formState.errors.role?.message}>
-          <NativeSelect id="invitation-role" autoFocus {...form.register('role')}>
-            <option value="member">成员</option>
-            <option value="operator">运维人员</option>
-          </NativeSelect>
-        </Field>
         <Field
           label="到期时间"
           htmlFor="invitation-expiry"
           error={form.formState.errors.expiresAt?.message}
         >
-          <Input id="invitation-expiry" type="datetime-local" {...form.register('expiresAt')} />
+          <Input
+            id="invitation-expiry"
+            autoFocus
+            type="datetime-local"
+            readOnly={controlsLocked}
+            {...form.register('expiresAt')}
+          />
         </Field>
-        <FormProblem error={submitError} />
+        {uncertain ? (
+          <div className="inline-problem" role="alert">
+            <strong>创建结果暂时无法确认。</strong>
+            <span>请确认原操作；系统会使用同一幂等键，不会创建第二条邀请。</span>
+            {submitError instanceof ApiProblem && submitError.requestId ? (
+              <span>Request ID：{submitError.requestId}</span>
+            ) : null}
+          </div>
+        ) : (
+          <>
+            {persistenceFailed ? (
+              <div className="inline-problem" role="alert">
+                浏览器无法保存待确认操作，本次未提交。请允许当前标签页使用会话存储后重试。
+              </div>
+            ) : null}
+            <FormProblem error={submitError} />
+          </>
+        )}
       </form>
     </DialogFrame>
   )
@@ -171,9 +254,33 @@ export function InvitationForm({
 
 function defaultExpiry(): string {
   const date = new Date(Date.now() + 7 * 24 * 60 * 60 * 1_000)
-  return date.toISOString().slice(0, 16)
+  return localDateTime(date)
 }
 
 function defaultValues(): Values {
-  return { role: 'member', expiresAt: defaultExpiry() }
+  return { expiresAt: defaultExpiry() }
+}
+
+function readPendingSubmission(userId: string): Submission | undefined {
+  const parsed = pendingSubmissionSchema.safeParse(loadPendingInvitationOperation(userId))
+  if (parsed.success) return parsed.data
+  clearPendingInvitationOperation(userId)
+  return undefined
+}
+
+function valuesFromPending(pending?: Submission): Values {
+  if (!pending) return defaultValues()
+  return {
+    expiresAt: localDateTime(new Date(pending.input.expiresAt)),
+  }
+}
+
+function localDateTime(date: Date): string {
+  const offsetMilliseconds = date.getTimezoneOffset() * 60_000
+  return new Date(date.getTime() - offsetMilliseconds).toISOString().slice(0, 16)
+}
+
+function isUnknownOutcome(error: unknown): boolean {
+  if (error instanceof DOMException && error.name === 'AbortError') return true
+  return error instanceof ApiProblem && (error.retryable || error.status >= 500)
 }

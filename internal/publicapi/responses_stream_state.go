@@ -14,21 +14,22 @@ import (
 )
 
 type responseStream struct {
-	writer     http.ResponseWriter
-	flusher    http.Flusher
-	request    protocol.ResponsesRequest
-	requestID  uuid.UUID
-	responseID string
-	model      string
-	createdAt  int64
-	sequence   int64
-	started    bool
-	nextOutput int
-	message    responseMessageStream
-	reasoning  responseReasoningStream
-	tools      map[int]*responseToolStream
-	usage      *canonical.Usage
-	finish     canonical.FinishReason
+	writer           http.ResponseWriter
+	flusher          http.Flusher
+	request          protocol.ResponsesRequest
+	responseRecordID uuid.UUID
+	requestID        uuid.UUID
+	responseID       string
+	model            string
+	createdAt        int64
+	sequence         int64
+	started          bool
+	nextOutput       int
+	message          responseMessageStream
+	reasoning        responseReasoningStream
+	tools            map[int]*responseToolStream
+	usage            *canonical.Usage
+	finish           canonical.FinishReason
 }
 
 type responseMessageStream struct {

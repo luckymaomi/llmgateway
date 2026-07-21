@@ -100,6 +100,19 @@ func TestURLValidatorBlocksUnsafeDestinations(t *testing.T) {
 	}
 }
 
+func TestURLValidatorAllowsLiteralLoopbackOnlyWhenExplicitlyEnabled(t *testing.T) {
+	validator, err := NewURLValidator(SSRFPolicy{AllowLoopback: true})
+	if err != nil {
+		t.Fatalf("NewURLValidator() error = %v", err)
+	}
+	if _, err := validator.ValidateString(context.Background(), "https://127.0.0.1:8443/v1"); err != nil {
+		t.Fatalf("explicit loopback address rejected: %v", err)
+	}
+	if _, err := validator.ValidateString(context.Background(), "https://localhost:8443/v1"); !errors.Is(err, ErrUnsafeURL) {
+		t.Fatalf("localhost error = %v, want ErrUnsafeURL", err)
+	}
+}
+
 func TestURLValidatorAllowsOnlyConfiguredPrivateNetwork(t *testing.T) {
 	validator, err := NewURLValidator(SSRFPolicy{
 		AllowedPrivatePrefixes: []netip.Prefix{netip.MustParsePrefix("10.20.0.0/16")},

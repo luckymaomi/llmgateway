@@ -12,6 +12,59 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const claimRequestExecution = `-- name: ClaimRequestExecution :one
+UPDATE requests
+SET status = 'dispatching',
+    execution_id = $1,
+    execution_generation = CASE WHEN execution_id IS NULL THEN execution_generation + 1 ELSE execution_generation END,
+    execution_claimed_at = CASE WHEN execution_id IS NULL THEN now() ELSE execution_claimed_at END,
+    execution_heartbeat_at = now(),
+    updated_at = now()
+WHERE id = $2
+  AND (
+      (status = 'queued' AND execution_id IS NULL)
+      OR
+      (status = 'dispatching' AND execution_id = $1)
+  )
+RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
+`
+
+type ClaimRequestExecutionParams struct {
+	ExecutionID *uuid.UUID `json:"execution_id"`
+	ID          uuid.UUID  `json:"id"`
+}
+
+func (q *Queries) ClaimRequestExecution(ctx context.Context, arg ClaimRequestExecutionParams) (Request, error) {
+	row := q.db.QueryRow(ctx, claimRequestExecution, arg.ExecutionID, arg.ID)
+	var i Request
+	err := row.Scan(
+		&i.ID,
+		&i.IdempotencyKey,
+		&i.RequestDigest,
+		&i.UserID,
+		&i.GatewayKeyID,
+		&i.ModelID,
+		&i.EntitlementID,
+		&i.ConfigRevisionID,
+		&i.ResourceDomain,
+		&i.Status,
+		&i.Stream,
+		&i.ExecutionID,
+		&i.ExecutionGeneration,
+		&i.ExecutionClaimedAt,
+		&i.ExecutionHeartbeatAt,
+		&i.InputTokens,
+		&i.OutputTokens,
+		&i.UsageSource,
+		&i.ErrorKind,
+		&i.ErrorDetail,
+		&i.AcceptedAt,
+		&i.CompletedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const completeLedgerReservation = `-- name: CompleteLedgerReservation :one
 UPDATE ledger_reservations
 SET state = $1, charged_tokens = $2, usage_source = $3, terminal_event_id = $4, updated_at = now()
@@ -54,14 +107,20 @@ func (q *Queries) CompleteLedgerReservation(ctx context.Context, arg CompleteLed
 
 const completeRequest = `-- name: CompleteRequest :one
 UPDATE requests SET status = 'completed', input_tokens = $1, output_tokens = $2, usage_source = $3, error_kind = NULL, error_detail = NULL, completed_at = now(), updated_at = now()
-WHERE id = $4 RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
+WHERE id = $4
+  AND execution_id = $5
+  AND execution_generation = $6
+  AND status IN ('dispatching', 'streaming')
+RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
 `
 
 type CompleteRequestParams struct {
-	InputTokens  *int64      `json:"input_tokens"`
-	OutputTokens *int64      `json:"output_tokens"`
-	UsageSource  UsageSource `json:"usage_source"`
-	ID           uuid.UUID   `json:"id"`
+	InputTokens         *int64      `json:"input_tokens"`
+	OutputTokens        *int64      `json:"output_tokens"`
+	UsageSource         UsageSource `json:"usage_source"`
+	ID                  uuid.UUID   `json:"id"`
+	ExecutionID         *uuid.UUID  `json:"execution_id"`
+	ExecutionGeneration int64       `json:"execution_generation"`
 }
 
 func (q *Queries) CompleteRequest(ctx context.Context, arg CompleteRequestParams) (Request, error) {
@@ -70,6 +129,8 @@ func (q *Queries) CompleteRequest(ctx context.Context, arg CompleteRequestParams
 		arg.OutputTokens,
 		arg.UsageSource,
 		arg.ID,
+		arg.ExecutionID,
+		arg.ExecutionGeneration,
 	)
 	var i Request
 	err := row.Scan(
@@ -84,6 +145,10 @@ func (q *Queries) CompleteRequest(ctx context.Context, arg CompleteRequestParams
 		&i.ResourceDomain,
 		&i.Status,
 		&i.Stream,
+		&i.ExecutionID,
+		&i.ExecutionGeneration,
+		&i.ExecutionClaimedAt,
+		&i.ExecutionHeartbeatAt,
 		&i.InputTokens,
 		&i.OutputTokens,
 		&i.UsageSource,
@@ -97,20 +162,30 @@ func (q *Queries) CompleteRequest(ctx context.Context, arg CompleteRequestParams
 }
 
 const createAttempt = `-- name: CreateAttempt :one
-INSERT INTO request_attempts (request_id, credential_id, sequence, status)
-VALUES ($1, $2, $3, $4) RETURNING id, request_id, credential_id, sequence, status, upstream_request_id, http_status, error_kind, retry_after_at, sent_at, first_byte_at, completed_at, created_at
+INSERT INTO request_attempts (request_id, execution_id, execution_generation, credential_id, sequence, status)
+SELECT $1, $2, $3, $4, $5, $6
+FROM requests
+WHERE id = $1
+  AND execution_id = $2
+  AND execution_generation = $3
+  AND status IN ('dispatching', 'streaming')
+RETURNING id, request_id, execution_id, execution_generation, credential_id, sequence, status, upstream_request_id, http_status, error_kind, retry_after_at, sent_at, first_byte_at, completed_at, input_tokens, output_tokens, usage_source, created_at
 `
 
 type CreateAttemptParams struct {
-	RequestID    uuid.UUID     `json:"request_id"`
-	CredentialID uuid.UUID     `json:"credential_id"`
-	Sequence     int32         `json:"sequence"`
-	Status       AttemptStatus `json:"status"`
+	RequestID           uuid.UUID     `json:"request_id"`
+	ExecutionID         uuid.UUID     `json:"execution_id"`
+	ExecutionGeneration int64         `json:"execution_generation"`
+	CredentialID        uuid.UUID     `json:"credential_id"`
+	Sequence            int32         `json:"sequence"`
+	Status              AttemptStatus `json:"status"`
 }
 
 func (q *Queries) CreateAttempt(ctx context.Context, arg CreateAttemptParams) (RequestAttempt, error) {
 	row := q.db.QueryRow(ctx, createAttempt,
 		arg.RequestID,
+		arg.ExecutionID,
+		arg.ExecutionGeneration,
 		arg.CredentialID,
 		arg.Sequence,
 		arg.Status,
@@ -119,6 +194,8 @@ func (q *Queries) CreateAttempt(ctx context.Context, arg CreateAttemptParams) (R
 	err := row.Scan(
 		&i.ID,
 		&i.RequestID,
+		&i.ExecutionID,
+		&i.ExecutionGeneration,
 		&i.CredentialID,
 		&i.Sequence,
 		&i.Status,
@@ -129,6 +206,9 @@ func (q *Queries) CreateAttempt(ctx context.Context, arg CreateAttemptParams) (R
 		&i.SentAt,
 		&i.FirstByteAt,
 		&i.CompletedAt,
+		&i.InputTokens,
+		&i.OutputTokens,
+		&i.UsageSource,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -283,12 +363,13 @@ func (q *Queries) CreateLedgerReservation(ctx context.Context, arg CreateLedgerR
 }
 
 const createRequest = `-- name: CreateRequest :one
-INSERT INTO requests (idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
+INSERT INTO requests (id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
 `
 
 type CreateRequestParams struct {
+	ID               uuid.UUID      `json:"id"`
 	IdempotencyKey   *string        `json:"idempotency_key"`
 	RequestDigest    []byte         `json:"request_digest"`
 	UserID           uuid.UUID      `json:"user_id"`
@@ -303,6 +384,7 @@ type CreateRequestParams struct {
 
 func (q *Queries) CreateRequest(ctx context.Context, arg CreateRequestParams) (Request, error) {
 	row := q.db.QueryRow(ctx, createRequest,
+		arg.ID,
 		arg.IdempotencyKey,
 		arg.RequestDigest,
 		arg.UserID,
@@ -327,6 +409,10 @@ func (q *Queries) CreateRequest(ctx context.Context, arg CreateRequestParams) (R
 		&i.ResourceDomain,
 		&i.Status,
 		&i.Stream,
+		&i.ExecutionID,
+		&i.ExecutionGeneration,
+		&i.ExecutionClaimedAt,
+		&i.ExecutionHeartbeatAt,
 		&i.InputTokens,
 		&i.OutputTokens,
 		&i.UsageSource,
@@ -334,31 +420,6 @@ func (q *Queries) CreateRequest(ctx context.Context, arg CreateRequestParams) (R
 		&i.ErrorDetail,
 		&i.AcceptedAt,
 		&i.CompletedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const createResponseRecord = `-- name: CreateResponseRecord :one
-INSERT INTO response_records (request_id, status) VALUES ($1, $2) RETURNING id, request_id, status, output, error, cancel_requested_at, created_at, updated_at
-`
-
-type CreateResponseRecordParams struct {
-	RequestID uuid.UUID     `json:"request_id"`
-	Status    RequestStatus `json:"status"`
-}
-
-func (q *Queries) CreateResponseRecord(ctx context.Context, arg CreateResponseRecordParams) (ResponseRecord, error) {
-	row := q.db.QueryRow(ctx, createResponseRecord, arg.RequestID, arg.Status)
-	var i ResponseRecord
-	err := row.Scan(
-		&i.ID,
-		&i.RequestID,
-		&i.Status,
-		&i.Output,
-		&i.Error,
-		&i.CancelRequestedAt,
-		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
 	return i, err
@@ -375,31 +436,34 @@ func (q *Queries) EntitlementBalance(ctx context.Context, entitlementID uuid.UUI
 	return column_1, err
 }
 
-const failRequestWithUsage = `-- name: FailRequestWithUsage :one
+const failRequest = `-- name: FailRequest :one
 UPDATE requests
-SET status = 'failed', input_tokens = $1, output_tokens = $2, usage_source = $3,
-    error_kind = $4, error_detail = $5, completed_at = now(), updated_at = now()
-WHERE id = $6
-RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
+SET status = 'failed', error_kind = $1, error_detail = $2, completed_at = now(), updated_at = now()
+WHERE id = $3
+  AND status IN ('queued', 'dispatching', 'streaming')
+  AND (
+      ($4::uuid IS NULL AND execution_id IS NULL AND execution_generation = 0)
+      OR
+      (execution_id = $4 AND execution_generation = $5)
+  )
+RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
 `
 
-type FailRequestWithUsageParams struct {
-	InputTokens  *int64      `json:"input_tokens"`
-	OutputTokens *int64      `json:"output_tokens"`
-	UsageSource  UsageSource `json:"usage_source"`
-	ErrorKind    *string     `json:"error_kind"`
-	ErrorDetail  *string     `json:"error_detail"`
-	ID           uuid.UUID   `json:"id"`
+type FailRequestParams struct {
+	ErrorKind           *string    `json:"error_kind"`
+	ErrorDetail         *string    `json:"error_detail"`
+	ID                  uuid.UUID  `json:"id"`
+	ExecutionID         *uuid.UUID `json:"execution_id"`
+	ExecutionGeneration int64      `json:"execution_generation"`
 }
 
-func (q *Queries) FailRequestWithUsage(ctx context.Context, arg FailRequestWithUsageParams) (Request, error) {
-	row := q.db.QueryRow(ctx, failRequestWithUsage,
-		arg.InputTokens,
-		arg.OutputTokens,
-		arg.UsageSource,
+func (q *Queries) FailRequest(ctx context.Context, arg FailRequestParams) (Request, error) {
+	row := q.db.QueryRow(ctx, failRequest,
 		arg.ErrorKind,
 		arg.ErrorDetail,
 		arg.ID,
+		arg.ExecutionID,
+		arg.ExecutionGeneration,
 	)
 	var i Request
 	err := row.Scan(
@@ -414,6 +478,10 @@ func (q *Queries) FailRequestWithUsage(ctx context.Context, arg FailRequestWithU
 		&i.ResourceDomain,
 		&i.Status,
 		&i.Stream,
+		&i.ExecutionID,
+		&i.ExecutionGeneration,
+		&i.ExecutionClaimedAt,
+		&i.ExecutionHeartbeatAt,
 		&i.InputTokens,
 		&i.OutputTokens,
 		&i.UsageSource,
@@ -426,20 +494,111 @@ func (q *Queries) FailRequestWithUsage(ctx context.Context, arg FailRequestWithU
 	return i, err
 }
 
-const getAuthorizedModelDomain = `-- name: GetAuthorizedModelDomain :one
-SELECT m.resource_domain
-FROM models m
-JOIN model_authorizations a ON a.model_id = m.id AND a.user_id = $1
-WHERE m.id = $2 AND m.enabled = true
+const failRequestWithUsage = `-- name: FailRequestWithUsage :one
+UPDATE requests
+SET status = 'failed', input_tokens = $1, output_tokens = $2, usage_source = $3,
+    error_kind = $4, error_detail = $5, completed_at = now(), updated_at = now()
+WHERE id = $6
+  AND execution_id = $7
+  AND execution_generation = $8
+  AND status IN ('dispatching', 'streaming')
+RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
 `
 
-type GetAuthorizedModelDomainParams struct {
-	UserID  uuid.UUID `json:"user_id"`
-	ModelID uuid.UUID `json:"model_id"`
+type FailRequestWithUsageParams struct {
+	InputTokens         *int64      `json:"input_tokens"`
+	OutputTokens        *int64      `json:"output_tokens"`
+	UsageSource         UsageSource `json:"usage_source"`
+	ErrorKind           *string     `json:"error_kind"`
+	ErrorDetail         *string     `json:"error_detail"`
+	ID                  uuid.UUID   `json:"id"`
+	ExecutionID         *uuid.UUID  `json:"execution_id"`
+	ExecutionGeneration int64       `json:"execution_generation"`
 }
 
-func (q *Queries) GetAuthorizedModelDomain(ctx context.Context, arg GetAuthorizedModelDomainParams) (ResourceDomain, error) {
-	row := q.db.QueryRow(ctx, getAuthorizedModelDomain, arg.UserID, arg.ModelID)
+func (q *Queries) FailRequestWithUsage(ctx context.Context, arg FailRequestWithUsageParams) (Request, error) {
+	row := q.db.QueryRow(ctx, failRequestWithUsage,
+		arg.InputTokens,
+		arg.OutputTokens,
+		arg.UsageSource,
+		arg.ErrorKind,
+		arg.ErrorDetail,
+		arg.ID,
+		arg.ExecutionID,
+		arg.ExecutionGeneration,
+	)
+	var i Request
+	err := row.Scan(
+		&i.ID,
+		&i.IdempotencyKey,
+		&i.RequestDigest,
+		&i.UserID,
+		&i.GatewayKeyID,
+		&i.ModelID,
+		&i.EntitlementID,
+		&i.ConfigRevisionID,
+		&i.ResourceDomain,
+		&i.Status,
+		&i.Stream,
+		&i.ExecutionID,
+		&i.ExecutionGeneration,
+		&i.ExecutionClaimedAt,
+		&i.ExecutionHeartbeatAt,
+		&i.InputTokens,
+		&i.OutputTokens,
+		&i.UsageSource,
+		&i.ErrorKind,
+		&i.ErrorDetail,
+		&i.AcceptedAt,
+		&i.CompletedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getActiveGatewayKeyForRequest = `-- name: GetActiveGatewayKeyForRequest :one
+SELECT k.user_id
+FROM gateway_keys k
+JOIN users u ON u.id = k.user_id
+WHERE k.id = $1
+  AND k.user_id = $2
+  AND k.revoked_at IS NULL
+  AND (k.expires_at IS NULL OR k.expires_at > now())
+  AND u.status = 'active'
+FOR SHARE OF k, u
+`
+
+type GetActiveGatewayKeyForRequestParams struct {
+	GatewayKeyID uuid.UUID `json:"gateway_key_id"`
+	UserID       uuid.UUID `json:"user_id"`
+}
+
+func (q *Queries) GetActiveGatewayKeyForRequest(ctx context.Context, arg GetActiveGatewayKeyForRequestParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, getActiveGatewayKeyForRequest, arg.GatewayKeyID, arg.UserID)
+	var user_id uuid.UUID
+	err := row.Scan(&user_id)
+	return user_id, err
+}
+
+const getAuthorizedGatewayKeyModelDomain = `-- name: GetAuthorizedGatewayKeyModelDomain :one
+SELECT model.resource_domain
+FROM config_revision_models model
+JOIN config_revisions revision ON revision.id = model.revision_id
+JOIN gateway_key_models key_model
+  ON key_model.model_id = model.model_id AND key_model.gateway_key_id = $1
+WHERE model.revision_id = $2
+  AND model.model_id = $3
+  AND revision.published_at IS NOT NULL
+`
+
+type GetAuthorizedGatewayKeyModelDomainParams struct {
+	GatewayKeyID uuid.UUID `json:"gateway_key_id"`
+	RevisionID   uuid.UUID `json:"revision_id"`
+	ModelID      uuid.UUID `json:"model_id"`
+}
+
+func (q *Queries) GetAuthorizedGatewayKeyModelDomain(ctx context.Context, arg GetAuthorizedGatewayKeyModelDomainParams) (ResourceDomain, error) {
+	row := q.db.QueryRow(ctx, getAuthorizedGatewayKeyModelDomain, arg.GatewayKeyID, arg.RevisionID, arg.ModelID)
 	var resource_domain ResourceDomain
 	err := row.Scan(&resource_domain)
 	return resource_domain, err
@@ -601,7 +760,7 @@ func (q *Queries) GetModelDomain(ctx context.Context, modelID uuid.UUID) (Resour
 }
 
 const getRequest = `-- name: GetRequest :one
-SELECT id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at FROM requests WHERE id = $1
+SELECT id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at FROM requests WHERE id = $1
 `
 
 func (q *Queries) GetRequest(ctx context.Context, id uuid.UUID) (Request, error) {
@@ -619,6 +778,10 @@ func (q *Queries) GetRequest(ctx context.Context, id uuid.UUID) (Request, error)
 		&i.ResourceDomain,
 		&i.Status,
 		&i.Stream,
+		&i.ExecutionID,
+		&i.ExecutionGeneration,
+		&i.ExecutionClaimedAt,
+		&i.ExecutionHeartbeatAt,
 		&i.InputTokens,
 		&i.OutputTokens,
 		&i.UsageSource,
@@ -632,7 +795,7 @@ func (q *Queries) GetRequest(ctx context.Context, id uuid.UUID) (Request, error)
 }
 
 const getRequestByIdempotencyKey = `-- name: GetRequestByIdempotencyKey :one
-SELECT id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at FROM requests WHERE gateway_key_id = $1 AND idempotency_key = $2
+SELECT id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at FROM requests WHERE gateway_key_id = $1 AND idempotency_key = $2
 `
 
 type GetRequestByIdempotencyKeyParams struct {
@@ -655,6 +818,10 @@ func (q *Queries) GetRequestByIdempotencyKey(ctx context.Context, arg GetRequest
 		&i.ResourceDomain,
 		&i.Status,
 		&i.Stream,
+		&i.ExecutionID,
+		&i.ExecutionGeneration,
+		&i.ExecutionClaimedAt,
+		&i.ExecutionHeartbeatAt,
 		&i.InputTokens,
 		&i.OutputTokens,
 		&i.UsageSource,
@@ -668,7 +835,7 @@ func (q *Queries) GetRequestByIdempotencyKey(ctx context.Context, arg GetRequest
 }
 
 const getRequestForUpdate = `-- name: GetRequestForUpdate :one
-SELECT id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at FROM requests WHERE id = $1 FOR UPDATE
+SELECT id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at FROM requests WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) GetRequestForUpdate(ctx context.Context, id uuid.UUID) (Request, error) {
@@ -686,6 +853,10 @@ func (q *Queries) GetRequestForUpdate(ctx context.Context, id uuid.UUID) (Reques
 		&i.ResourceDomain,
 		&i.Status,
 		&i.Stream,
+		&i.ExecutionID,
+		&i.ExecutionGeneration,
+		&i.ExecutionClaimedAt,
+		&i.ExecutionHeartbeatAt,
 		&i.InputTokens,
 		&i.OutputTokens,
 		&i.UsageSource,
@@ -698,46 +869,51 @@ func (q *Queries) GetRequestForUpdate(ctx context.Context, id uuid.UUID) (Reques
 	return i, err
 }
 
-const getResponseRecord = `-- name: GetResponseRecord :one
-SELECT id, request_id, status, output, error, cancel_requested_at, created_at, updated_at FROM response_records WHERE id = $1
+const heartbeatRequestExecution = `-- name: HeartbeatRequestExecution :one
+UPDATE requests
+SET execution_heartbeat_at = now(), updated_at = now()
+WHERE id = $1
+  AND execution_id = $2
+  AND execution_generation = $3
+  AND status IN ('dispatching', 'streaming')
+RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
 `
 
-func (q *Queries) GetResponseRecord(ctx context.Context, id uuid.UUID) (ResponseRecord, error) {
-	row := q.db.QueryRow(ctx, getResponseRecord, id)
-	var i ResponseRecord
+type HeartbeatRequestExecutionParams struct {
+	ID                  uuid.UUID  `json:"id"`
+	ExecutionID         *uuid.UUID `json:"execution_id"`
+	ExecutionGeneration int64      `json:"execution_generation"`
+}
+
+func (q *Queries) HeartbeatRequestExecution(ctx context.Context, arg HeartbeatRequestExecutionParams) (Request, error) {
+	row := q.db.QueryRow(ctx, heartbeatRequestExecution, arg.ID, arg.ExecutionID, arg.ExecutionGeneration)
+	var i Request
 	err := row.Scan(
 		&i.ID,
-		&i.RequestID,
+		&i.IdempotencyKey,
+		&i.RequestDigest,
+		&i.UserID,
+		&i.GatewayKeyID,
+		&i.ModelID,
+		&i.EntitlementID,
+		&i.ConfigRevisionID,
+		&i.ResourceDomain,
 		&i.Status,
-		&i.Output,
-		&i.Error,
-		&i.CancelRequestedAt,
-		&i.CreatedAt,
+		&i.Stream,
+		&i.ExecutionID,
+		&i.ExecutionGeneration,
+		&i.ExecutionClaimedAt,
+		&i.ExecutionHeartbeatAt,
+		&i.InputTokens,
+		&i.OutputTokens,
+		&i.UsageSource,
+		&i.ErrorKind,
+		&i.ErrorDetail,
+		&i.AcceptedAt,
+		&i.CompletedAt,
 		&i.UpdatedAt,
 	)
 	return i, err
-}
-
-const isGatewayKeyOwnedByUser = `-- name: IsGatewayKeyOwnedByUser :one
-SELECT EXISTS (
-  SELECT 1 FROM gateway_keys
-  WHERE id = $1
-    AND user_id = $2
-    AND revoked_at IS NULL
-    AND (expires_at IS NULL OR expires_at > now())
-)
-`
-
-type IsGatewayKeyOwnedByUserParams struct {
-	GatewayKeyID uuid.UUID `json:"gateway_key_id"`
-	UserID       uuid.UUID `json:"user_id"`
-}
-
-func (q *Queries) IsGatewayKeyOwnedByUser(ctx context.Context, arg IsGatewayKeyOwnedByUserParams) (bool, error) {
-	row := q.db.QueryRow(ctx, isGatewayKeyOwnedByUser, arg.GatewayKeyID, arg.UserID)
-	var exists bool
-	err := row.Scan(&exists)
-	return exists, err
 }
 
 const listActiveEntitlements = `-- name: ListActiveEntitlements :many
@@ -987,8 +1163,79 @@ func (q *Queries) ListLedgerEventsByEntitlement(ctx context.Context, entitlement
 	return items, nil
 }
 
+const listRecoverableRequestSettlements = `-- name: ListRecoverableRequestSettlements :many
+SELECT request.id AS request_id,
+       request.execution_id,
+       request.execution_generation,
+       completed_attempt.input_tokens,
+       completed_attempt.output_tokens,
+       completed_attempt.usage_source
+FROM requests AS request
+JOIN ledger_reservations AS reservation
+  ON reservation.request_id = request.id AND reservation.state = 'reserved'
+JOIN LATERAL (
+    SELECT attempt.input_tokens, attempt.output_tokens, attempt.usage_source
+    FROM request_attempts AS attempt
+    WHERE attempt.request_id = request.id
+      AND attempt.execution_id = request.execution_id
+      AND attempt.execution_generation = request.execution_generation
+      AND attempt.status = 'completed'
+      AND attempt.input_tokens IS NOT NULL
+      AND attempt.output_tokens IS NOT NULL
+      AND attempt.usage_source IN ('authoritative', 'estimated')
+    ORDER BY attempt.sequence DESC
+    LIMIT 1
+) AS completed_attempt ON true
+WHERE request.status IN ('dispatching', 'streaming')
+  AND request.execution_id IS NOT NULL
+  AND request.execution_heartbeat_at < $1
+ORDER BY request.execution_heartbeat_at, request.id
+LIMIT $2
+`
+
+type ListRecoverableRequestSettlementsParams struct {
+	StaleBefore pgtype.Timestamptz `json:"stale_before"`
+	BatchSize   int32              `json:"batch_size"`
+}
+
+type ListRecoverableRequestSettlementsRow struct {
+	RequestID           uuid.UUID   `json:"request_id"`
+	ExecutionID         *uuid.UUID  `json:"execution_id"`
+	ExecutionGeneration int64       `json:"execution_generation"`
+	InputTokens         *int64      `json:"input_tokens"`
+	OutputTokens        *int64      `json:"output_tokens"`
+	UsageSource         UsageSource `json:"usage_source"`
+}
+
+func (q *Queries) ListRecoverableRequestSettlements(ctx context.Context, arg ListRecoverableRequestSettlementsParams) ([]ListRecoverableRequestSettlementsRow, error) {
+	rows, err := q.db.Query(ctx, listRecoverableRequestSettlements, arg.StaleBefore, arg.BatchSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRecoverableRequestSettlementsRow{}
+	for rows.Next() {
+		var i ListRecoverableRequestSettlementsRow
+		if err := rows.Scan(
+			&i.RequestID,
+			&i.ExecutionID,
+			&i.ExecutionGeneration,
+			&i.InputTokens,
+			&i.OutputTokens,
+			&i.UsageSource,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRequestAttempts = `-- name: ListRequestAttempts :many
-SELECT id, request_id, credential_id, sequence, status, upstream_request_id, http_status, error_kind, retry_after_at, sent_at, first_byte_at, completed_at, created_at FROM request_attempts WHERE request_id = $1 ORDER BY sequence, id
+SELECT id, request_id, execution_id, execution_generation, credential_id, sequence, status, upstream_request_id, http_status, error_kind, retry_after_at, sent_at, first_byte_at, completed_at, input_tokens, output_tokens, usage_source, created_at FROM request_attempts WHERE request_id = $1 ORDER BY sequence, id
 `
 
 func (q *Queries) ListRequestAttempts(ctx context.Context, requestID uuid.UUID) ([]RequestAttempt, error) {
@@ -1003,6 +1250,8 @@ func (q *Queries) ListRequestAttempts(ctx context.Context, requestID uuid.UUID) 
 		if err := rows.Scan(
 			&i.ID,
 			&i.RequestID,
+			&i.ExecutionID,
+			&i.ExecutionGeneration,
 			&i.CredentialID,
 			&i.Sequence,
 			&i.Status,
@@ -1013,6 +1262,9 @@ func (q *Queries) ListRequestAttempts(ctx context.Context, requestID uuid.UUID) 
 			&i.SentAt,
 			&i.FirstByteAt,
 			&i.CompletedAt,
+			&i.InputTokens,
+			&i.OutputTokens,
+			&i.UsageSource,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -1025,8 +1277,73 @@ func (q *Queries) ListRequestAttempts(ctx context.Context, requestID uuid.UUID) 
 	return items, nil
 }
 
+const listRequestUsage = `-- name: ListRequestUsage :many
+SELECT request.id, request.user_id, key.prefix AS key_prefix,
+       model.public_name AS model_alias, request.resource_domain,
+       request.input_tokens, request.output_tokens, request.usage_source, request.completed_at
+FROM requests AS request
+JOIN gateway_keys AS key ON key.id = request.gateway_key_id
+JOIN config_revision_models AS model
+  ON model.revision_id = request.config_revision_id AND model.model_id = request.model_id
+WHERE ($1::uuid IS NULL OR request.user_id = $1)
+  AND request.input_tokens IS NOT NULL
+  AND request.output_tokens IS NOT NULL
+  AND request.usage_source IN ('authoritative', 'estimated')
+  AND request.completed_at IS NOT NULL
+ORDER BY request.completed_at DESC, request.id
+LIMIT $3 OFFSET $2
+`
+
+type ListRequestUsageParams struct {
+	UserID     *uuid.UUID `json:"user_id"`
+	PageOffset int32      `json:"page_offset"`
+	PageSize   int32      `json:"page_size"`
+}
+
+type ListRequestUsageRow struct {
+	ID             uuid.UUID          `json:"id"`
+	UserID         uuid.UUID          `json:"user_id"`
+	KeyPrefix      string             `json:"key_prefix"`
+	ModelAlias     string             `json:"model_alias"`
+	ResourceDomain ResourceDomain     `json:"resource_domain"`
+	InputTokens    *int64             `json:"input_tokens"`
+	OutputTokens   *int64             `json:"output_tokens"`
+	UsageSource    UsageSource        `json:"usage_source"`
+	CompletedAt    pgtype.Timestamptz `json:"completed_at"`
+}
+
+func (q *Queries) ListRequestUsage(ctx context.Context, arg ListRequestUsageParams) ([]ListRequestUsageRow, error) {
+	rows, err := q.db.Query(ctx, listRequestUsage, arg.UserID, arg.PageOffset, arg.PageSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRequestUsageRow{}
+	for rows.Next() {
+		var i ListRequestUsageRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.KeyPrefix,
+			&i.ModelAlias,
+			&i.ResourceDomain,
+			&i.InputTokens,
+			&i.OutputTokens,
+			&i.UsageSource,
+			&i.CompletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRequests = `-- name: ListRequests :many
-SELECT id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at FROM requests
+SELECT id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at FROM requests
 WHERE ($1::uuid IS NULL OR user_id = $1)
 ORDER BY accepted_at DESC, id LIMIT $3 OFFSET $2
 `
@@ -1058,6 +1375,10 @@ func (q *Queries) ListRequests(ctx context.Context, arg ListRequestsParams) ([]R
 			&i.ResourceDomain,
 			&i.Status,
 			&i.Stream,
+			&i.ExecutionID,
+			&i.ExecutionGeneration,
+			&i.ExecutionClaimedAt,
+			&i.ExecutionHeartbeatAt,
 			&i.InputTokens,
 			&i.OutputTokens,
 			&i.UsageSource,
@@ -1077,45 +1398,37 @@ func (q *Queries) ListRequests(ctx context.Context, arg ListRequestsParams) ([]R
 	return items, nil
 }
 
-const listUserModelAuthorizations = `-- name: ListUserModelAuthorizations :many
-SELECT a.user_id, a.model_id, a.created_at, m.public_name, m.display_name, m.resource_domain, m.enabled
-FROM model_authorizations a
-JOIN models m ON m.id = a.model_id
-WHERE a.user_id = $1
-ORDER BY m.public_name, m.id
+const listStaleQueuedRequests = `-- name: ListStaleQueuedRequests :many
+SELECT request.id
+FROM requests AS request
+JOIN ledger_reservations AS reservation
+  ON reservation.request_id = request.id AND reservation.state = 'reserved'
+WHERE request.status = 'queued'
+  AND request.execution_id IS NULL
+  AND request.execution_generation = 0
+  AND request.updated_at < $1
+ORDER BY request.updated_at, request.id
+LIMIT $2
 `
 
-type ListUserModelAuthorizationsRow struct {
-	UserID         uuid.UUID          `json:"user_id"`
-	ModelID        uuid.UUID          `json:"model_id"`
-	CreatedAt      pgtype.Timestamptz `json:"created_at"`
-	PublicName     string             `json:"public_name"`
-	DisplayName    string             `json:"display_name"`
-	ResourceDomain ResourceDomain     `json:"resource_domain"`
-	Enabled        bool               `json:"enabled"`
+type ListStaleQueuedRequestsParams struct {
+	StaleBefore pgtype.Timestamptz `json:"stale_before"`
+	BatchSize   int32              `json:"batch_size"`
 }
 
-func (q *Queries) ListUserModelAuthorizations(ctx context.Context, userID uuid.UUID) ([]ListUserModelAuthorizationsRow, error) {
-	rows, err := q.db.Query(ctx, listUserModelAuthorizations, userID)
+func (q *Queries) ListStaleQueuedRequests(ctx context.Context, arg ListStaleQueuedRequestsParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, listStaleQueuedRequests, arg.StaleBefore, arg.BatchSize)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListUserModelAuthorizationsRow{}
+	items := []uuid.UUID{}
 	for rows.Next() {
-		var i ListUserModelAuthorizationsRow
-		if err := rows.Scan(
-			&i.UserID,
-			&i.ModelID,
-			&i.CreatedAt,
-			&i.PublicName,
-			&i.DisplayName,
-			&i.ResourceDomain,
-			&i.Enabled,
-		); err != nil {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
 			return nil, err
 		}
-		items = append(items, i)
+		items = append(items, id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -1123,84 +1436,79 @@ func (q *Queries) ListUserModelAuthorizations(ctx context.Context, userID uuid.U
 	return items, nil
 }
 
-const requestResponseCancellation = `-- name: RequestResponseCancellation :execrows
-UPDATE response_records SET cancel_requested_at = now(), updated_at = now() WHERE id = $1 AND status IN ('queued','dispatching','streaming')
+const markRequestExecutionStreaming = `-- name: MarkRequestExecutionStreaming :one
+UPDATE requests
+SET status = 'streaming', execution_heartbeat_at = now(), updated_at = now()
+WHERE id = $1
+  AND execution_id = $2
+  AND execution_generation = $3
+  AND status IN ('dispatching', 'streaming')
+RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
 `
 
-func (q *Queries) RequestResponseCancellation(ctx context.Context, id uuid.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, requestResponseCancellation, id)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+type MarkRequestExecutionStreamingParams struct {
+	ID                  uuid.UUID  `json:"id"`
+	ExecutionID         *uuid.UUID `json:"execution_id"`
+	ExecutionGeneration int64      `json:"execution_generation"`
 }
 
-const updateAttempt = `-- name: UpdateAttempt :one
-UPDATE request_attempts SET status = $1, upstream_request_id = $2, http_status = $3, error_kind = $4, retry_after_at = $5, sent_at = coalesce(sent_at, $6), first_byte_at = coalesce(first_byte_at, $7), completed_at = $8
-WHERE id = $9 RETURNING id, request_id, credential_id, sequence, status, upstream_request_id, http_status, error_kind, retry_after_at, sent_at, first_byte_at, completed_at, created_at
-`
-
-type UpdateAttemptParams struct {
-	Status            AttemptStatus      `json:"status"`
-	UpstreamRequestID *string            `json:"upstream_request_id"`
-	HttpStatus        *int32             `json:"http_status"`
-	ErrorKind         *string            `json:"error_kind"`
-	RetryAfterAt      pgtype.Timestamptz `json:"retry_after_at"`
-	SentAt            pgtype.Timestamptz `json:"sent_at"`
-	FirstByteAt       pgtype.Timestamptz `json:"first_byte_at"`
-	CompletedAt       pgtype.Timestamptz `json:"completed_at"`
-	ID                uuid.UUID          `json:"id"`
-}
-
-func (q *Queries) UpdateAttempt(ctx context.Context, arg UpdateAttemptParams) (RequestAttempt, error) {
-	row := q.db.QueryRow(ctx, updateAttempt,
-		arg.Status,
-		arg.UpstreamRequestID,
-		arg.HttpStatus,
-		arg.ErrorKind,
-		arg.RetryAfterAt,
-		arg.SentAt,
-		arg.FirstByteAt,
-		arg.CompletedAt,
-		arg.ID,
-	)
-	var i RequestAttempt
+func (q *Queries) MarkRequestExecutionStreaming(ctx context.Context, arg MarkRequestExecutionStreamingParams) (Request, error) {
+	row := q.db.QueryRow(ctx, markRequestExecutionStreaming, arg.ID, arg.ExecutionID, arg.ExecutionGeneration)
+	var i Request
 	err := row.Scan(
 		&i.ID,
-		&i.RequestID,
-		&i.CredentialID,
-		&i.Sequence,
+		&i.IdempotencyKey,
+		&i.RequestDigest,
+		&i.UserID,
+		&i.GatewayKeyID,
+		&i.ModelID,
+		&i.EntitlementID,
+		&i.ConfigRevisionID,
+		&i.ResourceDomain,
 		&i.Status,
-		&i.UpstreamRequestID,
-		&i.HttpStatus,
+		&i.Stream,
+		&i.ExecutionID,
+		&i.ExecutionGeneration,
+		&i.ExecutionClaimedAt,
+		&i.ExecutionHeartbeatAt,
+		&i.InputTokens,
+		&i.OutputTokens,
+		&i.UsageSource,
 		&i.ErrorKind,
-		&i.RetryAfterAt,
-		&i.SentAt,
-		&i.FirstByteAt,
+		&i.ErrorDetail,
+		&i.AcceptedAt,
 		&i.CompletedAt,
-		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
 
-const updateRequestStatus = `-- name: UpdateRequestStatus :one
-UPDATE requests SET status = $1, error_kind = $2, error_detail = $3, updated_at = now(), completed_at = CASE WHEN $1::request_status IN ('completed','failed','canceled','uncertain') THEN now() ELSE completed_at END
-WHERE id = $4 RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
+const markRequestExecutionUncertain = `-- name: MarkRequestExecutionUncertain :one
+UPDATE requests
+SET status = 'uncertain', error_kind = $1, error_detail = $2,
+    completed_at = now(), updated_at = now()
+WHERE id = $3
+  AND execution_id = $4
+  AND execution_generation = $5
+  AND status IN ('dispatching', 'streaming')
+RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
 `
 
-type UpdateRequestStatusParams struct {
-	Status      RequestStatus `json:"status"`
-	ErrorKind   *string       `json:"error_kind"`
-	ErrorDetail *string       `json:"error_detail"`
-	ID          uuid.UUID     `json:"id"`
+type MarkRequestExecutionUncertainParams struct {
+	ErrorKind           *string    `json:"error_kind"`
+	ErrorDetail         *string    `json:"error_detail"`
+	ID                  uuid.UUID  `json:"id"`
+	ExecutionID         *uuid.UUID `json:"execution_id"`
+	ExecutionGeneration int64      `json:"execution_generation"`
 }
 
-func (q *Queries) UpdateRequestStatus(ctx context.Context, arg UpdateRequestStatusParams) (Request, error) {
-	row := q.db.QueryRow(ctx, updateRequestStatus,
-		arg.Status,
+func (q *Queries) MarkRequestExecutionUncertain(ctx context.Context, arg MarkRequestExecutionUncertainParams) (Request, error) {
+	row := q.db.QueryRow(ctx, markRequestExecutionUncertain,
 		arg.ErrorKind,
 		arg.ErrorDetail,
 		arg.ID,
+		arg.ExecutionID,
+		arg.ExecutionGeneration,
 	)
 	var i Request
 	err := row.Scan(
@@ -1215,6 +1523,10 @@ func (q *Queries) UpdateRequestStatus(ctx context.Context, arg UpdateRequestStat
 		&i.ResourceDomain,
 		&i.Status,
 		&i.Stream,
+		&i.ExecutionID,
+		&i.ExecutionGeneration,
+		&i.ExecutionClaimedAt,
+		&i.ExecutionHeartbeatAt,
 		&i.InputTokens,
 		&i.OutputTokens,
 		&i.UsageSource,
@@ -1227,34 +1539,145 @@ func (q *Queries) UpdateRequestStatus(ctx context.Context, arg UpdateRequestStat
 	return i, err
 }
 
-const updateResponseRecord = `-- name: UpdateResponseRecord :one
-UPDATE response_records SET status = $1, output = $2, error = $3, updated_at = now() WHERE id = $4 RETURNING id, request_id, status, output, error, cancel_requested_at, created_at, updated_at
+const recoverStaleRequestExecutions = `-- name: RecoverStaleRequestExecutions :one
+WITH stale AS (
+    SELECT candidate.id, candidate.execution_id, candidate.execution_generation
+    FROM requests AS candidate
+    WHERE candidate.status IN ('dispatching', 'streaming')
+      AND candidate.execution_heartbeat_at < $1
+      AND NOT EXISTS (
+          SELECT 1 FROM request_attempts completed_attempt
+          WHERE completed_attempt.request_id = candidate.id
+            AND completed_attempt.execution_id = candidate.execution_id
+            AND completed_attempt.execution_generation = candidate.execution_generation
+            AND completed_attempt.status = 'completed'
+            AND completed_attempt.input_tokens IS NOT NULL
+            AND completed_attempt.output_tokens IS NOT NULL
+            AND completed_attempt.usage_source IN ('authoritative', 'estimated')
+      )
+    ORDER BY candidate.execution_heartbeat_at, candidate.id
+    FOR UPDATE SKIP LOCKED
+    LIMIT $2
+), fenced_attempts AS (
+    UPDATE request_attempts AS attempt
+    SET status = 'uncertain', error_kind = 'uncertain', completed_at = now()
+    FROM stale
+    WHERE attempt.request_id = stale.id
+      AND attempt.execution_id = stale.execution_id
+      AND attempt.execution_generation = stale.execution_generation
+      AND attempt.status IN ('created', 'sending', 'streaming')
+), fenced_requests AS (
+    UPDATE requests AS request
+    SET status = 'uncertain', error_kind = 'uncertain',
+        error_detail = 'request execution heartbeat expired; upstream outcome requires recovery',
+        completed_at = now(), updated_at = now()
+    FROM stale
+    WHERE request.id = stale.id
+      AND request.execution_id = stale.execution_id
+      AND request.execution_generation = stale.execution_generation
+      AND request.status IN ('dispatching', 'streaming')
+    RETURNING request.id
+)
+SELECT count(*)::bigint FROM fenced_requests
 `
 
-type UpdateResponseRecordParams struct {
-	Status RequestStatus `json:"status"`
-	Output []byte        `json:"output"`
-	Error  []byte        `json:"error"`
-	ID     uuid.UUID     `json:"id"`
+type RecoverStaleRequestExecutionsParams struct {
+	StaleBefore pgtype.Timestamptz `json:"stale_before"`
+	BatchSize   int32              `json:"batch_size"`
 }
 
-func (q *Queries) UpdateResponseRecord(ctx context.Context, arg UpdateResponseRecordParams) (ResponseRecord, error) {
-	row := q.db.QueryRow(ctx, updateResponseRecord,
+func (q *Queries) RecoverStaleRequestExecutions(ctx context.Context, arg RecoverStaleRequestExecutionsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, recoverStaleRequestExecutions, arg.StaleBefore, arg.BatchSize)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const updateAttempt = `-- name: UpdateAttempt :one
+UPDATE request_attempts AS attempt
+SET status = $1, upstream_request_id = $2, http_status = $3,
+    error_kind = $4, retry_after_at = $5,
+    sent_at = coalesce(sent_at, $6), first_byte_at = coalesce(first_byte_at, $7),
+    completed_at = $8, input_tokens = $9, output_tokens = $10,
+    usage_source = $11
+WHERE attempt.id = $12
+  AND attempt.request_id = $13
+  AND attempt.execution_id = $14
+  AND attempt.execution_generation = $15
+  AND EXISTS (
+      SELECT 1 FROM requests request
+      WHERE request.id = attempt.request_id
+        AND request.execution_id = attempt.execution_id
+        AND request.execution_generation = attempt.execution_generation
+        AND request.status IN ('dispatching', 'streaming')
+  )
+  AND CASE $1::attempt_status
+      WHEN 'sending' THEN attempt.status = 'created'
+      WHEN 'streaming' THEN attempt.status IN ('sending', 'streaming')
+      WHEN 'completed' THEN attempt.status IN ('sending', 'streaming')
+      WHEN 'failed' THEN attempt.status IN ('created', 'sending', 'streaming')
+      WHEN 'uncertain' THEN attempt.status IN ('created', 'sending', 'streaming')
+      ELSE false
+  END
+RETURNING attempt.id, attempt.request_id, attempt.execution_id, attempt.execution_generation, attempt.credential_id, attempt.sequence, attempt.status, attempt.upstream_request_id, attempt.http_status, attempt.error_kind, attempt.retry_after_at, attempt.sent_at, attempt.first_byte_at, attempt.completed_at, attempt.input_tokens, attempt.output_tokens, attempt.usage_source, attempt.created_at
+`
+
+type UpdateAttemptParams struct {
+	Status              AttemptStatus      `json:"status"`
+	UpstreamRequestID   *string            `json:"upstream_request_id"`
+	HttpStatus          *int32             `json:"http_status"`
+	ErrorKind           *string            `json:"error_kind"`
+	RetryAfterAt        pgtype.Timestamptz `json:"retry_after_at"`
+	SentAt              pgtype.Timestamptz `json:"sent_at"`
+	FirstByteAt         pgtype.Timestamptz `json:"first_byte_at"`
+	CompletedAt         pgtype.Timestamptz `json:"completed_at"`
+	InputTokens         *int64             `json:"input_tokens"`
+	OutputTokens        *int64             `json:"output_tokens"`
+	UsageSource         UsageSource        `json:"usage_source"`
+	ID                  uuid.UUID          `json:"id"`
+	RequestID           uuid.UUID          `json:"request_id"`
+	ExecutionID         uuid.UUID          `json:"execution_id"`
+	ExecutionGeneration int64              `json:"execution_generation"`
+}
+
+func (q *Queries) UpdateAttempt(ctx context.Context, arg UpdateAttemptParams) (RequestAttempt, error) {
+	row := q.db.QueryRow(ctx, updateAttempt,
 		arg.Status,
-		arg.Output,
-		arg.Error,
+		arg.UpstreamRequestID,
+		arg.HttpStatus,
+		arg.ErrorKind,
+		arg.RetryAfterAt,
+		arg.SentAt,
+		arg.FirstByteAt,
+		arg.CompletedAt,
+		arg.InputTokens,
+		arg.OutputTokens,
+		arg.UsageSource,
 		arg.ID,
+		arg.RequestID,
+		arg.ExecutionID,
+		arg.ExecutionGeneration,
 	)
-	var i ResponseRecord
+	var i RequestAttempt
 	err := row.Scan(
 		&i.ID,
 		&i.RequestID,
+		&i.ExecutionID,
+		&i.ExecutionGeneration,
+		&i.CredentialID,
+		&i.Sequence,
 		&i.Status,
-		&i.Output,
-		&i.Error,
-		&i.CancelRequestedAt,
+		&i.UpstreamRequestID,
+		&i.HttpStatus,
+		&i.ErrorKind,
+		&i.RetryAfterAt,
+		&i.SentAt,
+		&i.FirstByteAt,
+		&i.CompletedAt,
+		&i.InputTokens,
+		&i.OutputTokens,
+		&i.UsageSource,
 		&i.CreatedAt,
-		&i.UpdatedAt,
 	)
 	return i, err
 }

@@ -1,6 +1,6 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { KeyRound, XCircle } from 'lucide-react'
-import { useMemo } from 'react'
+import { KeyRound, Plus, XCircle } from 'lucide-react'
+import { useMemo, useState } from 'react'
 
 import { accessApi, type GatewayKey } from '@/api'
 import { hasCapability, useSession } from '@/app/session'
@@ -9,14 +9,18 @@ import { TableToolbar } from '@/components/data-table/table-toolbar'
 import { Page, PageHeader, PageSection } from '@/components/layout'
 import { StatusBadge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { FormProblem } from '@/features/auth/form-problem'
 import { useListSearch } from '@/hooks/use-list-search'
 import { formatDateTime } from '@/lib/format'
 
 import { AccessTabs } from './access-tabs'
+import { KeyForm } from './key-form'
+
 export function KeysPage() {
   const session = useSession()
   const canRevoke = session.role === 'member' || hasCapability(session, 'access:write')
   const { state, setPage, setSearch, setStatus } = useListSearch()
+  const [creating, setCreating] = useState(false)
   const queryClient = useQueryClient()
   const query = useQuery({
     queryKey: ['gateway-keys', state],
@@ -26,6 +30,7 @@ export function KeysPage() {
   const revoke = useMutation({
     mutationFn: accessApi.revokeKey,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['gateway-keys'] }),
+    onError: () => queryClient.invalidateQueries({ queryKey: ['gateway-keys'] }),
   })
   const columns = useMemo<ColumnDef<GatewayKey, unknown>[]>(
     () => [
@@ -92,9 +97,17 @@ export function KeysPage() {
             ? '查看并撤销当前账号的调用凭据'
             : '查看用户调用凭据并撤销失效 Key'
         }
+        actions={
+          session.role === 'administrator' ? (
+            <Button icon={<Plus size={16} />} onClick={() => setCreating(true)}>
+              创建 Key
+            </Button>
+          ) : null
+        }
       />
       <AccessTabs />
       <PageSection>
+        <FormProblem error={revoke.error} />
         <TableToolbar
           search={state.search}
           onSearchChange={setSearch}
@@ -114,7 +127,7 @@ export function KeysPage() {
           getRowId={(key) => key.id}
           loading={query.isLoading}
           fetching={query.isFetching}
-          error={query.error ?? revoke.error}
+          error={query.error}
           onRetry={() => void query.refetch()}
           emptyLabel="没有符合条件的网关 Key"
           page={query.data?.page ?? state.page}
@@ -138,6 +151,9 @@ export function KeysPage() {
           )}
         />
       </PageSection>
+      {session.role === 'administrator' ? (
+        <KeyForm open={creating} onOpenChange={setCreating} />
+      ) : null}
     </Page>
   )
 }

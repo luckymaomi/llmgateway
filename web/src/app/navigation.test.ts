@@ -26,15 +26,12 @@ const cases: Array<{
     defaultRoute: '/providers/providers',
   },
   {
-    role: 'operator',
-    capabilities: ['providers:read', 'providers:write', 'revisions:publish'],
-    navigation: [{ label: 'Provider 与模型', to: '/providers/providers' }],
-    defaultRoute: '/providers/providers',
-  },
-  {
     role: 'member',
-    capabilities: ['access:read'],
-    navigation: [{ label: '我的网关 Key', to: '/access/keys' }],
+    capabilities: ['access:read', 'ledger:read'],
+    navigation: [
+      { label: '我的网关 Key', to: '/access/keys' },
+      { label: '我的用量', to: '/ledger/usage' },
+    ],
     defaultRoute: '/access/keys',
   },
 ]

@@ -1,6 +1,7 @@
 package controlapi
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -24,14 +25,23 @@ type userView struct {
 }
 
 type invitationView struct {
-	ID         string        `json:"id"`
-	CodePrefix string        `json:"codePrefix"`
-	Role       identity.Role `json:"role"`
-	Status     string        `json:"status"`
-	ExpiresAt  time.Time     `json:"expiresAt"`
-	CreatedBy  string        `json:"createdBy"`
-	ClaimedBy  *string       `json:"claimedBy,omitempty"`
-	Code       string        `json:"code,omitempty"`
+	ID         string    `json:"id"`
+	CodePrefix string    `json:"codePrefix"`
+	Status     string    `json:"status"`
+	ExpiresAt  time.Time `json:"expiresAt"`
+	CreatedBy  string    `json:"createdBy"`
+	ClaimedBy  *string   `json:"claimedBy,omitempty"`
+}
+
+type createdInvitationView struct {
+	Invitation invitationView `json:"invitation"`
+	Code       string         `json:"code"`
+}
+
+type namedInvitation struct {
+	Invitation identity.Invitation
+	CreatedBy  string
+	ClaimedBy  *string
 }
 
 func (a *API) listUsers(w http.ResponseWriter, r *http.Request) {
@@ -107,24 +117,31 @@ func (a *API) reviewUser(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) createInvitation(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		Role      identity.Role `json:"role"`
-		ExpiresAt time.Time     `json:"expiresAt"`
+		ExpiresAt time.Time `json:"expiresAt"`
 	}
 	if err := decodeJSON(w, r, &input); err != nil {
 		writeDecodeError(w, r, err)
 		return
 	}
-	validFor := time.Until(input.ExpiresAt)
-	invitation, err := a.identity.CreateInvitation(r.Context(), principalFromContext(r.Context()), input.Role, validFor)
+	mutation, ok := identityMutationRequest(w, r)
+	if !ok {
+		return
+	}
+	principal := principalFromContext(r.Context())
+	invitation, err := a.identity.CreateInvitation(r.Context(), principal, input.ExpiresAt, mutation)
 	if err != nil {
 		a.writeIdentityError(w, r, err)
 		return
 	}
-	writeData(w, http.StatusCreated, presentInvitation(invitation, principalFromContext(r.Context()).DisplayName, ""))
+	w.Header().Set("Cache-Control", "no-store")
+	writeData(w, http.StatusCreated, createdInvitationView{
+		Invitation: presentInvitation(namedInvitation{Invitation: invitation, CreatedBy: principal.DisplayName}, ""),
+		Code:       invitation.Code,
+	})
 }
 
 func (a *API) listInvitations(w http.ResponseWriter, r *http.Request) {
-	items, err := a.collectInvitations(r)
+	items, err := a.collectNamedInvitations(r)
 	if err != nil {
 		a.writeIdentityError(w, r, err)
 		return
@@ -132,11 +149,15 @@ func (a *API) listInvitations(w http.ResponseWriter, r *http.Request) {
 	query := parseListQuery(r)
 	views := make([]invitationView, 0, len(items))
 	for _, item := range items {
-		view := presentInvitation(item, "", "")
+		view := presentInvitation(item, "")
 		if query.Status != "" && view.Status != query.Status {
 			continue
 		}
-		if !containsFold(view.CodePrefix+" "+string(view.Role), query.Search) {
+		claimedBy := ""
+		if view.ClaimedBy != nil {
+			claimedBy = *view.ClaimedBy
+		}
+		if !containsFold(view.CodePrefix+" "+view.CreatedBy+" "+claimedBy, query.Search) {
 			continue
 		}
 		views = append(views, view)
@@ -150,14 +171,14 @@ func (a *API) revokeInvitation(w http.ResponseWriter, r *http.Request) {
 		writeDecodeError(w, r, err)
 		return
 	}
-	items, err := a.collectInvitations(r)
+	items, err := a.collectNamedInvitations(r)
 	if err != nil {
 		a.writeIdentityError(w, r, err)
 		return
 	}
-	var selected *identity.Invitation
+	var selected *namedInvitation
 	for index := range items {
-		if items[index].ID == id {
+		if items[index].Invitation.ID == id {
 			selected = &items[index]
 			break
 		}
@@ -170,7 +191,7 @@ func (a *API) revokeInvitation(w http.ResponseWriter, r *http.Request) {
 		a.writeIdentityError(w, r, err)
 		return
 	}
-	writeData(w, http.StatusOK, presentInvitation(*selected, "", "revoked"))
+	writeData(w, http.StatusOK, presentInvitation(*selected, "revoked"))
 }
 
 func (a *API) collectUsers(r *http.Request) ([]identity.User, error) {
@@ -203,6 +224,57 @@ func (a *API) collectInvitations(r *http.Request) ([]identity.Invitation, error)
 	}
 }
 
+func (a *API) collectNamedInvitations(r *http.Request) ([]namedInvitation, error) {
+	items, err := a.collectInvitations(r)
+	if err != nil {
+		return nil, err
+	}
+	userIDs := make([]uuid.UUID, 0, len(items)*2)
+	seen := make(map[uuid.UUID]struct{}, len(items)*2)
+	for _, item := range items {
+		if item.CreatedBy == uuid.Nil {
+			return nil, fmt.Errorf("identity presentation: invitation %s has no creator", item.ID)
+		}
+		if _, exists := seen[item.CreatedBy]; !exists {
+			seen[item.CreatedBy] = struct{}{}
+			userIDs = append(userIDs, item.CreatedBy)
+		}
+		if item.ClaimedBy != nil {
+			if *item.ClaimedBy == uuid.Nil {
+				return nil, fmt.Errorf("identity presentation: invitation %s has an invalid claimant", item.ID)
+			}
+			if _, exists := seen[*item.ClaimedBy]; !exists {
+				seen[*item.ClaimedBy] = struct{}{}
+				userIDs = append(userIDs, *item.ClaimedBy)
+			}
+		}
+	}
+	if len(userIDs) == 0 {
+		return []namedInvitation{}, nil
+	}
+	names, err := a.identity.UserDisplayNames(r.Context(), principalFromContext(r.Context()), userIDs)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]namedInvitation, 0, len(items))
+	for _, item := range items {
+		createdBy := names[item.CreatedBy]
+		if strings.TrimSpace(createdBy) == "" {
+			return nil, fmt.Errorf("identity presentation: creator %s has no display name", item.CreatedBy)
+		}
+		var claimedBy *string
+		if item.ClaimedBy != nil {
+			name := names[*item.ClaimedBy]
+			if strings.TrimSpace(name) == "" {
+				return nil, fmt.Errorf("identity presentation: claimant %s has no display name", *item.ClaimedBy)
+			}
+			claimedBy = &name
+		}
+		result = append(result, namedInvitation{Invitation: item, CreatedBy: createdBy, ClaimedBy: claimedBy})
+	}
+	return result, nil
+}
+
 func presentUser(user identity.User, keyCount int) userView {
 	return userView{
 		ID:          user.ID.String(),
@@ -216,7 +288,8 @@ func presentUser(user identity.User, keyCount int) userView {
 	}
 }
 
-func presentInvitation(invitation identity.Invitation, createdBy, forcedStatus string) invitationView {
+func presentInvitation(item namedInvitation, forcedStatus string) invitationView {
+	invitation := item.Invitation
 	status := forcedStatus
 	if status == "" {
 		switch {
@@ -233,11 +306,10 @@ func presentInvitation(invitation identity.Invitation, createdBy, forcedStatus s
 	return invitationView{
 		ID:         invitation.ID.String(),
 		CodePrefix: invitation.CodePrefix,
-		Role:       invitation.Role,
 		Status:     status,
 		ExpiresAt:  invitation.ExpiresAt.UTC(),
-		CreatedBy:  createdBy,
-		Code:       invitation.Code,
+		CreatedBy:  item.CreatedBy,
+		ClaimedBy:  item.ClaimedBy,
 	}
 }
 

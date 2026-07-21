@@ -12,18 +12,54 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const authorizeUserModel = `-- name: AuthorizeUserModel :exec
-INSERT INTO model_authorizations (user_id, model_id) VALUES ($1, $2) ON CONFLICT DO NOTHING
+const bindGatewayKeyModel = `-- name: BindGatewayKeyModel :exec
+INSERT INTO gateway_key_models (gateway_key_id, model_id)
+VALUES ($1, $2)
 `
 
-type AuthorizeUserModelParams struct {
-	UserID  uuid.UUID `json:"user_id"`
-	ModelID uuid.UUID `json:"model_id"`
+type BindGatewayKeyModelParams struct {
+	GatewayKeyID uuid.UUID `json:"gateway_key_id"`
+	ModelID      uuid.UUID `json:"model_id"`
 }
 
-func (q *Queries) AuthorizeUserModel(ctx context.Context, arg AuthorizeUserModelParams) error {
-	_, err := q.db.Exec(ctx, authorizeUserModel, arg.UserID, arg.ModelID)
+func (q *Queries) BindGatewayKeyModel(ctx context.Context, arg BindGatewayKeyModelParams) error {
+	_, err := q.db.Exec(ctx, bindGatewayKeyModel, arg.GatewayKeyID, arg.ModelID)
 	return err
+}
+
+const claimGatewayKeyMutation = `-- name: ClaimGatewayKeyMutation :one
+INSERT INTO gateway_key_mutations (actor_user_id, idempotency_key, request_fingerprint, request_id)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (actor_user_id, idempotency_key) DO NOTHING
+RETURNING id, actor_user_id, idempotency_key, request_fingerprint, request_id, gateway_key_id, result, created_at
+`
+
+type ClaimGatewayKeyMutationParams struct {
+	ActorUserID        uuid.UUID `json:"actor_user_id"`
+	IdempotencyKey     uuid.UUID `json:"idempotency_key"`
+	RequestFingerprint []byte    `json:"request_fingerprint"`
+	RequestID          string    `json:"request_id"`
+}
+
+func (q *Queries) ClaimGatewayKeyMutation(ctx context.Context, arg ClaimGatewayKeyMutationParams) (GatewayKeyMutation, error) {
+	row := q.db.QueryRow(ctx, claimGatewayKeyMutation,
+		arg.ActorUserID,
+		arg.IdempotencyKey,
+		arg.RequestFingerprint,
+		arg.RequestID,
+	)
+	var i GatewayKeyMutation
+	err := row.Scan(
+		&i.ID,
+		&i.ActorUserID,
+		&i.IdempotencyKey,
+		&i.RequestFingerprint,
+		&i.RequestID,
+		&i.GatewayKeyID,
+		&i.Result,
+		&i.CreatedAt,
+	)
+	return i, err
 }
 
 const claimInvitation = `-- name: ClaimInvitation :execrows
@@ -43,6 +79,99 @@ func (q *Queries) ClaimInvitation(ctx context.Context, arg ClaimInvitationParams
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const claimInvitationMutation = `-- name: ClaimInvitationMutation :one
+INSERT INTO invitation_mutations (actor_user_id, idempotency_key, request_fingerprint, request_id)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (actor_user_id, idempotency_key) DO NOTHING
+RETURNING id, actor_user_id, idempotency_key, request_fingerprint, request_id, invitation_id, result, created_at
+`
+
+type ClaimInvitationMutationParams struct {
+	ActorUserID        uuid.UUID `json:"actor_user_id"`
+	IdempotencyKey     uuid.UUID `json:"idempotency_key"`
+	RequestFingerprint []byte    `json:"request_fingerprint"`
+	RequestID          string    `json:"request_id"`
+}
+
+func (q *Queries) ClaimInvitationMutation(ctx context.Context, arg ClaimInvitationMutationParams) (InvitationMutation, error) {
+	row := q.db.QueryRow(ctx, claimInvitationMutation,
+		arg.ActorUserID,
+		arg.IdempotencyKey,
+		arg.RequestFingerprint,
+		arg.RequestID,
+	)
+	var i InvitationMutation
+	err := row.Scan(
+		&i.ID,
+		&i.ActorUserID,
+		&i.IdempotencyKey,
+		&i.RequestFingerprint,
+		&i.RequestID,
+		&i.InvitationID,
+		&i.Result,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const completeGatewayKeyMutation = `-- name: CompleteGatewayKeyMutation :one
+UPDATE gateway_key_mutations
+SET gateway_key_id = $1, result = $2
+WHERE id = $3
+RETURNING id, actor_user_id, idempotency_key, request_fingerprint, request_id, gateway_key_id, result, created_at
+`
+
+type CompleteGatewayKeyMutationParams struct {
+	GatewayKeyID *uuid.UUID `json:"gateway_key_id"`
+	Result       []byte     `json:"result"`
+	ID           uuid.UUID  `json:"id"`
+}
+
+func (q *Queries) CompleteGatewayKeyMutation(ctx context.Context, arg CompleteGatewayKeyMutationParams) (GatewayKeyMutation, error) {
+	row := q.db.QueryRow(ctx, completeGatewayKeyMutation, arg.GatewayKeyID, arg.Result, arg.ID)
+	var i GatewayKeyMutation
+	err := row.Scan(
+		&i.ID,
+		&i.ActorUserID,
+		&i.IdempotencyKey,
+		&i.RequestFingerprint,
+		&i.RequestID,
+		&i.GatewayKeyID,
+		&i.Result,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const completeInvitationMutation = `-- name: CompleteInvitationMutation :one
+UPDATE invitation_mutations
+SET invitation_id = $1, result = $2
+WHERE id = $3 AND invitation_id IS NULL
+RETURNING id, actor_user_id, idempotency_key, request_fingerprint, request_id, invitation_id, result, created_at
+`
+
+type CompleteInvitationMutationParams struct {
+	InvitationID *uuid.UUID `json:"invitation_id"`
+	Result       []byte     `json:"result"`
+	ID           uuid.UUID  `json:"id"`
+}
+
+func (q *Queries) CompleteInvitationMutation(ctx context.Context, arg CompleteInvitationMutationParams) (InvitationMutation, error) {
+	row := q.db.QueryRow(ctx, completeInvitationMutation, arg.InvitationID, arg.Result, arg.ID)
+	var i InvitationMutation
+	err := row.Scan(
+		&i.ID,
+		&i.ActorUserID,
+		&i.IdempotencyKey,
+		&i.RequestFingerprint,
+		&i.RequestID,
+		&i.InvitationID,
+		&i.Result,
+		&i.CreatedAt,
+	)
+	return i, err
 }
 
 const countUsers = `-- name: CountUsers :one
@@ -94,16 +223,15 @@ func (q *Queries) CreateGatewayKey(ctx context.Context, arg CreateGatewayKeyPara
 }
 
 const createInvitation = `-- name: CreateInvitation :one
-INSERT INTO invitations (code_digest, code_prefix, created_by, role, expires_at)
-VALUES ($1, $2, $3, $4, $5)
-RETURNING id, code_digest, code_prefix, created_by, role, expires_at, claimed_by, claimed_at, revoked_at, created_at
+INSERT INTO invitations (code_digest, code_prefix, created_by, expires_at)
+VALUES ($1, $2, $3, $4)
+RETURNING id, code_digest, code_prefix, created_by, expires_at, claimed_by, claimed_at, revoked_at, created_at
 `
 
 type CreateInvitationParams struct {
 	CodeDigest []byte             `json:"code_digest"`
 	CodePrefix string             `json:"code_prefix"`
 	CreatedBy  uuid.UUID          `json:"created_by"`
-	Role       UserRole           `json:"role"`
 	ExpiresAt  pgtype.Timestamptz `json:"expires_at"`
 }
 
@@ -112,7 +240,6 @@ func (q *Queries) CreateInvitation(ctx context.Context, arg CreateInvitationPara
 		arg.CodeDigest,
 		arg.CodePrefix,
 		arg.CreatedBy,
-		arg.Role,
 		arg.ExpiresAt,
 	)
 	var i Invitation
@@ -121,7 +248,6 @@ func (q *Queries) CreateInvitation(ctx context.Context, arg CreateInvitationPara
 		&i.CodeDigest,
 		&i.CodePrefix,
 		&i.CreatedBy,
-		&i.Role,
 		&i.ExpiresAt,
 		&i.ClaimedBy,
 		&i.ClaimedAt,
@@ -259,8 +385,114 @@ func (q *Queries) GetGatewayKeyByDigest(ctx context.Context, secretDigest []byte
 	return i, err
 }
 
+const getGatewayKeyForRevocation = `-- name: GetGatewayKeyForRevocation :one
+SELECT id, user_id, revoked_at
+FROM gateway_keys
+WHERE id = $1
+FOR UPDATE
+`
+
+type GetGatewayKeyForRevocationRow struct {
+	ID        uuid.UUID          `json:"id"`
+	UserID    uuid.UUID          `json:"user_id"`
+	RevokedAt pgtype.Timestamptz `json:"revoked_at"`
+}
+
+func (q *Queries) GetGatewayKeyForRevocation(ctx context.Context, id uuid.UUID) (GetGatewayKeyForRevocationRow, error) {
+	row := q.db.QueryRow(ctx, getGatewayKeyForRevocation, id)
+	var i GetGatewayKeyForRevocationRow
+	err := row.Scan(&i.ID, &i.UserID, &i.RevokedAt)
+	return i, err
+}
+
+const getGatewayKeyMutation = `-- name: GetGatewayKeyMutation :one
+SELECT id, actor_user_id, idempotency_key, request_fingerprint, request_id, gateway_key_id, result, created_at FROM gateway_key_mutations
+WHERE actor_user_id = $1 AND idempotency_key = $2
+`
+
+type GetGatewayKeyMutationParams struct {
+	ActorUserID    uuid.UUID `json:"actor_user_id"`
+	IdempotencyKey uuid.UUID `json:"idempotency_key"`
+}
+
+func (q *Queries) GetGatewayKeyMutation(ctx context.Context, arg GetGatewayKeyMutationParams) (GatewayKeyMutation, error) {
+	row := q.db.QueryRow(ctx, getGatewayKeyMutation, arg.ActorUserID, arg.IdempotencyKey)
+	var i GatewayKeyMutation
+	err := row.Scan(
+		&i.ID,
+		&i.ActorUserID,
+		&i.IdempotencyKey,
+		&i.RequestFingerprint,
+		&i.RequestID,
+		&i.GatewayKeyID,
+		&i.Result,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getGatewayKeyPrincipalByID = `-- name: GetGatewayKeyPrincipalByID :one
+SELECT k.id, k.user_id, k.name, k.prefix, k.secret_digest, k.expires_at, k.revoked_at, k.last_used_at, k.created_at, u.status AS user_status, u.role AS user_role
+FROM gateway_keys k
+JOIN users u ON u.id = k.user_id
+WHERE k.id = $1
+  AND k.revoked_at IS NULL
+  AND (k.expires_at IS NULL OR k.expires_at > now())
+`
+
+type GetGatewayKeyPrincipalByIDRow struct {
+	ID           uuid.UUID          `json:"id"`
+	UserID       uuid.UUID          `json:"user_id"`
+	Name         string             `json:"name"`
+	Prefix       string             `json:"prefix"`
+	SecretDigest []byte             `json:"secret_digest"`
+	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
+	RevokedAt    pgtype.Timestamptz `json:"revoked_at"`
+	LastUsedAt   pgtype.Timestamptz `json:"last_used_at"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	UserStatus   UserStatus         `json:"user_status"`
+	UserRole     UserRole           `json:"user_role"`
+}
+
+func (q *Queries) GetGatewayKeyPrincipalByID(ctx context.Context, id uuid.UUID) (GetGatewayKeyPrincipalByIDRow, error) {
+	row := q.db.QueryRow(ctx, getGatewayKeyPrincipalByID, id)
+	var i GetGatewayKeyPrincipalByIDRow
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Name,
+		&i.Prefix,
+		&i.SecretDigest,
+		&i.ExpiresAt,
+		&i.RevokedAt,
+		&i.LastUsedAt,
+		&i.CreatedAt,
+		&i.UserStatus,
+		&i.UserRole,
+	)
+	return i, err
+}
+
+const getGatewayKeyRevocationState = `-- name: GetGatewayKeyRevocationState :one
+SELECT user_id, revoked_at
+FROM gateway_keys
+WHERE id = $1
+`
+
+type GetGatewayKeyRevocationStateRow struct {
+	UserID    uuid.UUID          `json:"user_id"`
+	RevokedAt pgtype.Timestamptz `json:"revoked_at"`
+}
+
+func (q *Queries) GetGatewayKeyRevocationState(ctx context.Context, id uuid.UUID) (GetGatewayKeyRevocationStateRow, error) {
+	row := q.db.QueryRow(ctx, getGatewayKeyRevocationState, id)
+	var i GetGatewayKeyRevocationStateRow
+	err := row.Scan(&i.UserID, &i.RevokedAt)
+	return i, err
+}
+
 const getInvitationByDigestForUpdate = `-- name: GetInvitationByDigestForUpdate :one
-SELECT id, code_digest, code_prefix, created_by, role, expires_at, claimed_by, claimed_at, revoked_at, created_at FROM invitations WHERE code_digest = $1 FOR UPDATE
+SELECT id, code_digest, code_prefix, created_by, expires_at, claimed_by, claimed_at, revoked_at, created_at FROM invitations WHERE code_digest = $1 FOR UPDATE
 `
 
 func (q *Queries) GetInvitationByDigestForUpdate(ctx context.Context, codeDigest []byte) (Invitation, error) {
@@ -271,13 +503,64 @@ func (q *Queries) GetInvitationByDigestForUpdate(ctx context.Context, codeDigest
 		&i.CodeDigest,
 		&i.CodePrefix,
 		&i.CreatedBy,
-		&i.Role,
 		&i.ExpiresAt,
 		&i.ClaimedBy,
 		&i.ClaimedAt,
 		&i.RevokedAt,
 		&i.CreatedAt,
 	)
+	return i, err
+}
+
+const getInvitationMutation = `-- name: GetInvitationMutation :one
+SELECT id, actor_user_id, idempotency_key, request_fingerprint, request_id, invitation_id, result, created_at FROM invitation_mutations
+WHERE actor_user_id = $1 AND idempotency_key = $2
+`
+
+type GetInvitationMutationParams struct {
+	ActorUserID    uuid.UUID `json:"actor_user_id"`
+	IdempotencyKey uuid.UUID `json:"idempotency_key"`
+}
+
+func (q *Queries) GetInvitationMutation(ctx context.Context, arg GetInvitationMutationParams) (InvitationMutation, error) {
+	row := q.db.QueryRow(ctx, getInvitationMutation, arg.ActorUserID, arg.IdempotencyKey)
+	var i InvitationMutation
+	err := row.Scan(
+		&i.ID,
+		&i.ActorUserID,
+		&i.IdempotencyKey,
+		&i.RequestFingerprint,
+		&i.RequestID,
+		&i.InvitationID,
+		&i.Result,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getModelForGatewayKeyBinding = `-- name: GetModelForGatewayKeyBinding :one
+SELECT model.model_id AS id, model.public_name
+FROM active_config active
+JOIN config_revision_models model ON model.revision_id = active.revision_id
+WHERE active.singleton = true AND model.model_id = $1
+  AND EXISTS (
+    SELECT 1
+    FROM config_revision_routes route
+    WHERE route.revision_id = active.revision_id
+      AND route.model_id = model.model_id
+  )
+FOR SHARE OF active
+`
+
+type GetModelForGatewayKeyBindingRow struct {
+	ID         uuid.UUID `json:"id"`
+	PublicName string    `json:"public_name"`
+}
+
+func (q *Queries) GetModelForGatewayKeyBinding(ctx context.Context, id uuid.UUID) (GetModelForGatewayKeyBindingRow, error) {
+	row := q.db.QueryRow(ctx, getModelForGatewayKeyBinding, id)
+	var i GetModelForGatewayKeyBindingRow
+	err := row.Scan(&i.ID, &i.PublicName)
 	return i, err
 }
 
@@ -369,6 +652,28 @@ func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
 	return i, err
 }
 
+const getUserForGatewayKeyCreation = `-- name: GetUserForGatewayKeyCreation :one
+SELECT id, email, display_name, password_hash, role, status, approved_at, disabled_at, created_at, updated_at FROM users WHERE id = $1 FOR SHARE
+`
+
+func (q *Queries) GetUserForGatewayKeyCreation(ctx context.Context, id uuid.UUID) (User, error) {
+	row := q.db.QueryRow(ctx, getUserForGatewayKeyCreation, id)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.DisplayName,
+		&i.PasswordHash,
+		&i.Role,
+		&i.Status,
+		&i.ApprovedAt,
+		&i.DisabledAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const isBootstrapped = `-- name: IsBootstrapped :one
 SELECT CAST(bootstrapped_at IS NOT NULL AS boolean) AS bootstrapped FROM system_state WHERE singleton = true
 `
@@ -380,20 +685,65 @@ func (q *Queries) IsBootstrapped(ctx context.Context) (bool, error) {
 	return bootstrapped, err
 }
 
-const isUserAuthorizedForModel = `-- name: IsUserAuthorizedForModel :one
-SELECT EXISTS (SELECT 1 FROM model_authorizations WHERE user_id = $1 AND model_id = $2)
+const isGatewayKeyAuthorizedForModel = `-- name: IsGatewayKeyAuthorizedForModel :one
+SELECT EXISTS (
+  SELECT 1 FROM gateway_key_models
+  WHERE gateway_key_id = $1 AND model_id = $2
+)
 `
 
-type IsUserAuthorizedForModelParams struct {
-	UserID  uuid.UUID `json:"user_id"`
-	ModelID uuid.UUID `json:"model_id"`
+type IsGatewayKeyAuthorizedForModelParams struct {
+	GatewayKeyID uuid.UUID `json:"gateway_key_id"`
+	ModelID      uuid.UUID `json:"model_id"`
 }
 
-func (q *Queries) IsUserAuthorizedForModel(ctx context.Context, arg IsUserAuthorizedForModelParams) (bool, error) {
-	row := q.db.QueryRow(ctx, isUserAuthorizedForModel, arg.UserID, arg.ModelID)
+func (q *Queries) IsGatewayKeyAuthorizedForModel(ctx context.Context, arg IsGatewayKeyAuthorizedForModelParams) (bool, error) {
+	row := q.db.QueryRow(ctx, isGatewayKeyAuthorizedForModel, arg.GatewayKeyID, arg.ModelID)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const listGatewayKeyModelBindingsByUser = `-- name: ListGatewayKeyModelBindingsByUser :many
+SELECT gkm.gateway_key_id, gkm.model_id, published.public_name
+FROM gateway_key_models gkm
+JOIN gateway_keys k ON k.id = gkm.gateway_key_id
+JOIN LATERAL (
+  SELECT model.public_name
+  FROM config_revision_models model
+  JOIN config_revisions revision ON revision.id = model.revision_id
+  WHERE model.model_id = gkm.model_id AND revision.published_at IS NOT NULL
+  ORDER BY revision.revision DESC
+  LIMIT 1
+) published ON true
+WHERE k.user_id = $1
+ORDER BY gkm.gateway_key_id, published.public_name, gkm.model_id
+`
+
+type ListGatewayKeyModelBindingsByUserRow struct {
+	GatewayKeyID uuid.UUID `json:"gateway_key_id"`
+	ModelID      uuid.UUID `json:"model_id"`
+	PublicName   string    `json:"public_name"`
+}
+
+func (q *Queries) ListGatewayKeyModelBindingsByUser(ctx context.Context, userID uuid.UUID) ([]ListGatewayKeyModelBindingsByUserRow, error) {
+	rows, err := q.db.Query(ctx, listGatewayKeyModelBindingsByUser, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListGatewayKeyModelBindingsByUserRow{}
+	for rows.Next() {
+		var i ListGatewayKeyModelBindingsByUserRow
+		if err := rows.Scan(&i.GatewayKeyID, &i.ModelID, &i.PublicName); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listGatewayKeysByUser = `-- name: ListGatewayKeysByUser :many
@@ -442,7 +792,7 @@ func (q *Queries) ListGatewayKeysByUser(ctx context.Context, userID uuid.UUID) (
 }
 
 const listInvitations = `-- name: ListInvitations :many
-SELECT id, code_digest, code_prefix, created_by, role, expires_at, claimed_by, claimed_at, revoked_at, created_at FROM invitations ORDER BY created_at DESC, id LIMIT $2 OFFSET $1
+SELECT id, code_digest, code_prefix, created_by, expires_at, claimed_by, claimed_at, revoked_at, created_at FROM invitations ORDER BY created_at DESC, id LIMIT $2 OFFSET $1
 `
 
 type ListInvitationsParams struct {
@@ -464,13 +814,44 @@ func (q *Queries) ListInvitations(ctx context.Context, arg ListInvitationsParams
 			&i.CodeDigest,
 			&i.CodePrefix,
 			&i.CreatedBy,
-			&i.Role,
 			&i.ExpiresAt,
 			&i.ClaimedBy,
 			&i.ClaimedAt,
 			&i.RevokedAt,
 			&i.CreatedAt,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUserDisplayNames = `-- name: ListUserDisplayNames :many
+SELECT id, display_name
+FROM users
+WHERE id = ANY($1::uuid[])
+ORDER BY id
+`
+
+type ListUserDisplayNamesRow struct {
+	ID          uuid.UUID `json:"id"`
+	DisplayName string    `json:"display_name"`
+}
+
+func (q *Queries) ListUserDisplayNames(ctx context.Context, userIds []uuid.UUID) ([]ListUserDisplayNamesRow, error) {
+	rows, err := q.db.Query(ctx, listUserDisplayNames, userIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListUserDisplayNamesRow{}
+	for rows.Next() {
+		var i ListUserDisplayNamesRow
+		if err := rows.Scan(&i.ID, &i.DisplayName); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -537,12 +918,12 @@ func (q *Queries) MarkBootstrapped(ctx context.Context) (int64, error) {
 	return result.RowsAffected(), nil
 }
 
-const revokeGatewayKey = `-- name: RevokeGatewayKey :execrows
+const markGatewayKeyRevoked = `-- name: MarkGatewayKeyRevoked :execrows
 UPDATE gateway_keys SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL
 `
 
-func (q *Queries) RevokeGatewayKey(ctx context.Context, id uuid.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, revokeGatewayKey, id)
+func (q *Queries) MarkGatewayKeyRevoked(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, markGatewayKeyRevoked, id)
 	if err != nil {
 		return 0, err
 	}
@@ -561,46 +942,12 @@ func (q *Queries) RevokeInvitation(ctx context.Context, id uuid.UUID) (int64, er
 	return result.RowsAffected(), nil
 }
 
-const revokeOwnedGatewayKey = `-- name: RevokeOwnedGatewayKey :execrows
-UPDATE gateway_keys SET revoked_at = now() WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL
-`
-
-type RevokeOwnedGatewayKeyParams struct {
-	ID     uuid.UUID `json:"id"`
-	UserID uuid.UUID `json:"user_id"`
-}
-
-func (q *Queries) RevokeOwnedGatewayKey(ctx context.Context, arg RevokeOwnedGatewayKeyParams) (int64, error) {
-	result, err := q.db.Exec(ctx, revokeOwnedGatewayKey, arg.ID, arg.UserID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
 const revokeSession = `-- name: RevokeSession :execrows
 UPDATE sessions SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL
 `
 
 func (q *Queries) RevokeSession(ctx context.Context, id uuid.UUID) (int64, error) {
 	result, err := q.db.Exec(ctx, revokeSession, id)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const revokeUserModel = `-- name: RevokeUserModel :execrows
-DELETE FROM model_authorizations WHERE user_id = $1 AND model_id = $2
-`
-
-type RevokeUserModelParams struct {
-	UserID  uuid.UUID `json:"user_id"`
-	ModelID uuid.UUID `json:"model_id"`
-}
-
-func (q *Queries) RevokeUserModel(ctx context.Context, arg RevokeUserModelParams) (int64, error) {
-	result, err := q.db.Exec(ctx, revokeUserModel, arg.UserID, arg.ModelID)
 	if err != nil {
 		return 0, err
 	}
