@@ -8,7 +8,8 @@ function Assert-HTTPFailureStatus {
   param(
     [Parameter(Mandatory = $true)][scriptblock] $Action,
     [Parameter(Mandatory = $true)][int] $ExpectedStatus,
-    [Parameter(Mandatory = $true)][string] $FailureMessage
+    [Parameter(Mandatory = $true)][string] $FailureMessage,
+    [switch] $RequireRetryAfter
   )
 
   try {
@@ -16,6 +17,16 @@ function Assert-HTTPFailureStatus {
   } catch {
     $response = $_.Exception.Response
     if ($null -ne $response -and [int] $response.StatusCode -eq $ExpectedStatus) {
+      if ($RequireRetryAfter) {
+        $retryAfter = @($response.Headers.GetValues("Retry-After")) | Select-Object -First 1
+        $retrySeconds = 0
+        $retryAt = [DateTimeOffset]::MinValue
+        $hasPositiveDelay = [int]::TryParse($retryAfter, [ref] $retrySeconds) -and $retrySeconds -gt 0
+        $hasFutureTime = [DateTimeOffset]::TryParse($retryAfter, [ref] $retryAt) -and $retryAt -gt [DateTimeOffset]::UtcNow
+        if (-not $hasPositiveDelay -and -not $hasFutureTime) {
+          throw "$FailureMessage Retry-After was missing or did not identify a future recovery time."
+        }
+      }
       return
     }
     throw
@@ -103,9 +114,9 @@ $providerProcess = $null
 $valkeyPaused = $false
 $environmentSnapshot = Save-LLMGatewayEnvironment
 $testFailure = $null
-$isWindows = $env:OS -eq "Windows_NT"
-$binaryName = if ($isWindows) { "gateway.exe" } else { "gateway" }
-$providerBinaryName = if ($isWindows) { "fixture-provider.exe" } else { "fixture-provider" }
+$runningOnWindows = $env:OS -eq "Windows_NT"
+$binaryName = if ($runningOnWindows) { "gateway.exe" } else { "gateway" }
+$providerBinaryName = if ($runningOnWindows) { "fixture-provider.exe" } else { "fixture-provider" }
 $buildDirectory = Join-Path (Get-Location) ".build\core-$runID"
 $binaryPath = Join-Path $buildDirectory $binaryName
 $providerBinaryPath = Join-Path $buildDirectory $providerBinaryName
@@ -202,7 +213,7 @@ try {
     RedirectStandardOutput = $providerStdoutPath
     RedirectStandardError  = $providerStderrPath
   }
-  if ($isWindows) {
+  if ($runningOnWindows) {
     $providerStartArguments.WindowStyle = "Hidden"
   }
   $providerProcess = Start-Process @providerStartArguments
@@ -228,7 +239,7 @@ try {
     RedirectStandardOutput = $stdoutPath
     RedirectStandardError  = $stderrPath
   }
-  if ($isWindows) {
+  if ($runningOnWindows) {
     $startArguments.WindowStyle = "Hidden"
   }
   $process = Start-Process @startArguments
@@ -241,20 +252,60 @@ try {
 
   $adminSession = New-Object Microsoft.PowerShell.Commands.WebRequestSession
   $bootstrapBody = @{
-    email       = "owner@example.test"
-    displayName = "Owner"
-    password    = "correct horse battery staple"
+    email = "owner@example.test"
   } | ConvertTo-Json
-  $bootstrap = Invoke-RestMethod -Method Post -Uri "$baseURL/api/control/setup" -WebSession $adminSession -ContentType "application/json" -Body $bootstrapBody
-  if ($bootstrap.data.role -ne "administrator" -or -not $bootstrap.data.csrfToken) {
-    throw "Setup did not establish an administrator session and CSRF state."
+  $bootstrapResponse = Invoke-WebRequest -UseBasicParsing -Method Post -Uri "$baseURL/api/control/setup" -WebSession $adminSession -ContentType "application/json" -Body $bootstrapBody
+  $bootstrap = $bootstrapResponse.Content | ConvertFrom-Json
+  $initialAdministratorPassword = [string]$bootstrap.data.initialPassword
+  if ($bootstrap.data.role -ne "administrator" -or -not $bootstrap.data.csrfToken -or
+      [string]::IsNullOrWhiteSpace($initialAdministratorPassword) -or
+      [string]$bootstrapResponse.Headers["Cache-Control"] -ne "no-store") {
+    throw "Setup did not establish a no-store administrator session with one-time credentials."
   }
   $adminCSRF = $bootstrap.data.csrfToken
+  $bootstrap.data.initialPassword = $null
 
   $adminCurrent = Invoke-RestMethod -Uri "$baseURL/api/control/session" -WebSession $adminSession
   if ($adminCurrent.data.userId -ne $bootstrap.data.userId) {
     throw "Administrator session was not readable after setup."
   }
+
+  $secondaryAdministratorSession = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+  $administratorLoginBody = @{ email = "owner@example.test"; password = $initialAdministratorPassword } | ConvertTo-Json
+  $secondaryAdministrator = Invoke-RestMethod -Method Post -Uri "$baseURL/api/control/session" -WebSession $secondaryAdministratorSession `
+    -ContentType "application/json" -Body $administratorLoginBody
+  if ($secondaryAdministrator.data.role -ne "administrator") {
+    throw "The generated initial administrator password did not authenticate."
+  }
+  $replacementAdministratorPassword = "core-administrator-replacement-password"
+  $passwordChangeBody = @{
+    currentPassword = $initialAdministratorPassword
+    replacementPassword = $replacementAdministratorPassword
+  } | ConvertTo-Json
+  $passwordChange = Invoke-RestMethod -Method Post -Uri "$baseURL/api/control/password" -WebSession $adminSession `
+    -Headers @{ "X-CSRF-Token" = $adminCSRF } -ContentType "application/json" -Body $passwordChangeBody
+  if ([int]$passwordChange.data.revokedSessions -ne 1) {
+    throw "Administrator password change did not revoke the other active session."
+  }
+  $passwordChangeBody = $null
+  $administratorLoginBody = $null
+  Assert-HTTPFailureStatus -ExpectedStatus 401 -FailureMessage "The generated administrator password remained valid after replacement." -Action {
+    Invoke-RestMethod -Method Post -Uri "$baseURL/api/control/session" -ContentType "application/json" `
+      -Body (@{ email = "owner@example.test"; password = $initialAdministratorPassword } | ConvertTo-Json)
+  }
+  Assert-HTTPFailureStatus -ExpectedStatus 401 -FailureMessage "Password change did not revoke the other administrator session." -Action {
+    Invoke-RestMethod -Uri "$baseURL/api/control/session" -WebSession $secondaryAdministratorSession
+  }
+  $replacementSession = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+  $replacementLogin = Invoke-RestMethod -Method Post -Uri "$baseURL/api/control/session" -WebSession $replacementSession `
+    -ContentType "application/json" -Body (@{ email = "owner@example.test"; password = $replacementAdministratorPassword } | ConvertTo-Json)
+  if ($replacementLogin.data.role -ne "administrator") {
+    throw "The replacement administrator password did not authenticate."
+  }
+  Invoke-RestMethod -Method Delete -Uri "$baseURL/api/control/session" -WebSession $replacementSession `
+    -Headers @{ "X-CSRF-Token" = $replacementLogin.data.csrfToken } | Out-Null
+  $initialAdministratorPassword = $null
+  $replacementAdministratorPassword = $null
 
   $providerBody = @{
     slug    = "core-openai"
@@ -386,7 +437,7 @@ try {
   $revision = Invoke-RestMethod -Method Post -Uri "$baseURL/api/control/configuration/revisions" -WebSession $adminSession `
     -Headers @{ "X-CSRF-Token" = $adminCSRF; "Idempotency-Key" = $captureIdempotencyKey }
   if (-not $revision.data.id -or
-      $revision.data.createdBy -ne "Owner" -or
+      $revision.data.createdBy -ne "Administrator" -or
       $revision.data.providerCount -ne 1 -or
       $revision.data.modelCount -ne 2 -or
       $revision.data.credentialCount -ne 1 -or
@@ -395,7 +446,7 @@ try {
   }
   $revisionReplay = Invoke-RestMethod -Method Post -Uri "$baseURL/api/control/configuration/revisions" -WebSession $adminSession `
     -Headers @{ "X-CSRF-Token" = $adminCSRF; "Idempotency-Key" = $captureIdempotencyKey }
-  if ($revisionReplay.data.id -ne $revision.data.id -or $revisionReplay.data.createdBy -ne "Owner") {
+  if ($revisionReplay.data.id -ne $revision.data.id -or $revisionReplay.data.createdBy -ne "Administrator") {
     throw "Configuration capture replay did not return the original revision."
   }
 
@@ -406,7 +457,7 @@ try {
     -ContentType "application/json" -Body $publishBody
   if ($published.data.phase -ne "completed" -or
       $published.data.result.id -ne $revision.data.id -or
-      $published.data.result.createdBy -ne "Owner") {
+      $published.data.result.createdBy -ne "Administrator") {
     throw "Configuration publication did not complete for the captured revision."
   }
 
@@ -449,7 +500,7 @@ try {
     throw "Invitation creation did not return its one-time code."
   }
   $expectedInvitationPrefix = $invitationCode.Substring(0, 13)
-  if ($invitationRecord.codePrefix -ne $expectedInvitationPrefix -or $invitationRecord.createdBy -ne "Owner") {
+  if ($invitationRecord.codePrefix -ne $expectedInvitationPrefix -or $invitationRecord.createdBy -ne "Administrator") {
     throw "Invitation creation did not return its stable display prefix."
   }
 
@@ -480,7 +531,7 @@ try {
   $listedInvitation = $listedInvitations.data.items | Where-Object { $_.id -eq $invitationRecord.id } | Select-Object -First 1
   if (-not $listedInvitation -or
       $listedInvitation.codePrefix -ne $expectedInvitationPrefix -or
-      $listedInvitation.createdBy -ne "Owner" -or
+      $listedInvitation.createdBy -ne "Administrator" -or
       ($listedInvitation.PSObject.Properties.Name -contains "code")) {
     throw "Invitation list did not retain only the stable, non-secret prefix."
   }
@@ -873,40 +924,38 @@ try {
     $capacitySource.Dispose()
   }
 
-  $playgroundModels = Invoke-RestMethod -Uri "$baseURL/api/control/playground/models?gatewayKeyId=$($createdKey.data.key.id)" -WebSession $memberSession
-  if ($playgroundModels.data.Count -ne 1 -or
-      $playgroundModels.data[0].alias -ne "core-chat" -or
-      $playgroundModels.data[0].providerName -ne "core-openai") {
-    throw "The real Playground did not use the selected Key's published model catalog."
+  $gatewayKeyTestModels = Invoke-RestMethod -Uri "$baseURL/api/control/gateway-key-test/models?gatewayKeyId=$($createdKey.data.key.id)" -WebSession $memberSession
+  if ($gatewayKeyTestModels.data.Count -ne 1 -or
+      $gatewayKeyTestModels.data[0].alias -ne "core-chat") {
+    throw "The Gateway Key test did not use the selected Key's published model catalog."
   }
-  $playgroundIdempotencyKey = [guid]::NewGuid().ToString()
-  $playgroundBody = @{
-    gatewayKeyId    = $createdKey.data.key.id
-    model           = "core-chat"
-    stream          = $false
-    messages        = @(@{ role = "user"; content = "hello from the real Playground" })
+  $gatewayKeyTestIdempotencyKey = [guid]::NewGuid().ToString()
+  $gatewayKeyTestBody = @{
+    gatewayKeyId = $createdKey.data.key.id
+    model        = "core-chat"
+    message      = "hi"
   } | ConvertTo-Json -Depth 8
-  $playgroundResponse = Invoke-WebRequest -UseBasicParsing -Method Post -Uri "$baseURL/api/control/playground/runs" -WebSession $memberSession `
-    -Headers @{ "X-CSRF-Token" = $memberCSRF; "Idempotency-Key" = $playgroundIdempotencyKey } `
-    -ContentType "application/json" -Body $playgroundBody
-  $playgroundEvents = @($playgroundResponse.Content -split "`r?`n" | Where-Object { $_.StartsWith("data: ") } | ForEach-Object { $_.Substring(6) | ConvertFrom-Json })
-  $playgroundContentEvent = $playgroundEvents | Where-Object { $_.type -eq "content" } | Select-Object -First 1
-  $playgroundUsageEvent = $playgroundEvents | Where-Object { $_.type -eq "usage" } | Select-Object -First 1
-  $playgroundCompletedEvent = $playgroundEvents | Where-Object { $_.type -eq "completed" } | Select-Object -First 1
-  $playgroundRaw = $playgroundResponse.Content -replace "`r", "" -replace "`n", "|"
-  $parsedPlaygroundRequestID = [guid]::Empty
-  if ($playgroundResponse.Headers["Content-Type"] -notlike "text/event-stream*" -or
-      $playgroundContentEvent.delta -ne "fixture response" -or
-      $playgroundUsageEvent.inputTokens -ne 4 -or
-      $playgroundUsageEvent.outputTokens -ne 2 -or
-      $playgroundUsageEvent.source -ne "authoritative" -or
-      -not [guid]::TryParse([string]$playgroundCompletedEvent.requestId, [ref]$parsedPlaygroundRequestID)) {
-    throw "The real Playground did not stream content, authoritative usage, and completion facts: raw=$playgroundRaw content=$($playgroundContentEvent | ConvertTo-Json -Compress) usage=$($playgroundUsageEvent | ConvertTo-Json -Compress) completed=$($playgroundCompletedEvent | ConvertTo-Json -Compress) contentType=$($playgroundResponse.Headers['Content-Type'])"
+  $gatewayKeyTestResponse = Invoke-WebRequest -UseBasicParsing -Method Post -Uri "$baseURL/api/control/gateway-key-test/runs" -WebSession $memberSession `
+    -Headers @{ "X-CSRF-Token" = $memberCSRF; "Idempotency-Key" = $gatewayKeyTestIdempotencyKey } `
+    -ContentType "application/json" -Body $gatewayKeyTestBody
+  $gatewayKeyTestEvents = @($gatewayKeyTestResponse.Content -split "`r?`n" | Where-Object { $_.StartsWith("data: ") } | ForEach-Object { $_.Substring(6) | ConvertFrom-Json })
+  $gatewayKeyTestContentEvent = $gatewayKeyTestEvents | Where-Object { $_.type -eq "content" } | Select-Object -First 1
+  $gatewayKeyTestUsageEvent = $gatewayKeyTestEvents | Where-Object { $_.type -eq "usage" } | Select-Object -First 1
+  $gatewayKeyTestCompletedEvent = $gatewayKeyTestEvents | Where-Object { $_.type -eq "completed" } | Select-Object -First 1
+  $gatewayKeyTestRaw = $gatewayKeyTestResponse.Content -replace "`r", "" -replace "`n", "|"
+  $parsedGatewayKeyTestRequestID = [guid]::Empty
+  if ($gatewayKeyTestResponse.Headers["Content-Type"] -notlike "text/event-stream*" -or
+      $gatewayKeyTestContentEvent.delta -ne "fixture stream" -or
+      $gatewayKeyTestUsageEvent.inputTokens -ne 4 -or
+      $gatewayKeyTestUsageEvent.outputTokens -ne 2 -or
+      $gatewayKeyTestUsageEvent.source -ne "authoritative" -or
+      -not [guid]::TryParse([string]$gatewayKeyTestCompletedEvent.requestId, [ref]$parsedGatewayKeyTestRequestID)) {
+    throw "The Gateway Key test did not stream content, authoritative usage, and completion facts: raw=$gatewayKeyTestRaw content=$($gatewayKeyTestContentEvent | ConvertTo-Json -Compress) usage=$($gatewayKeyTestUsageEvent | ConvertTo-Json -Compress) completed=$($gatewayKeyTestCompletedEvent | ConvertTo-Json -Compress) contentType=$($gatewayKeyTestResponse.Headers['Content-Type'])"
   }
-  $playgroundRequestFacts = & $docker exec $postgres.Container psql -v ON_ERROR_STOP=1 -U llmgateway -d llmgateway_core -Atc `
-    "SELECT request.status || '|' || reservation.state || '|' || reservation.charged_tokens || '|' || (SELECT count(*) FROM request_attempts attempt WHERE attempt.request_id = request.id AND attempt.status = 'completed') FROM requests request JOIN ledger_reservations reservation ON reservation.request_id = request.id WHERE request.gateway_key_id = '$($createdKey.data.key.id)' AND request.idempotency_key = '$playgroundIdempotencyKey'"
-  if ($LASTEXITCODE -ne 0 -or $playgroundRequestFacts -ne "completed|settled|6|1") {
-    throw "The real Playground did not settle through the shared request workflow: $playgroundRequestFacts"
+  $gatewayKeyTestRequestFacts = & $docker exec $postgres.Container psql -v ON_ERROR_STOP=1 -U llmgateway -d llmgateway_core -Atc `
+    "SELECT request.status || '|' || reservation.state || '|' || reservation.charged_tokens || '|' || (SELECT count(*) FROM request_attempts attempt WHERE attempt.request_id = request.id AND attempt.status = 'completed') FROM requests request JOIN ledger_reservations reservation ON reservation.request_id = request.id WHERE request.gateway_key_id = '$($createdKey.data.key.id)' AND request.idempotency_key = '$gatewayKeyTestIdempotencyKey'"
+  if ($LASTEXITCODE -ne 0 -or $gatewayKeyTestRequestFacts -ne "completed|settled|6|1") {
+    throw "The Gateway Key test did not settle through the shared request workflow: $gatewayKeyTestRequestFacts"
   }
 
   $streamChatBody = @{
@@ -1143,13 +1192,17 @@ COMMIT;
   $null = $process.WaitForExit(5000)
   $process = Start-Process @startArguments
   Wait-LLMGatewayReady -Process $process -BaseURL $baseURL
+  $coolingPublicModels = Invoke-RestMethod -Uri "$baseURL/v1/models" -Headers @{ Authorization = "Bearer $gatewayKeySecret" }
+  if ($coolingPublicModels.data.Count -ne 1 -or $coolingPublicModels.data[0].id -ne "core-chat") {
+    throw "The published model catalog changed because its only credential was temporarily cooling."
+  }
   $providerStatsBeforeBlocked = Invoke-RestMethod -Uri "$providerAdminURL/stats"
   $blockedByCooldownBody = @{
     model                 = "core-chat"
     messages              = @(@{ role = "user"; content = "must not cross the persisted free pool cooldown" })
     max_completion_tokens = 64
   } | ConvertTo-Json -Depth 8
-  Assert-HTTPFailureStatus -ExpectedStatus 503 -FailureMessage "A restarted gateway forgot the persisted free-pool cooldown." -Action {
+  Assert-HTTPFailureStatus -ExpectedStatus 503 -RequireRetryAfter -FailureMessage "A restarted gateway forgot the persisted free-pool cooldown." -Action {
     Invoke-WebRequest -UseBasicParsing -Method Post -Uri "$baseURL/v1/chat/completions" `
       -Headers @{ Authorization = "Bearer $gatewayKeySecret"; "Idempotency-Key" = [guid]::NewGuid().ToString() } `
       -ContentType "application/json" -Body $blockedByCooldownBody
@@ -1232,7 +1285,7 @@ COMMIT;
     RedirectStandardOutput = $secondStdoutPath
     RedirectStandardError  = $secondStderrPath
   }
-  if ($isWindows) {
+  if ($runningOnWindows) {
     $secondStartArguments.WindowStyle = "Hidden"
   }
   $secondProcess = Start-Process @secondStartArguments
@@ -1537,4 +1590,4 @@ COMMIT;
   }
 }
 
-Write-Host "Core publication, identity, Key authorization, public API, Playground, multi-instance admission, execution fencing, restart recovery, and uncertain-hold request flow passed against isolated real gateways and a Provider fixture."
+Write-Host "Core publication, identity, Key authorization, public API, inline Gateway Key testing, multi-instance admission, execution fencing, restart recovery, and uncertain-hold request flow passed against isolated real gateways and a Provider fixture."

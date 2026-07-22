@@ -1,25 +1,22 @@
-import '@testing-library/jest-dom/vitest'
-import { cleanup, configure } from '@testing-library/react'
 import { afterAll, afterEach, beforeAll } from 'vitest'
 
 import { server } from './server'
 
-class TestResizeObserver {
-  observe(): void {}
-  unobserve(): void {}
-  disconnect(): void {}
-}
+const browserFetch = globalThis.fetch
 
-Object.defineProperty(globalThis, 'ResizeObserver', {
-  configurable: true,
-  value: TestResizeObserver,
+beforeAll(() => {
+  server.listen({ onUnhandledRequest: 'error' })
+  const interceptedFetch = globalThis.fetch
+  globalThis.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+    const request =
+      typeof input === 'string' && input.startsWith('/')
+        ? new URL(input, 'http://llmgateway.test')
+        : input
+    return interceptedFetch(request, init)
+  }
 })
-
-configure({ asyncUtilTimeout: 5_000 })
-
-beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
-afterEach(() => {
-  cleanup()
-  server.resetHandlers()
+afterEach(() => server.resetHandlers())
+afterAll(() => {
+  server.close()
+  globalThis.fetch = browserFetch
 })
-afterAll(() => server.close())

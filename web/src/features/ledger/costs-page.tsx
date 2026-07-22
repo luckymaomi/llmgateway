@@ -45,7 +45,7 @@ export function CostsPage() {
       { accessorKey: 'userName', header: '用户' },
       {
         accessorKey: 'plan',
-        header: '套餐',
+        header: '额度类型',
         cell: ({ row }) => (row.original.plan === 'coding' ? '编程' : 'Token'),
       },
       { accessorKey: 'modelAlias', header: '模型' },
@@ -76,8 +76,7 @@ export function CostsPage() {
   return (
     <Page>
       <PageHeader
-        title="用量与账本"
-        description="冻结价格版本与采购成本事实"
+        title="用量与额度"
         actions={
           <Button icon={<Plus size={16} />} onClick={() => setFormOpen(true)}>
             新增价格

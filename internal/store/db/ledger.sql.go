@@ -183,6 +183,99 @@ func (q *Queries) CompleteRequest(ctx context.Context, arg CompleteRequestParams
 	return i, err
 }
 
+const countEntitlements = `-- name: CountEntitlements :one
+SELECT count(*)
+FROM entitlements e
+JOIN users owner ON owner.id = e.user_id
+LEFT JOIN models model ON model.id = e.model_id
+WHERE ($1::uuid IS NULL OR e.user_id = $1)
+  AND ($2::text = '' OR concat_ws(' ', owner.display_name, owner.email, model.public_name, e.plan::text, e.resource_domain::text) ILIKE '%' || $2::text || '%')
+  AND ($3::text = ''
+    OR $3::text = 'scheduled' AND e.starts_at > now()
+    OR $3::text = 'active' AND e.starts_at <= now() AND e.expires_at > now()
+    OR $3::text = 'expired' AND e.expires_at <= now())
+  AND ($4::text = '' OR e.resource_domain::text = $4::text)
+`
+
+type CountEntitlementsParams struct {
+	UserID         *uuid.UUID `json:"user_id"`
+	Search         string     `json:"search"`
+	Status         string     `json:"status"`
+	ResourceDomain string     `json:"resource_domain"`
+}
+
+func (q *Queries) CountEntitlements(ctx context.Context, arg CountEntitlementsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countEntitlements,
+		arg.UserID,
+		arg.Search,
+		arg.Status,
+		arg.ResourceDomain,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countLedgerEvents = `-- name: CountLedgerEvents :one
+SELECT count(*)
+FROM ledger_events event
+JOIN users owner ON owner.id = event.user_id
+JOIN entitlements entitlement ON entitlement.id = event.entitlement_id
+LEFT JOIN users actor ON actor.id = event.created_by
+WHERE ($1::uuid IS NULL OR event.user_id = $1)
+  AND ($2::uuid IS NULL OR event.entitlement_id = $2)
+  AND ($3::text = '' OR concat_ws(' ', owner.display_name, owner.email, actor.display_name, actor.email, event.note, event.request_id::text) ILIKE '%' || $3::text || '%')
+  AND ($4::text = '' OR entitlement.resource_domain::text = $4::text)
+`
+
+type CountLedgerEventsParams struct {
+	UserID         *uuid.UUID `json:"user_id"`
+	EntitlementID  *uuid.UUID `json:"entitlement_id"`
+	Search         string     `json:"search"`
+	ResourceDomain string     `json:"resource_domain"`
+}
+
+func (q *Queries) CountLedgerEvents(ctx context.Context, arg CountLedgerEventsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countLedgerEvents,
+		arg.UserID,
+		arg.EntitlementID,
+		arg.Search,
+		arg.ResourceDomain,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countRequestUsage = `-- name: CountRequestUsage :one
+SELECT count(*)
+FROM requests AS request
+JOIN users AS owner ON owner.id = request.user_id
+JOIN gateway_keys AS key ON key.id = request.gateway_key_id
+JOIN config_revision_models AS model
+  ON model.revision_id = request.config_revision_id AND model.model_id = request.model_id
+WHERE ($1::uuid IS NULL OR request.user_id = $1)
+  AND request.input_tokens IS NOT NULL
+  AND request.output_tokens IS NOT NULL
+  AND request.usage_source IN ('authoritative', 'estimated')
+  AND request.completed_at IS NOT NULL
+  AND ($2::text = '' OR concat_ws(' ', owner.display_name, owner.email, key.prefix, model.public_name, request.id::text) ILIKE '%' || $2::text || '%')
+  AND ($3::text = '' OR request.resource_domain::text = $3::text)
+`
+
+type CountRequestUsageParams struct {
+	UserID         *uuid.UUID `json:"user_id"`
+	Search         string     `json:"search"`
+	ResourceDomain string     `json:"resource_domain"`
+}
+
+func (q *Queries) CountRequestUsage(ctx context.Context, arg CountRequestUsageParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countRequestUsage, arg.UserID, arg.Search, arg.ResourceDomain)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createAttempt = `-- name: CreateAttempt :one
 INSERT INTO request_attempts (request_id, execution_id, execution_generation, credential_id, sequence, status)
 SELECT $1, $2, $3, $4, $5, $6
@@ -1093,17 +1186,28 @@ func (q *Queries) ListApplicableEntitlementsForUpdate(ctx context.Context, arg L
 const listEntitlementsWithBalance = `-- name: ListEntitlementsWithBalance :many
 SELECT e.id, e.user_id, e.plan, e.resource_domain, e.model_id, e.granted_tokens, e.starts_at, e.expires_at, e.concurrency_limit, e.rpm_limit, e.tpm_limit, e.created_at, coalesce(sum(le.token_delta), 0)::bigint AS balance_tokens
 FROM entitlements e
+JOIN users owner ON owner.id = e.user_id
+LEFT JOIN models model ON model.id = e.model_id
 LEFT JOIN ledger_events le ON le.entitlement_id = e.id
 WHERE ($1::uuid IS NULL OR e.user_id = $1)
+  AND ($2::text = '' OR concat_ws(' ', owner.display_name, owner.email, model.public_name, e.plan::text, e.resource_domain::text) ILIKE '%' || $2::text || '%')
+  AND ($3::text = ''
+    OR $3::text = 'scheduled' AND e.starts_at > now()
+    OR $3::text = 'active' AND e.starts_at <= now() AND e.expires_at > now()
+    OR $3::text = 'expired' AND e.expires_at <= now())
+  AND ($4::text = '' OR e.resource_domain::text = $4::text)
 GROUP BY e.id
 ORDER BY e.created_at DESC, e.id
-LIMIT $3 OFFSET $2
+LIMIT $6 OFFSET $5
 `
 
 type ListEntitlementsWithBalanceParams struct {
-	UserID     *uuid.UUID `json:"user_id"`
-	PageOffset int32      `json:"page_offset"`
-	PageSize   int32      `json:"page_size"`
+	UserID         *uuid.UUID `json:"user_id"`
+	Search         string     `json:"search"`
+	Status         string     `json:"status"`
+	ResourceDomain string     `json:"resource_domain"`
+	PageOffset     int32      `json:"page_offset"`
+	PageSize       int32      `json:"page_size"`
 }
 
 type ListEntitlementsWithBalanceRow struct {
@@ -1123,7 +1227,14 @@ type ListEntitlementsWithBalanceRow struct {
 }
 
 func (q *Queries) ListEntitlementsWithBalance(ctx context.Context, arg ListEntitlementsWithBalanceParams) ([]ListEntitlementsWithBalanceRow, error) {
-	rows, err := q.db.Query(ctx, listEntitlementsWithBalance, arg.UserID, arg.PageOffset, arg.PageSize)
+	rows, err := q.db.Query(ctx, listEntitlementsWithBalance,
+		arg.UserID,
+		arg.Search,
+		arg.Status,
+		arg.ResourceDomain,
+		arg.PageOffset,
+		arg.PageSize,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -1157,23 +1268,52 @@ func (q *Queries) ListEntitlementsWithBalance(ctx context.Context, arg ListEntit
 }
 
 const listLedgerEvents = `-- name: ListLedgerEvents :many
-SELECT id, user_id, entitlement_id, request_id, reservation_id, kind, token_delta, reserved_tokens, input_tokens, output_tokens, usage_source, source_event_id, note, created_by, created_at FROM ledger_events
-WHERE ($1::uuid IS NULL OR user_id = $1)
-  AND ($2::uuid IS NULL OR entitlement_id = $2)
-ORDER BY created_at DESC, id LIMIT $4 OFFSET $3
+SELECT event.id, event.user_id, event.entitlement_id, event.request_id, event.reservation_id, event.kind, event.token_delta, event.reserved_tokens, event.input_tokens, event.output_tokens, event.usage_source, event.source_event_id, event.note, event.created_by, event.created_at, entitlement.resource_domain
+FROM ledger_events event
+JOIN users owner ON owner.id = event.user_id
+JOIN entitlements entitlement ON entitlement.id = event.entitlement_id
+LEFT JOIN users actor ON actor.id = event.created_by
+WHERE ($1::uuid IS NULL OR event.user_id = $1)
+  AND ($2::uuid IS NULL OR event.entitlement_id = $2)
+  AND ($3::text = '' OR concat_ws(' ', owner.display_name, owner.email, actor.display_name, actor.email, event.note, event.request_id::text) ILIKE '%' || $3::text || '%')
+  AND ($4::text = '' OR entitlement.resource_domain::text = $4::text)
+ORDER BY event.created_at DESC, event.id LIMIT $6 OFFSET $5
 `
 
 type ListLedgerEventsParams struct {
-	UserID        *uuid.UUID `json:"user_id"`
-	EntitlementID *uuid.UUID `json:"entitlement_id"`
-	PageOffset    int32      `json:"page_offset"`
-	PageSize      int32      `json:"page_size"`
+	UserID         *uuid.UUID `json:"user_id"`
+	EntitlementID  *uuid.UUID `json:"entitlement_id"`
+	Search         string     `json:"search"`
+	ResourceDomain string     `json:"resource_domain"`
+	PageOffset     int32      `json:"page_offset"`
+	PageSize       int32      `json:"page_size"`
 }
 
-func (q *Queries) ListLedgerEvents(ctx context.Context, arg ListLedgerEventsParams) ([]LedgerEvent, error) {
+type ListLedgerEventsRow struct {
+	ID             uuid.UUID          `json:"id"`
+	UserID         uuid.UUID          `json:"user_id"`
+	EntitlementID  uuid.UUID          `json:"entitlement_id"`
+	RequestID      *uuid.UUID         `json:"request_id"`
+	ReservationID  *uuid.UUID         `json:"reservation_id"`
+	Kind           LedgerEventKind    `json:"kind"`
+	TokenDelta     int64              `json:"token_delta"`
+	ReservedTokens int64              `json:"reserved_tokens"`
+	InputTokens    int64              `json:"input_tokens"`
+	OutputTokens   int64              `json:"output_tokens"`
+	UsageSource    UsageSource        `json:"usage_source"`
+	SourceEventID  *uuid.UUID         `json:"source_event_id"`
+	Note           *string            `json:"note"`
+	CreatedBy      *uuid.UUID         `json:"created_by"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	ResourceDomain ResourceDomain     `json:"resource_domain"`
+}
+
+func (q *Queries) ListLedgerEvents(ctx context.Context, arg ListLedgerEventsParams) ([]ListLedgerEventsRow, error) {
 	rows, err := q.db.Query(ctx, listLedgerEvents,
 		arg.UserID,
 		arg.EntitlementID,
+		arg.Search,
+		arg.ResourceDomain,
 		arg.PageOffset,
 		arg.PageSize,
 	)
@@ -1181,9 +1321,9 @@ func (q *Queries) ListLedgerEvents(ctx context.Context, arg ListLedgerEventsPara
 		return nil, err
 	}
 	defer rows.Close()
-	items := []LedgerEvent{}
+	items := []ListLedgerEventsRow{}
 	for rows.Next() {
-		var i LedgerEvent
+		var i ListLedgerEventsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.UserID,
@@ -1200,6 +1340,7 @@ func (q *Queries) ListLedgerEvents(ctx context.Context, arg ListLedgerEventsPara
 			&i.Note,
 			&i.CreatedBy,
 			&i.CreatedAt,
+			&i.ResourceDomain,
 		); err != nil {
 			return nil, err
 		}
@@ -1370,6 +1511,7 @@ SELECT request.id, request.user_id, key.prefix AS key_prefix,
        model.public_name AS model_alias, request.resource_domain,
        request.input_tokens, request.output_tokens, request.usage_source, request.completed_at
 FROM requests AS request
+JOIN users AS owner ON owner.id = request.user_id
 JOIN gateway_keys AS key ON key.id = request.gateway_key_id
 JOIN config_revision_models AS model
   ON model.revision_id = request.config_revision_id AND model.model_id = request.model_id
@@ -1378,14 +1520,18 @@ WHERE ($1::uuid IS NULL OR request.user_id = $1)
   AND request.output_tokens IS NOT NULL
   AND request.usage_source IN ('authoritative', 'estimated')
   AND request.completed_at IS NOT NULL
+  AND ($2::text = '' OR concat_ws(' ', owner.display_name, owner.email, key.prefix, model.public_name, request.id::text) ILIKE '%' || $2::text || '%')
+  AND ($3::text = '' OR request.resource_domain::text = $3::text)
 ORDER BY request.completed_at DESC, request.id
-LIMIT $3 OFFSET $2
+LIMIT $5 OFFSET $4
 `
 
 type ListRequestUsageParams struct {
-	UserID     *uuid.UUID `json:"user_id"`
-	PageOffset int32      `json:"page_offset"`
-	PageSize   int32      `json:"page_size"`
+	UserID         *uuid.UUID `json:"user_id"`
+	Search         string     `json:"search"`
+	ResourceDomain string     `json:"resource_domain"`
+	PageOffset     int32      `json:"page_offset"`
+	PageSize       int32      `json:"page_size"`
 }
 
 type ListRequestUsageRow struct {
@@ -1401,7 +1547,13 @@ type ListRequestUsageRow struct {
 }
 
 func (q *Queries) ListRequestUsage(ctx context.Context, arg ListRequestUsageParams) ([]ListRequestUsageRow, error) {
-	rows, err := q.db.Query(ctx, listRequestUsage, arg.UserID, arg.PageOffset, arg.PageSize)
+	rows, err := q.db.Query(ctx, listRequestUsage,
+		arg.UserID,
+		arg.Search,
+		arg.ResourceDomain,
+		arg.PageOffset,
+		arg.PageSize,
+	)
 	if err != nil {
 		return nil, err
 	}

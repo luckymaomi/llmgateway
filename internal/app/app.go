@@ -17,12 +17,14 @@ import (
 	"github.com/luckymaomi/llmgateway/internal/httpserver"
 	"github.com/luckymaomi/llmgateway/internal/identity"
 	"github.com/luckymaomi/llmgateway/internal/observability"
+	"github.com/luckymaomi/llmgateway/internal/operations"
 	"github.com/luckymaomi/llmgateway/internal/publicapi"
 	"github.com/luckymaomi/llmgateway/internal/quota"
 	"github.com/luckymaomi/llmgateway/internal/registry"
 	"github.com/luckymaomi/llmgateway/internal/requestflow"
 	responseowner "github.com/luckymaomi/llmgateway/internal/responses"
 	"github.com/luckymaomi/llmgateway/internal/security"
+	"github.com/luckymaomi/llmgateway/internal/siteprofile"
 	"github.com/luckymaomi/llmgateway/internal/store"
 	webassets "github.com/luckymaomi/llmgateway/web"
 	"github.com/prometheus/client_golang/prometheus"
@@ -99,13 +101,27 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 		return nil, fmt.Errorf("costing service: %w", err)
 	}
 	costingAPI := controlapi.NewCostingAPI(costingService, logger)
-	controlAPI := controlapi.New(identityService, registryService, configurationService, loginGuard, cfg.Security, logger).WithQuotaAPI(quotaAPI).WithCostingAPI(costingAPI)
+	siteProfileService, err := siteprofile.NewService(store.NewSiteProfileRepository(connections))
+	if err != nil {
+		connections.Close()
+		return nil, fmt.Errorf("initialize site profile service: %w", err)
+	}
+	controlAPI := controlapi.New(identityService, registryService, configurationService, loginGuard, cfg.Security, logger).
+		WithQuotaAPI(quotaAPI).
+		WithCostingAPI(costingAPI).
+		WithSiteProfileAPI(controlapi.NewSiteProfileAPI(siteProfileService))
+	operationsService, err := operations.NewService(store.NewOperationsRepository(connections))
+	if err != nil {
+		connections.Close()
+		return nil, fmt.Errorf("initialize operations service: %w", err)
+	}
+	controlAPI.WithOperationsAPI(controlapi.NewOperationsAPI(operationsService, logger))
 	workflow, err := newRequestWorkflow(cfg, connections, registryService, quotaService, runtimeMetrics)
 	if err != nil {
 		connections.Close()
 		return nil, err
 	}
-	controlAPI.WithPlaygroundWorkflow(workflow)
+	controlAPI.WithGatewayKeyTestWorkflow(workflow)
 	responseService, err := responseowner.NewService(store.NewResponseRepository(connections), envelope)
 	if err != nil {
 		connections.Close()

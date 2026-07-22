@@ -112,19 +112,22 @@ func TestPersistentQuotaLifecycleAndConcurrentReservations(t *testing.T) {
 		t.Fatalf("Compensate(after settle) error = %v, want ErrTerminalConflict", err)
 	}
 
-	entitlements, err := repository.ListEntitlements(ctx, &fixture.userID, quota.Page{Size: 20})
+	entitlementPage, err := repository.ListEntitlements(ctx, quota.EntitlementQuery{
+		UserID: &fixture.userID,
+		Page:   quota.Page{Size: 20},
+	})
 	if err != nil {
 		t.Fatalf("ListEntitlements() error = %v", err)
 	}
-	if balanceFor(entitlements, freeEntitlement.ID) != 70 {
-		t.Fatalf("free entitlement balance = %d, want 70", balanceFor(entitlements, freeEntitlement.ID))
+	if balanceFor(entitlementPage.Items, freeEntitlement.ID) != 70 {
+		t.Fatalf("free entitlement balance = %d, want 70", balanceFor(entitlementPage.Items, freeEntitlement.ID))
 	}
-	entries, err := repository.ListLedger(ctx, quota.LedgerFilter{EntitlementID: &freeEntitlement.ID, Page: quota.Page{Size: 20}})
+	ledgerPage, err := repository.ListLedger(ctx, quota.LedgerFilter{EntitlementID: &freeEntitlement.ID, Page: quota.Page{Size: 20}})
 	if err != nil {
 		t.Fatalf("ListLedger() error = %v", err)
 	}
-	if len(entries) != 3 {
-		t.Fatalf("ledger entry count = %d, want grant + reservation + settlement", len(entries))
+	if len(ledgerPage.Items) != 3 {
+		t.Fatalf("ledger entry count = %d, want grant + reservation + settlement", len(ledgerPage.Items))
 	}
 
 	professionalEntitlement, err := repository.CreateEntitlement(ctx, quota.NewEntitlement{
@@ -295,11 +298,14 @@ func (f quotaFixture) cleanup(ctx context.Context, pool *pgxpool.Pool) {
 
 func mustListEntitlements(t *testing.T, ctx context.Context, repository *store.QuotaRepository, userID uuid.UUID) []quota.Entitlement {
 	t.Helper()
-	items, err := repository.ListEntitlements(ctx, &userID, quota.Page{Size: 100})
+	result, err := repository.ListEntitlements(ctx, quota.EntitlementQuery{
+		UserID: &userID,
+		Page:   quota.Page{Size: 100},
+	})
 	if err != nil {
 		t.Fatalf("ListEntitlements() error = %v", err)
 	}
-	return items
+	return result.Items
 }
 
 func balanceFor(items []quota.Entitlement, id uuid.UUID) int64 {

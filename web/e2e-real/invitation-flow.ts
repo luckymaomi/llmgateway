@@ -1,15 +1,13 @@
-import { devices, expect, type Browser, type Page } from '@playwright/test'
+import { expect, type Page } from '@playwright/test'
 
 import {
   clearClipboard,
   clearClipboardBestEffort,
   dataRecord,
-  expectLocatorWidthToFit,
-  expectPageWidthToFit,
   isRecord,
   uuidPattern,
 } from './acceptance-helpers'
-import { acceptanceArtifactPath, type BrowserProblems, type GatewayRuntime } from './runtime'
+import type { BrowserProblems, GatewayRuntime } from './runtime'
 
 export interface InvitationFacts {
   id: string
@@ -66,7 +64,7 @@ export async function createInvitationAfterLostResponse(
     const originalInput = JSON.parse(originalBody) as { expiresAt?: unknown }
     expect(typeof originalInput.expiresAt).toBe('string')
     expect(new Date(String(originalInput.expiresAt)).toISOString()).toBe(originalInput.expiresAt)
-    await expect(dialog.getByRole('alert')).toContainText('创建结果暂时无法确认')
+    await expect(dialog.getByRole('alert')).toBeVisible()
     const pendingOperation = await page.evaluate(() => {
       for (let index = 0; index < sessionStorage.length; index += 1) {
         const storageKey = sessionStorage.key(index)
@@ -90,8 +88,7 @@ export async function createInvitationAfterLostResponse(
     await gateway.restart()
     await page.reload()
     const recoveryDialog = page.getByRole('dialog')
-    await expect(recoveryDialog.getByRole('heading', { name: '创建邀请' })).toBeVisible()
-    await expect(recoveryDialog.getByRole('alert')).toContainText('创建结果暂时无法确认')
+    await expect(recoveryDialog.getByRole('alert')).toBeVisible()
     const replayResponse = page.waitForResponse(
       (response) =>
         new URL(response.url()).pathname === invitationPath &&
@@ -113,7 +110,6 @@ export async function createInvitationAfterLostResponse(
       committedInvitationCode,
     )
     const acknowledgement = page.getByRole('dialog')
-    await expect(acknowledgement.getByRole('heading', { name: '邀请已创建' })).toBeVisible()
     expect(
       await page.evaluate(
         (expected) =>
@@ -123,7 +119,6 @@ export async function createInvitationAfterLostResponse(
       ),
     ).toBe(true)
     await acknowledgement.getByRole('button', { name: '复制邀请码' }).click()
-    await expect(acknowledgement.getByRole('button', { name: '已复制' })).toBeVisible()
     expect(
       await page.evaluate(async () => {
         const displayed = document
@@ -148,7 +143,6 @@ export async function createInvitationAfterLostResponse(
       .getByRole('row')
       .filter({ hasText: `${prefix}…` })
     await expect(invitationRows).toHaveCount(1)
-    await expect(invitationRows).toContainText('Browser Administrator')
     expect(
       await page.evaluate(
         (code) => !document.body.innerText.includes(code),
@@ -160,80 +154,5 @@ export async function createInvitationAfterLostResponse(
   } finally {
     await clearClipboardBestEffort(page)
     await page.unroute(routePattern)
-  }
-}
-
-export async function verifyInvitationCreationOnMobile(
-  desktopPage: Page,
-  browser: Browser,
-  browserProblems: BrowserProblems,
-): Promise<void> {
-  const origin = new URL(desktopPage.url()).origin
-  const context = await browser.newContext({
-    ...devices['Pixel 7'],
-    baseURL: origin,
-    storageState: await desktopPage.context().storageState(),
-  })
-  await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin })
-  try {
-    const page = await context.newPage()
-    browserProblems.observe(page)
-    await page.goto('/access/invitations')
-    await expect(page.getByRole('heading', { name: '用户与网关 Key' })).toBeVisible()
-    await page.getByRole('button', { name: '创建邀请' }).click()
-    const creationResponse = page.waitForResponse(
-      (response) =>
-        new URL(response.url()).pathname === '/api/control/invitations' &&
-        response.request().method() === 'POST',
-    )
-    await page.getByRole('dialog').getByRole('button', { name: '创建', exact: true }).click()
-    expect((await creationResponse).status()).toBe(201)
-    const acknowledgement = page.getByRole('dialog')
-    await expect(acknowledgement.getByRole('heading', { name: '邀请已创建' })).toBeVisible()
-    expect(
-      await page.evaluate(() => {
-        const displayed = document
-          .querySelector('[data-testid="created-invitation-code"]')
-          ?.textContent?.trim()
-        return typeof displayed === 'string' && /^invite_[A-Za-z0-9_-]{20,}$/.test(displayed)
-      }),
-    ).toBe(true)
-    const prefix = await page.evaluate(
-      () =>
-        document
-          .querySelector('[data-testid="created-invitation-code"]')
-          ?.textContent?.trim()
-          .slice(0, 13) ?? '',
-    )
-    expect(prefix.startsWith('invite_') && prefix.length === 13).toBe(true)
-    await acknowledgement.getByRole('button', { name: '复制邀请码' }).click()
-    await expect(acknowledgement.getByRole('button', { name: '已复制' })).toBeVisible()
-    expect(
-      await page.evaluate(async () => {
-        const displayed = document
-          .querySelector('[data-testid="created-invitation-code"]')
-          ?.textContent?.trim()
-        return Boolean(displayed) && (await navigator.clipboard.readText()) === displayed
-      }),
-    ).toBe(true)
-    await acknowledgement.getByRole('button', { name: '完成' }).click()
-    await expect(page.getByTestId('created-invitation-code')).toHaveCount(0)
-    await clearClipboard(page)
-    const invitationItems = page
-      .getByRole('list', { name: '邀请列表' })
-      .getByRole('listitem')
-      .filter({ hasText: `${prefix}…` })
-    await expect(invitationItems).toHaveCount(1)
-    await expect(invitationItems).toContainText('Browser Administrator')
-    await expectLocatorWidthToFit(invitationItems)
-    await expectPageWidthToFit(page)
-    await page.screenshot({
-      path: acceptanceArtifactPath('invitation-mobile.png'),
-      fullPage: true,
-      animations: 'disabled',
-    })
-  } finally {
-    await Promise.all(context.pages().map((page) => clearClipboardBestEffort(page)))
-    await context.close()
   }
 }

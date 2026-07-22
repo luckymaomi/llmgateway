@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/luckymaomi/llmgateway/internal/providers"
 )
 
 func createProviderMutation(request MutationRequest, provider Provider) (ProviderMutation, error) {
@@ -41,6 +42,10 @@ func statusProviderMutation(request MutationRequest, providerID uuid.UUID, enabl
 		Enabled          bool      `json:"enabled"`
 		ExpectedRevision string    `json:"expected_revision"`
 	}{ProviderID: providerID, Enabled: enabled, ExpectedRevision: expectedUpdatedAt.UTC().Format(time.RFC3339Nano)})
+}
+
+func installProviderPresetMutation(request MutationRequest, preset providers.ProviderPreset) (ProviderMutation, error) {
+	return newProviderMutation(request, ProviderMutationInstall, preset)
 }
 
 func optionalMutationTime(value *time.Time) *string {

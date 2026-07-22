@@ -27,6 +27,7 @@ type CoordinationConfig struct {
 	Provider          Capacity
 	DefaultCredential Capacity
 	LeaseTTL          time.Duration
+	RetryInterval     time.Duration
 }
 
 type CoordinationAdapter struct {
@@ -70,8 +71,12 @@ func (a *AdmissionAdapter) Acquire(ctx context.Context, request AdmissionRequest
 		return nil, 0, fmt.Errorf("%w: admission identity is required", ErrCoordinationFailed)
 	}
 	startedAt := time.Now()
-	waitContext, cancel := context.WithTimeout(ctx, a.config.MaxQueueWait)
+	capacityWaitDeadline := startedAt.Add(a.config.MaxQueueWait)
+	waitContext, cancel := context.WithDeadline(ctx, capacityWaitDeadline)
 	defer cancel()
+	if deadline, ok := waitContext.Deadline(); ok {
+		capacityWaitDeadline = deadline
+	}
 	for {
 		localPermit, _, err := a.gate.Acquire(waitContext, admission.Request{
 			ID: admission.TicketID(request.RequestID.String()), UserID: admission.UserID(request.UserID.String()),
@@ -93,7 +98,8 @@ func (a *AdmissionAdapter) Acquire(ctx context.Context, request AdmissionRequest
 		if decision.Granted {
 			permit := &sharedAdmissionPermit{
 				local: localPermit, coordinator: a.coordinator, reference: decision.Lease,
-				ttl: a.config.LeaseTTL, done: make(chan struct{}), stopped: make(chan struct{}),
+				ttl: a.config.LeaseTTL, capacityWaitDeadline: capacityWaitDeadline,
+				done: make(chan struct{}), stopped: make(chan struct{}),
 			}
 			go permit.renew()
 			return permit, time.Since(startedAt), nil
@@ -117,13 +123,21 @@ func (a *AdmissionAdapter) Acquire(ctx context.Context, request AdmissionRequest
 }
 
 type sharedAdmissionPermit struct {
-	local       *admission.Permit
-	coordinator *coordination.Coordinator
-	reference   coordination.LeaseRef
-	ttl         time.Duration
-	done        chan struct{}
-	stopped     chan struct{}
-	once        sync.Once
+	local                *admission.Permit
+	coordinator          *coordination.Coordinator
+	reference            coordination.LeaseRef
+	ttl                  time.Duration
+	capacityWaitDeadline time.Time
+	done                 chan struct{}
+	stopped              chan struct{}
+	once                 sync.Once
+}
+
+func (p *sharedAdmissionPermit) CapacityWaitDeadline() time.Time {
+	if p == nil {
+		return time.Time{}
+	}
+	return p.capacityWaitDeadline
 }
 
 func (p *sharedAdmissionPermit) Release() {
@@ -160,7 +174,8 @@ func (p *sharedAdmissionPermit) renew() {
 }
 
 func NewCoordinationAdapter(coordinator *coordination.Coordinator, config CoordinationConfig) (*CoordinationAdapter, error) {
-	if coordinator == nil || config.LeaseTTL < 3*time.Second || config.LeaseTTL > time.Hour {
+	if coordinator == nil || config.LeaseTTL < 3*time.Second || config.LeaseTTL > time.Hour ||
+		config.RetryInterval < 10*time.Millisecond || config.RetryInterval > time.Second {
 		return nil, errors.New("coordination adapter configuration is invalid")
 	}
 	for _, capacity := range []Capacity{config.Global, config.ResourceDomain, config.User, config.GatewayKey, config.Model, config.Provider, config.DefaultCredential} {
@@ -197,13 +212,12 @@ func (a *CoordinationAdapter) Acquire(ctx context.Context, request LeaseRequest)
 			MaxInFlight: int64(request.EntitlementConcurrency),
 		})
 	}
-	leaseDecision, err := a.coordinator.AcquireLease(ctx, request.ExecutionID.String(), a.config.LeaseTTL, concurrencyLimits)
+	leaseDecision, wait, err := a.acquireConcurrency(ctx, request.ExecutionID.String(), concurrencyLimits, request.CapacityWaitDeadline)
 	if err != nil {
-		return nil, 0, fmt.Errorf("%w: acquire concurrency: %v", ErrCoordinationFailed, err)
+		return nil, wait, err
 	}
 	if !leaseDecision.Granted {
-		delay := retryDelay(leaseDecision.ObservedAt, leaseDecision.RetryAt)
-		return nil, delay, &CapacityError{RetryAt: leaseDecision.RetryAt}
+		return nil, wait, &CapacityError{RetryAt: leaseDecision.RetryAt}
 	}
 
 	rateLimits := make([]coordination.BucketLimit, 0, len(dimensions)*2+2)
@@ -226,12 +240,11 @@ func (a *CoordinationAdapter) Acquire(ctx context.Context, request LeaseRequest)
 	rateDecision, err := a.coordinator.AcquireRate(ctx, rateLimits)
 	if err != nil {
 		_ = a.coordinator.ReleaseLease(context.WithoutCancel(ctx), leaseDecision.Lease)
-		return nil, 0, fmt.Errorf("%w: acquire rate: %v", ErrCoordinationFailed, err)
+		return nil, wait, fmt.Errorf("%w: acquire rate: %v", ErrCoordinationFailed, err)
 	}
 	if !rateDecision.Granted {
 		_ = a.coordinator.ReleaseLease(context.WithoutCancel(ctx), leaseDecision.Lease)
-		delay := retryDelay(rateDecision.ObservedAt, rateDecision.RetryAt)
-		return nil, delay, &CapacityError{RetryAt: rateDecision.RetryAt}
+		return nil, wait, &CapacityError{RetryAt: rateDecision.RetryAt}
 	}
 	leaseContext, cancel := context.WithCancel(ctx)
 	lease := &renewingLease{
@@ -239,7 +252,38 @@ func (a *CoordinationAdapter) Acquire(ctx context.Context, request LeaseRequest)
 		ttl: a.config.LeaseTTL, done: make(chan struct{}), stopped: make(chan struct{}),
 	}
 	go lease.renew()
-	return lease, 0, nil
+	return lease, wait, nil
+}
+
+func (a *CoordinationAdapter) acquireConcurrency(ctx context.Context, leaseID string, limits []coordination.ConcurrencyLimit, deadline time.Time) (coordination.LeaseDecision, time.Duration, error) {
+	startedAt := time.Now()
+	for {
+		decision, err := a.coordinator.AcquireLease(ctx, leaseID, a.config.LeaseTTL, limits)
+		if err != nil {
+			return coordination.LeaseDecision{}, time.Since(startedAt), fmt.Errorf("%w: acquire concurrency: %v", ErrCoordinationFailed, err)
+		}
+		if decision.Granted || deadline.IsZero() || !time.Now().Before(deadline) {
+			return decision, time.Since(startedAt), nil
+		}
+
+		delay := a.config.RetryInterval
+		if untilRetry := time.Until(decision.RetryAt); untilRetry > 0 && untilRetry < delay {
+			delay = untilRetry
+		}
+		if untilDeadline := time.Until(deadline); untilDeadline < delay {
+			delay = untilDeadline
+		}
+		if delay <= 0 {
+			return decision, time.Since(startedAt), nil
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return coordination.LeaseDecision{}, time.Since(startedAt), fmt.Errorf("%w: execution capacity wait canceled: %v", ErrAdmissionCanceled, ctx.Err())
+		case <-timer.C:
+		}
+	}
 }
 
 func admissionGateError(err error) error {
@@ -273,13 +317,6 @@ func minuteBucket(dimension coordination.Dimension, metric coordination.BucketMe
 		Dimension: dimension, Metric: metric, CapacityTokens: capacity, RefillTokens: capacity,
 		RefillInterval: time.Minute, RequestedTokens: requested,
 	}
-}
-
-func retryDelay(observedAt, retryAt time.Time) time.Duration {
-	if !retryAt.After(observedAt) {
-		return 0
-	}
-	return retryAt.Sub(observedAt)
 }
 
 type renewingLease struct {

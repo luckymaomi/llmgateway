@@ -9,9 +9,14 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: verify-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   linux:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     services:
       postgres:
         image: postgres@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
@@ -32,19 +37,24 @@ jobs:
           --health-cmd "valkey-cli ping"
           --health-interval 5s --health-timeout 3s --health-retries 20
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.26.5"
           cache: true
-      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
-        with:
-          version: "10.33.0"
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "22.19.0"
-          cache: pnpm
-          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Install pnpm
+        shell: bash
+        run: |
+          npm install --global --ignore-scripts pnpm@10.33.0
+          test "$(pnpm --version)" = "10.33.0"
+      - name: Install frontend dependencies
+        run: pnpm --dir web install --frozen-lockfile
       - name: Install browser
         run: pnpm --dir web exec playwright install --with-deps chromium
       - name: Verify
@@ -54,65 +64,155 @@ jobs:
           LLMGATEWAY_DATABASE_URL: postgres://llmgateway:llmgateway_ci@127.0.0.1:15432/llmgateway?sslmode=disable
           LLMGATEWAY_VALKEY_PASSWORD: ""
         run: xvfb-run --auto-servernum pwsh -NoProfile -File ./scripts/verify.ps1 -SkipBuildMatrix
-      - name: Race detector
-        run: go test -race ./internal/...
-
-  windows:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with:
-          go-version: "1.26.5"
-          cache: true
-      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
-        with:
-          version: "10.33.0"
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: "22.19.0"
-          cache: pnpm
-          cache-dependency-path: web/pnpm-lock.yaml
-      - name: Verify code and builds
-        shell: pwsh
-        run: ./scripts/verify.ps1 -SkipIntegration -SkipBrowser
       - name: Supply-chain source and dependency policy
         shell: pwsh
         run: ./scripts/test-supply-chain.ps1 -SkipImage
       - name: Race detector
         run: go test -race ./internal/...
 
-  release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux, windows]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 90
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.26.5"
           cache: true
-      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
-        with:
-          version: "10.33.0"
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "22.19.0"
-          cache: pnpm
-          cache-dependency-path: web/pnpm-lock.yaml
-      - name: Build signed release
+      - name: Install pnpm
         shell: pwsh
         run: |
-          $version = "${{ github.ref_name }}".TrimStart("v")
-          $builtAt = git show -s --format=%cI "${{ github.sha }}"
-          ./scripts/build-release.ps1 -Version $version -Revision "${{ github.sha }}" -BuiltAt $builtAt -SigningMode Keyless
-          ./scripts/verify-release.ps1 -Directory ".build/release-$version" -Keyless
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+          npm.cmd install --global --ignore-scripts pnpm@10.33.0
+          if ((pnpm.cmd --version).Trim() -ne "10.33.0") { throw "Unexpected pnpm version." }
+      - name: Verify code and builds
+        shell: pwsh
+        run: ./scripts/verify.ps1 -SkipIntegration -SkipBrowser
+
+  release-acceptance:
+    if: ${{ github.ref_type != 'tag' }}
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      RELEASE_VERSION: 0.1.0-ci.${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          name: llmgateway-${{ github.ref_name }}
-          path: .build/release-*
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "1.26.5"
+          cache: true
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "22.19.0"
+      - name: Install pnpm
+        shell: bash
+        run: |
+          npm install --global --ignore-scripts pnpm@10.33.0
+          test "$(pnpm --version)" = "10.33.0"
+      - name: Build and verify test-signed release
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_SHA -notmatch '^[0-9a-f]{40}$') { throw "GitHub did not provide a full commit SHA." }
+          $builtAt = [string](& git show -s --format=%cI $env:GITHUB_SHA)
+          if ($LASTEXITCODE -ne 0 -or -not $builtAt) { throw "Could not resolve the release commit timestamp." }
+          $directory = ".build/release-$env:RELEASE_VERSION"
+          ./scripts/build-release.ps1 -Version $env:RELEASE_VERSION -Revision $env:GITHUB_SHA -BuiltAt $builtAt.Trim() -SigningMode Test
+          ./scripts/verify-release.ps1 -Directory $directory -ExpectedVersion $env:RELEASE_VERSION -ExpectedRevision $env:GITHUB_SHA
+          ./scripts/test-supply-chain.ps1 -ReleaseDirectory $directory -SkipImage
+
+  release:
+    if: ${{ github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v') }}
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+      RELEASE_REVISION: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "1.26.5"
+          cache: true
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "22.19.0"
+      - name: Install pnpm
+        shell: bash
+        run: |
+          npm install --global --ignore-scripts pnpm@10.33.0
+          test "$(pnpm --version)" = "10.33.0"
+      - name: Build and verify keyless release
+        id: build
+        shell: pwsh
+        run: |
+          if ($env:RELEASE_TAG -notmatch '^v(?<Version>(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?)$') {
+            throw "Release tag must be v followed by a strict semantic version."
+          }
+          $version = $Matches.Version
+          if ($env:RELEASE_REVISION -notmatch '^[0-9a-f]{40}$' -or $env:RELEASE_REVISION -ne $env:GITHUB_SHA) {
+            throw "Release revision must equal the full GitHub commit SHA."
+          }
+          $builtAt = [string](& git show -s --format=%cI $env:RELEASE_REVISION)
+          if ($LASTEXITCODE -ne 0 -or -not $builtAt) { throw "Could not resolve the release commit timestamp." }
+          $directory = ".build/release-$version"
+          ./scripts/build-release.ps1 -Version $version -Revision $env:RELEASE_REVISION -BuiltAt $builtAt.Trim() -SigningMode Keyless
+          ./scripts/verify-release.ps1 -Directory $directory -ExpectedVersion $version -ExpectedRevision $env:RELEASE_REVISION -Keyless
+          ./scripts/test-supply-chain.ps1 -ReleaseDirectory $directory -SkipImage
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "directory=$directory" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+      - name: Attest release payloads
+        id: attest
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        with:
+          subject-checksums: ${{ steps.build.outputs.directory }}/SHA256SUMS
+      - name: Verify GitHub artifact attestation
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_DIRECTORY: ${{ steps.build.outputs.directory }}
+        run: |
+          $identity = "https://github.com/$env:GITHUB_WORKFLOW_REF"
+          $signerWorkflow = "$env:GITHUB_REPOSITORY/.github/workflows/verify.yml"
+          $sourceRef = "refs/tags/$env:RELEASE_TAG"
+          foreach ($line in Get-Content -Encoding ascii -LiteralPath "$env:RELEASE_DIRECTORY/SHA256SUMS") {
+            if ($line -notmatch '^[0-9a-f]{64}  (?<Name>[^\\/]+)$') { throw "Invalid release checksum entry." }
+            & gh attestation verify (Join-Path $env:RELEASE_DIRECTORY $Matches.Name) --repo $env:GITHUB_REPOSITORY --cert-identity $identity --signer-workflow $signerWorkflow --source-ref $sourceRef --source-digest $env:RELEASE_REVISION --deny-self-hosted-runners
+            if ($LASTEXITCODE -ne 0) { throw "GitHub artifact attestation verification failed." }
+          }
+      - name: Stage verified artifacts
+        id: stage
+        shell: pwsh
+        env:
+          RELEASE_DIRECTORY: ${{ steps.build.outputs.directory }}
+          RELEASE_VERSION: ${{ steps.build.outputs.version }}
+        run: |
+          $stage = "release-artifacts/llmgateway-$env:RELEASE_VERSION"
+          New-Item -ItemType Directory -Path $stage | Out-Null
+          Copy-Item -Path (Join-Path $env:RELEASE_DIRECTORY "*") -Destination $stage
+          ./scripts/verify-release.ps1 -Directory $stage -ExpectedVersion $env:RELEASE_VERSION -ExpectedRevision $env:RELEASE_REVISION -Keyless
+          "directory=$stage" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: llmgateway-${{ steps.build.outputs.version }}
+          path: ${{ steps.stage.outputs.directory }}
           if-no-files-found: error
+          include-hidden-files: false
           retention-days: 30

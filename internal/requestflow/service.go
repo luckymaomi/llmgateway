@@ -121,6 +121,7 @@ func (s *Service) prepare(ctx context.Context, command ChatCommand) (workflowRun
 	if err != nil {
 		return workflowRun{}, admissionError(err)
 	}
+	run.capacityWaitDeadline = admissionPermit.CapacityWaitDeadline()
 	releaseAdmission := func() {
 		if admissionPermit != nil {
 			admissionPermit.Release()
@@ -179,18 +180,19 @@ func (s *Service) prepare(ctx context.Context, command ChatCommand) (workflowRun
 }
 
 type workflowRun struct {
-	command          ChatCommand
-	model            Model
-	request          canonical.ChatRequest
-	accepted         Accepted
-	claim            execution.Claim
-	context          context.Context
-	stopHeartbeat    context.CancelFunc
-	admissionPermit  AdmissionPermit
-	candidates       []Candidate
-	estimatedTokens  int64
-	initialLease     Lease
-	initialCandidate Candidate
+	command              ChatCommand
+	model                Model
+	request              canonical.ChatRequest
+	accepted             Accepted
+	claim                execution.Claim
+	context              context.Context
+	stopHeartbeat        context.CancelFunc
+	admissionPermit      AdmissionPermit
+	candidates           []Candidate
+	estimatedTokens      int64
+	capacityWaitDeadline time.Time
+	initialLease         Lease
+	initialCandidate     Candidate
 }
 
 func (run *workflowRun) releaseAdmission() {
@@ -370,7 +372,8 @@ func (s *Service) leaseRequest(claim execution.Claim, run workflowRun, candidate
 		RPMLimit:        candidate.RPMLimit, TPMLimit: candidate.TPMLimit, Concurrency: candidate.ConcurrencyLimit,
 		EntitlementConcurrency: run.accepted.EntitlementConcurrency,
 		EntitlementRPMLimit:    run.accepted.EntitlementRPMLimit,
-		EntitlementTPMLimit:    run.accepted.EntitlementTPMLimit}
+		EntitlementTPMLimit:    run.accepted.EntitlementTPMLimit,
+		CapacityWaitDeadline:   run.capacityWaitDeadline}
 }
 
 func admissionError(err error) *canonical.Error {

@@ -23,9 +23,10 @@ var (
 type ProviderMutationAction string
 
 const (
-	ProviderMutationCreate ProviderMutationAction = "provider.create"
-	ProviderMutationUpdate ProviderMutationAction = "provider.update"
-	ProviderMutationStatus ProviderMutationAction = "provider.status"
+	ProviderMutationCreate  ProviderMutationAction = "provider.create"
+	ProviderMutationUpdate  ProviderMutationAction = "provider.update"
+	ProviderMutationStatus  ProviderMutationAction = "provider.status"
+	ProviderMutationInstall ProviderMutationAction = "provider.install"
 )
 
 type MutationRequest struct {
@@ -73,6 +74,12 @@ type Provider struct {
 	VerifiedAt *time.Time     `json:"verified_at,omitempty"`
 	CreatedAt  time.Time      `json:"created_at"`
 	UpdatedAt  time.Time      `json:"updated_at"`
+}
+
+type ProviderPresetInstallation struct {
+	PresetID string   `json:"preset_id"`
+	Provider Provider `json:"provider"`
+	Models   []Model  `json:"models"`
 }
 
 type ModelCapabilities struct {
@@ -142,6 +149,10 @@ type Credential struct {
 	LastProbeKind       *string                  `json:"last_probe_kind,omitempty"`
 	LastProbeStatus     *string                  `json:"last_probe_status,omitempty"`
 	LastProbeErrorKind  *string                  `json:"last_probe_error_kind,omitempty"`
+	LastCheckedAt       *time.Time               `json:"last_checked_at,omitempty"`
+	RecentSuccessRate   *float64                 `json:"recent_success_rate,omitempty"`
+	FirstByteP95Ms      *int64                   `json:"first_byte_p95_ms,omitempty"`
+	TotalLatencyP95Ms   *int64                   `json:"total_latency_p95_ms,omitempty"`
 	CreatedAt           time.Time                `json:"created_at"`
 	UpdatedAt           time.Time                `json:"updated_at"`
 	ModelBindings       []CredentialModelBinding `json:"model_bindings"`
@@ -162,8 +173,10 @@ type CredentialChange struct {
 
 type CredentialProbeTarget struct {
 	Provider     Provider
+	Model        Model
 	CredentialID uuid.UUID
 	Secret       string
+	RequestID    string
 }
 
 type CredentialProbeExecution struct {
@@ -173,6 +186,11 @@ type CredentialProbeExecution struct {
 	Retryable     bool
 	MayUseTokens  bool
 	LatencyMillis int64
+	ModelID       uuid.UUID
+	ModelName     string
+	ResponseText  string
+	InputTokens   *int64
+	OutputTokens  *int64
 }
 
 type CredentialProbeExecutor interface {
@@ -193,6 +211,8 @@ type NewCredential struct {
 
 type Repository interface {
 	ReplayProviderMutation(context.Context, uuid.UUID, ProviderMutation) (Provider, bool, error)
+	ReplayProviderPresetInstallation(context.Context, uuid.UUID, ProviderMutation) (ProviderPresetInstallation, bool, error)
+	InstallProviderPreset(context.Context, ProviderPresetInstallation, uuid.UUID, ProviderMutation) (ProviderPresetInstallation, error)
 	CreateProvider(context.Context, Provider, uuid.UUID, ProviderMutation) (Provider, error)
 	UpdateProvider(context.Context, Provider, uuid.UUID, ProviderMutation) (Provider, error)
 	SetProviderEnabled(context.Context, uuid.UUID, bool, time.Time, uuid.UUID, ProviderMutation) (Provider, error)

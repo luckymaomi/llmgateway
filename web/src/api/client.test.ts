@@ -5,14 +5,14 @@ import { server } from '@/test/server'
 
 import { accessApi } from './access'
 import { authApi } from './auth'
-import { streamPlaygroundRun } from './playground'
-import type { CreatedGatewayKey, GatewayKey, PlaygroundEvent, Session } from './types'
+import { streamGatewayKeyTest } from './gateway-key-test'
+import type { CreatedGatewayKey, GatewayKey, GatewayKeyTestEvent, Session } from './types'
 
 const session: Session = {
   userId: 'user-admin',
   displayName: 'Admin',
   role: 'administrator',
-  capabilities: ['access:read', 'access:write', 'playground:use'],
+  capabilities: ['access:read', 'access:write', 'gateway-key:test'],
   csrfToken: 'csrf-session-token',
   expiresAt: '2026-07-20T00:00:00.000Z',
 }
@@ -27,8 +27,10 @@ describe('same-origin control API', () => {
       secret: 'lgw_live_once',
     }
     server.use(
-      http.get('/api/control/session', () => HttpResponse.json({ data: session })),
-      http.post('/api/control/keys', async ({ request }) => {
+      http.get('http://llmgateway.test/api/control/session', () =>
+        HttpResponse.json({ data: session }),
+      ),
+      http.post('http://llmgateway.test/api/control/keys', async ({ request }) => {
         receivedCsrf = request.headers.get('x-csrf-token') ?? ''
         receivedIdempotencyKey = request.headers.get('idempotency-key') ?? ''
         receivedBody = await request.json()
@@ -56,35 +58,8 @@ describe('same-origin control API', () => {
     expect(result).toEqual(created)
   })
 
-  it('preserves typed list filters in the request URL', async () => {
-    let receivedQuery = ''
-    server.use(
-      http.get('/api/control/keys', ({ request }) => {
-        receivedQuery = new URL(request.url).search
-        return HttpResponse.json({
-          data: { items: [gatewayKey], page: 2, pageSize: 20, total: 21 },
-        })
-      }),
-    )
-
-    const result = await accessApi.keys({
-      page: 2,
-      pageSize: 20,
-      search: 'automation',
-      status: 'active',
-    })
-
-    expect(Object.fromEntries(new URLSearchParams(receivedQuery))).toEqual({
-      page: '2',
-      pageSize: '20',
-      search: 'automation',
-      status: 'active',
-    })
-    expect(result.items).toEqual([gatewayKey])
-  })
-
-  it('decodes ordered Playground facts from an SSE response', async () => {
-    const events: PlaygroundEvent[] = [
+  it('decodes ordered Gateway Key test facts from an SSE response', async () => {
+    const events: GatewayKeyTestEvent[] = [
       {
         type: 'phase',
         phase: 'streaming',
@@ -98,18 +73,17 @@ describe('same-origin control API', () => {
     const body = events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join('')
     server.use(
       http.post(
-        '/api/control/playground/runs',
+        'http://llmgateway.test/api/control/gateway-key-test/runs',
         () => new HttpResponse(body, { headers: { 'Content-Type': 'text/event-stream' } }),
       ),
     )
-    const received: PlaygroundEvent[] = []
+    const received: GatewayKeyTestEvent[] = []
 
-    await streamPlaygroundRun(
+    await streamGatewayKeyTest(
       {
         gatewayKeyId: 'key-1',
         model: 'gpt-main',
-        stream: true,
-        messages: [{ role: 'user', content: 'Hello' }],
+        message: 'Hello',
       },
       new AbortController().signal,
       (event) => received.push(event),

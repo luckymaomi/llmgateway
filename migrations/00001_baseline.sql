@@ -33,6 +33,17 @@ CREATE TABLE users (
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE site_profile (
+    singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
+    name text NOT NULL CHECK (char_length(name) BETWEEN 2 AND 80),
+    description text NOT NULL DEFAULT '' CHECK (char_length(description) <= 240),
+    contact text NOT NULL DEFAULT '' CHECK (char_length(contact) <= 200),
+    version bigint NOT NULL DEFAULT 1 CHECK (version > 0),
+    updated_by uuid REFERENCES users(id),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO site_profile (singleton, name) VALUES (true, 'LLMGateway');
+
 CREATE TABLE invitations (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     code_digest bytea NOT NULL UNIQUE CHECK (octet_length(code_digest) = 32),
@@ -206,7 +217,7 @@ CREATE TABLE provider_credentials (
     CHECK (tpm_limit IS NULL OR tpm_limit > 0),
     CHECK (concurrency_limit IS NULL OR concurrency_limit > 0),
     CHECK (last_probe_latency_ms IS NULL OR last_probe_latency_ms >= 0),
-    CHECK (last_probe_status IS NULL OR last_probe_status IN ('succeeded', 'failed', 'unavailable'))
+    CHECK (last_probe_status IS NULL OR last_probe_status IN ('succeeded', 'failed', 'unavailable', 'uncertain'))
 );
 
 CREATE TABLE credential_mutations (
@@ -481,11 +492,13 @@ CREATE INDEX gateway_key_models_model_idx ON gateway_key_models (model_id, gatew
 CREATE INDEX provider_credentials_eligible_idx ON provider_credentials (provider_id, resource_domain, status, cooldown_until);
 CREATE INDEX entitlements_applicable_idx ON entitlements (user_id, resource_domain, expires_at, starts_at);
 CREATE INDEX requests_user_created_idx ON requests (user_id, accepted_at DESC);
+CREATE INDEX requests_accepted_idx ON requests (accepted_at DESC, id);
 CREATE INDEX model_price_versions_effective_idx ON model_price_versions (model_id, effective_at DESC, created_at DESC);
 CREATE INDEX requests_status_idx ON requests (status, updated_at);
 CREATE INDEX requests_execution_recovery_idx ON requests (execution_heartbeat_at, id)
     WHERE status IN ('dispatching', 'streaming');
 CREATE INDEX request_attempts_request_idx ON request_attempts (request_id, sequence);
+CREATE INDEX request_attempts_credential_created_idx ON request_attempts (credential_id, created_at DESC, id);
 CREATE INDEX ledger_events_user_created_idx ON ledger_events (user_id, created_at DESC);
 CREATE INDEX ledger_events_entitlement_created_idx ON ledger_events (entitlement_id, created_at, id);
 CREATE UNIQUE INDEX ledger_events_actor_source_event_idx ON ledger_events (created_by, source_event_id)
@@ -532,6 +545,7 @@ DROP TABLE IF EXISTS sessions;
 DROP TABLE IF EXISTS member_password_reset_mutations;
 DROP TABLE IF EXISTS invitation_mutations;
 DROP TABLE IF EXISTS invitations;
+DROP TABLE IF EXISTS site_profile;
 DROP TABLE IF EXISTS users;
 DROP TABLE IF EXISTS system_state;
 DROP TYPE IF EXISTS plan_kind;

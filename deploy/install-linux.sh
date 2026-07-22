@@ -6,17 +6,26 @@ set -euo pipefail
 
 SOURCE_DIRECTORY=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 source "$SOURCE_DIRECTORY/lib.sh"
-environment_source=$(readlink -f "$1")
+# shellcheck source=backup-lib.sh
+source "$SOURCE_DIRECTORY/backup-lib.sh"
+environment_source=$(configured_path "deployment environment source" "$1")
+require_backup_control_file "deployment environment source" "$environment_source"
+if paths_overlap "$environment_source" /etc/llmgateway; then
+  echo "deployment environment source must be outside /etc/llmgateway" >&2
+  exit 1
+fi
 load_llmgateway_environment "$environment_source"
 require_file_secrets
 require_immutable_gateway_image
+require_configuration_bindings /etc/llmgateway
 
 DEPLOY_DIRECTORY=/opt/llmgateway/deploy
-install -d -m 0750 /opt/llmgateway "$DEPLOY_DIRECTORY" /etc/llmgateway
+install -d -m 0750 /opt/llmgateway "$DEPLOY_DIRECTORY" /etc/llmgateway /etc/llmgateway/secrets
 install -m 0644 "$SOURCE_DIRECTORY/compose.production.yaml" "$DEPLOY_DIRECTORY/compose.production.yaml"
 install -m 0644 "$SOURCE_DIRECTORY/Caddyfile" "$DEPLOY_DIRECTORY/Caddyfile"
 install -m 0644 "$SOURCE_DIRECTORY/lib.sh" "$DEPLOY_DIRECTORY/lib.sh"
 install -m 0755 "$SOURCE_DIRECTORY/upgrade-linux.sh" "$DEPLOY_DIRECTORY/upgrade-linux.sh"
+install -m 0755 "$SOURCE_DIRECTORY/rotate-credentials-linux.sh" "$DEPLOY_DIRECTORY/rotate-credentials-linux.sh"
 install -m 0640 "$environment_source" /etc/llmgateway/deployment.env
 
 gateway_secret_files=(
@@ -33,6 +42,10 @@ chown 999:1000 "$LLMGATEWAY_VALKEY_ACL_FILE"
 chmod 0400 "$LLMGATEWAY_VALKEY_ACL_FILE"
 chown root:root "$LLMGATEWAY_POSTGRES_PASSWORD_FILE"
 chmod 0400 "$LLMGATEWAY_POSTGRES_PASSWORD_FILE"
+chown root:root /etc/llmgateway /etc/llmgateway/secrets /etc/llmgateway/deployment.env
+chmod 0750 /etc/llmgateway /etc/llmgateway/secrets
+chmod 0640 /etc/llmgateway/deployment.env
+verify_runtime_configuration_tree /etc/llmgateway
 
 export DEPLOY_DIRECTORY
 deployment_compose config --quiet

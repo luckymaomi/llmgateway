@@ -26,18 +26,18 @@ func (r *repositoryStub) CreateEntitlement(_ context.Context, input NewEntitleme
 	return Entitlement{ID: uuid.New(), UserID: input.UserID, Plan: input.Plan, ResourceDomain: input.ResourceDomain, GrantedTokens: input.GrantedTokens, BalanceTokens: input.GrantedTokens}, nil
 }
 
-func (r *repositoryStub) ListEntitlements(_ context.Context, userID *uuid.UUID, _ Page) ([]Entitlement, error) {
-	r.listedUserID = userID
-	return []Entitlement{}, nil
+func (r *repositoryStub) ListEntitlements(_ context.Context, query EntitlementQuery) (PageResult[Entitlement], error) {
+	r.listedUserID = query.UserID
+	return PageResult[Entitlement]{Items: []Entitlement{}}, nil
 }
 
-func (r *repositoryStub) ListLedger(context.Context, LedgerFilter) ([]LedgerEvent, error) {
-	return []LedgerEvent{}, nil
+func (r *repositoryStub) ListLedger(context.Context, LedgerFilter) (PageResult[LedgerEvent], error) {
+	return PageResult[LedgerEvent]{Items: []LedgerEvent{}}, nil
 }
 
-func (r *repositoryStub) ListUsage(_ context.Context, userID *uuid.UUID, _ Page) ([]UsageRecord, error) {
-	r.usageUserID = userID
-	return []UsageRecord{}, nil
+func (r *repositoryStub) ListUsage(_ context.Context, query UsageQuery) (PageResult[UsageRecord], error) {
+	r.usageUserID = query.UserID
+	return PageResult[UsageRecord]{Items: []UsageRecord{}}, nil
 }
 
 func (r *repositoryStub) AcceptRequest(_ context.Context, input AcceptInput) (AcceptedRequest, error) {
@@ -96,13 +96,13 @@ func TestMemberQuotaReadsAreScopedToTheAuthenticatedOwner(t *testing.T) {
 	repository := &repositoryStub{}
 	service, _ := NewService(repository)
 	memberID := uuid.New()
-	if _, err := service.ListEntitlements(context.Background(), activePrincipal(identity.RoleMember, memberID), nil, Page{}); err != nil {
+	if _, err := service.ListEntitlements(context.Background(), activePrincipal(identity.RoleMember, memberID), EntitlementQuery{}); err != nil {
 		t.Fatalf("ListEntitlements() error = %v", err)
 	}
 	if repository.listedUserID == nil || *repository.listedUserID != memberID {
 		t.Fatalf("repository user filter = %v, want %s", repository.listedUserID, memberID)
 	}
-	if _, err := service.ListUsage(context.Background(), activePrincipal(identity.RoleMember, memberID), nil, Page{}); err != nil {
+	if _, err := service.ListUsage(context.Background(), activePrincipal(identity.RoleMember, memberID), UsageQuery{}); err != nil {
 		t.Fatalf("ListUsage() error = %v", err)
 	}
 	if repository.usageUserID == nil || *repository.usageUserID != memberID {

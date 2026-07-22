@@ -74,10 +74,7 @@ export function UsagePage() {
   )
   return (
     <Page>
-      <PageHeader
-        title={session.role === 'member' ? '我的用量' : '用量与账本'}
-        description="权威 usage、估算与额度事件"
-      />
+      <PageHeader title={session.role === 'member' ? '我的用量' : '用量与额度'} />
       <LedgerTabs />
       <PageSection>
         <TableToolbar

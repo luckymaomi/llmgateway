@@ -252,15 +252,15 @@ function Invoke-GatewayJSONWithExplicitReissue {
 $root = Split-Path -Parent $PSScriptRoot
 $runID = New-LLMGatewayTestRunID -Purpose "provider"
 $buildDirectory = Join-Path $root ".build\provider-real-$runID"
-$isWindows = $env:OS -eq "Windows_NT"
-$binaryName = if ($isWindows) { "gateway.exe" } else { "gateway" }
+$runningOnWindows = $env:OS -eq "Windows_NT"
+$binaryName = if ($runningOnWindows) { "gateway.exe" } else { "gateway" }
 $binaryPath = Join-Path $buildDirectory $binaryName
-$canaryBinaryName = if ($isWindows) { "providercanary.exe" } else { "providercanary" }
+$canaryBinaryName = if ($runningOnWindows) { "providercanary.exe" } else { "providercanary" }
 $canaryBinary = Join-Path $buildDirectory $canaryBinaryName
 $stdoutPath = Join-Path $buildDirectory "gateway.stdout.log"
 $stderrPath = Join-Path $buildDirectory "gateway.stderr.log"
 $pythonEnvironment = Join-Path $buildDirectory "python"
-$pythonPath = if ($isWindows) { Join-Path $pythonEnvironment "Scripts\python.exe" } else { Join-Path $pythonEnvironment "bin/python" }
+$pythonPath = if ($runningOnWindows) { Join-Path $pythonEnvironment "Scripts\python.exe" } else { Join-Path $pythonEnvironment "bin/python" }
 $environmentSnapshot = Save-LLMGatewayEnvironment
 $postgres = $null
 $valkey = $null
@@ -386,13 +386,12 @@ try {
   $setup = Invoke-RestMethod -Method Post -Uri "$script:BaseURL/api/control/setup" -WebSession $script:AdminSession `
     -ContentType "application/json" -Body (@{
       email = "provider-owner@example.test"
-      displayName = "Provider Owner"
-      password = "correct horse battery staple"
     } | ConvertTo-Json) -TimeoutSec 30
-  if ($setup.data.role -ne "administrator" -or -not $setup.data.csrfToken) {
+  if ($setup.data.role -ne "administrator" -or -not $setup.data.csrfToken -or -not $setup.data.initialPassword) {
     throw "Real Provider acceptance could not establish the administrator."
   }
   $script:AdminCSRF = $setup.data.csrfToken
+  $setup.data.initialPassword = $null
 
   $agnes = New-Provider -Slug "real-agnes" -Name "Real Agnes" -Kind "agnes" -ProviderBaseURL "https://apihub.agnes-ai.com/v1"
   $compatible = New-Provider -Slug "real-compatible" -Name "Real Agnes Compatible" -Kind "openai-compatible" -ProviderBaseURL "https://apihub.agnes-ai.com/v1"

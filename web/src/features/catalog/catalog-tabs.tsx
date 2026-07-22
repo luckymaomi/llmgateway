@@ -6,7 +6,7 @@ export function CatalogTabs() {
       tabs={[
         { label: 'Provider', to: '/providers/providers' },
         { label: '模型', to: '/providers/models' },
-        { label: '配置版本', to: '/providers/revisions' },
+        { label: '发布', to: '/providers/revisions' },
       ]}
     />
   )

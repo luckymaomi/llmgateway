@@ -159,14 +159,14 @@ export function KeyForm({
   if (session.role !== 'administrator') return null
 
   if (created) {
+    const gatewayBaseURL = `${window.location.origin}/v1`
     return (
       <DialogFrame
         open={open}
         onOpenChange={(next) => {
           if (!next) requestClose()
         }}
-        title="网关 Key 已创建"
-        description="明文仅在本次创建结果中展示"
+        title="API Key 已创建"
         footer={<Button onClick={requestClose}>完成</Button>}
       >
         <div className="secret-reveal">
@@ -176,7 +176,9 @@ export function KeyForm({
             icon={copied ? <Check size={16} /> : <Copy size={16} />}
             onClick={async () => {
               try {
-                await navigator.clipboard.writeText(created.secret)
+                await navigator.clipboard.writeText(
+                  `OPENAI_BASE_URL=${gatewayBaseURL}\nOPENAI_API_KEY=${created.secret}`,
+                )
                 setCopied(true)
                 setCopyFailed(false)
               } catch {
@@ -184,7 +186,7 @@ export function KeyForm({
               }
             }}
           >
-            {copied ? '已复制' : '复制 Key'}
+            {copied ? '已复制' : '复制调用配置'}
           </Button>
         </div>
         {copyFailed ? (
@@ -193,6 +195,12 @@ export function KeyForm({
           </div>
         ) : null}
         <dl className="fact-list">
+          <div>
+            <dt>Base URL</dt>
+            <dd>
+              <code>{gatewayBaseURL}</code>
+            </dd>
+          </div>
           <div>
             <dt>名称</dt>
             <dd>{created.key.name}</dd>
@@ -219,8 +227,7 @@ export function KeyForm({
       onOpenChange={(nextOpen) => {
         if (!nextOpen) requestClose()
       }}
-      title="创建网关 Key"
-      description="模型授权来自当前已发布配置。"
+      title="创建 API Key"
       dismissible={!controlsLocked}
       footer={
         <>

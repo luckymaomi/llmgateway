@@ -1,15 +1,9 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Edit3, PlugZap, Plus, Power, X } from 'lucide-react'
-import { useMemo, useRef, useState } from 'react'
+import { Edit3, PlugZap, Plus, Power } from 'lucide-react'
+import { useMemo, useState } from 'react'
 import { z } from 'zod'
 
-import {
-  ApiProblem,
-  catalogApi,
-  type Credential,
-  type CredentialModelBinding,
-  type CredentialProbeResult,
-} from '@/api'
+import { ApiProblem, catalogApi, type Credential, type CredentialModelBinding } from '@/api'
 import {
   clearPendingCredentialOperation,
   loadPendingCredentialOperation,
@@ -24,10 +18,11 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { IconButton } from '@/components/ui/icon-button'
 import { FormProblem } from '@/features/auth/form-problem'
 import { useListSearch } from '@/hooks/use-list-search'
-import { formatDateTime, formatNumber, formatPercent } from '@/lib/format'
+import { formatDateTime, formatDuration, formatNumber, formatPercent } from '@/lib/format'
 
 import { CredentialForm } from './credential-form'
 import { CredentialEditForm } from './credential-edit-form'
+import { CredentialProbeDialog } from './credential-probe-dialog'
 
 const pendingCredentialSchema = z.object({
   idempotencyKey: z.string().uuid(),
@@ -61,9 +56,7 @@ export function CredentialsPage() {
   const [discardingPending, setDiscardingPending] = useState(false)
   const [editing, setEditing] = useState<Credential>()
   const [probeTarget, setProbeTarget] = useState<Credential>()
-  const [probeResult, setProbeResult] = useState<CredentialProbeResult>()
   const [uncertainStatus, setUncertainStatus] = useState<StatusOperation>()
-  const probeController = useRef<AbortController | undefined>(undefined)
   const [pendingOperation, setPendingOperation] = useState<PendingCredential | undefined>(() =>
     readPendingCredentialOperation(session.userId),
   )
@@ -71,20 +64,6 @@ export function CredentialsPage() {
     queryKey: ['credentials', state],
     queryFn: ({ signal }) => catalogApi.credentials(state, signal),
     placeholderData: keepPreviousData,
-  })
-  const probe = useMutation({
-    mutationFn: (credential: Credential) => {
-      const controller = new AbortController()
-      probeController.current = controller
-      return catalogApi.probeCredential(credential.id, controller.signal)
-    },
-    onSuccess(result) {
-      setProbeResult(result)
-      return queryClient.invalidateQueries({ queryKey: ['credentials'] })
-    },
-    onSettled() {
-      probeController.current = undefined
-    },
   })
   const toggle = useMutation({
     mutationFn: (operation: StatusOperation) =>
@@ -107,7 +86,7 @@ export function CredentialsPage() {
     () => [
       {
         accessorKey: 'label',
-        header: '凭据',
+        header: 'API Key',
         cell: ({ row }) => (
           <div>
             <strong>{row.original.label}</strong>
@@ -142,8 +121,17 @@ export function CredentialsPage() {
       },
       {
         accessorKey: 'recentSuccessRate',
-        header: '近期成功率',
-        cell: ({ row }) => formatPercent(row.original.recentSuccessRate),
+        header: '24 小时质量',
+        cell: ({ row }) => (
+          <div>
+            <strong>{formatPercent(row.original.recentSuccessRate)}</strong>
+            <small className="table-subline">
+              {row.original.lastCheckedAt
+                ? `P95 ${formatDuration(row.original.totalLatencyP95Ms)}`
+                : '暂无请求'}
+            </small>
+          </div>
+        ),
       },
       {
         accessorKey: 'status',
@@ -162,12 +150,10 @@ export function CredentialsPage() {
           canWrite ? (
             <CredentialActions
               credential={row.original}
-              disabled={probe.isPending || toggle.isPending || Boolean(uncertainStatus)}
+              disabled={toggle.isPending || Boolean(uncertainStatus)}
               onEdit={setEditing}
               onProbe={(credential) => {
                 setProbeTarget(credential)
-                setProbeResult(undefined)
-                probe.mutate(credential)
               }}
               onToggle={(credential) =>
                 toggle.mutate({
@@ -181,7 +167,7 @@ export function CredentialsPage() {
           ) : null,
       },
     ],
-    [canWrite, probe, toggle, uncertainStatus],
+    [canWrite, toggle, uncertainStatus],
   )
   const reconciledCredential = query.data?.items.find(
     (credential) =>
@@ -194,8 +180,7 @@ export function CredentialsPage() {
   return (
     <Page>
       <PageHeader
-        title="上游凭据池"
-        description="凭据授权、限制、健康与冷却"
+        title="Provider API Key"
         actions={
           canWrite ? (
             <Button
@@ -203,7 +188,7 @@ export function CredentialsPage() {
               disabled={Boolean(pendingOperation)}
               onClick={() => setCreating(true)}
             >
-              添加凭据
+              添加 API Key
             </Button>
           ) : null
         }
@@ -226,7 +211,7 @@ export function CredentialsPage() {
               </>
             ) : (
               <>
-                <strong>上次凭据创建结果仍待确认。</strong>
+                <strong>上次 API Key 创建结果仍待确认。</strong>
                 <span>列表中暂未找到匹配记录；重新查询后再决定是否重新输入密钥。</span>
                 <div className="row-actions">
                   <Button variant="secondary" onClick={() => void query.refetch()}>
@@ -246,7 +231,7 @@ export function CredentialsPage() {
         <TableToolbar
           search={state.search}
           onSearchChange={setSearch}
-          searchLabel="搜索凭据"
+          searchLabel="搜索 API Key"
           status={state.status}
           onStatusChange={setStatus}
           statusOptions={[
@@ -255,40 +240,6 @@ export function CredentialsPage() {
             { value: 'disabled', label: '已停用' },
           ]}
         />
-        {probeTarget || probeResult ? (
-          <section className="operation-panel" aria-live="polite" aria-label="凭据连接测试">
-            <div className="operation-panel__body">
-              <div className="operation-panel__heading">
-                <strong>{probeTarget?.label ?? probeResult?.credential.label}</strong>
-                <StatusBadge
-                  status={probe.isPending ? 'running' : (probeResult?.status ?? 'failed')}
-                />
-              </div>
-              {probe.isPending ? (
-                <span>正在通过不消耗 Token 的模型端点验证鉴权与连接。</span>
-              ) : null}
-              {probeResult ? (
-                <div className="operation-panel__facts">
-                  <span>{probeResultText(probeResult)}</span>
-                  <span>耗时：{formatNumber(probeResult.latencyMillis)} ms</span>
-                  <span>Request ID：{probeResult.requestId}</span>
-                </div>
-              ) : null}
-              <FormProblem error={probe.error} />
-            </div>
-            {probe.isPending ? (
-              <Button
-                type="button"
-                variant="secondary"
-                size="sm"
-                icon={<X size={15} />}
-                onClick={() => probeController.current?.abort()}
-              >
-                取消
-              </Button>
-            ) : null}
-          </section>
-        ) : null}
         {uncertainStatus ? (
           <div className="inline-problem" role="alert">
             <strong>启停结果暂时无法确认。</strong>
@@ -301,7 +252,7 @@ export function CredentialsPage() {
           <FormProblem error={toggle.error} />
         )}
         <DataTable
-          ariaLabel="上游凭据列表"
+          ariaLabel="Provider API Key 列表"
           data={query.data?.items ?? []}
           columns={columns}
           getRowId={(credential) => credential.id}
@@ -309,7 +260,7 @@ export function CredentialsPage() {
           fetching={query.isFetching}
           error={query.error}
           onRetry={() => void query.refetch()}
-          emptyLabel="没有符合条件的凭据"
+          emptyLabel="还没有 Provider API Key"
           page={query.data?.page ?? state.page}
           pageSize={query.data?.pageSize ?? state.pageSize}
           total={query.data?.total ?? 0}
@@ -324,8 +275,9 @@ export function CredentialsPage() {
                 {credential.providerName} · {credential.maskedSecret}
               </span>
               <span>
-                {credential.modelBindings.length} 个模型 · 成功率{' '}
-                {formatPercent(credential.recentSuccessRate)}
+                {credential.modelBindings.length} 个模型 · 24 小时可用率{' '}
+                {formatPercent(credential.recentSuccessRate)} · P95{' '}
+                {formatDuration(credential.totalLatencyP95Ms)}
               </span>
             </div>
           )}
@@ -339,6 +291,14 @@ export function CredentialsPage() {
           open
           onOpenChange={(open) => {
             if (!open) setEditing(undefined)
+          }}
+        />
+      ) : null}
+      {probeTarget ? (
+        <CredentialProbeDialog
+          credential={probeTarget}
+          onOpenChange={(open) => {
+            if (!open) setProbeTarget(undefined)
           }}
         />
       ) : null}
@@ -374,14 +334,14 @@ function CredentialActions({
 }) {
   return (
     <div className="row-actions" onClick={(event) => event.stopPropagation()}>
-      <IconButton label="编辑凭据" disabled={disabled} onClick={() => onEdit(credential)}>
+      <IconButton label="编辑 API Key" disabled={disabled} onClick={() => onEdit(credential)}>
         <Edit3 size={16} />
       </IconButton>
       <IconButton label="测试连接" disabled={disabled} onClick={() => onProbe(credential)}>
         <PlugZap size={16} />
       </IconButton>
       <IconButton
-        label={credential.status === 'active' ? '停用凭据' : '启用凭据'}
+        label={credential.status === 'active' ? '停用 API Key' : '启用 API Key'}
         disabled={disabled}
         onClick={() => onToggle(credential)}
       >
@@ -389,14 +349,6 @@ function CredentialActions({
       </IconButton>
     </div>
   )
-}
-
-function probeResultText(result: CredentialProbeResult): string {
-  if (result.status === 'succeeded') return '连接、鉴权与模型端点验证通过，未消耗模型 Token。'
-  if (result.status === 'unavailable')
-    return '该 Provider 没有可确认不消耗 Token 的安全探测，未发送生成请求。'
-  const kind = result.errorKind ?? 'provider_temporary'
-  return `探测失败：${kind}${result.retryable ? '，可以重试' : ''}`
 }
 
 function isUnknownOutcome(error: unknown): boolean {

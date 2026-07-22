@@ -875,6 +875,16 @@ type Session struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type SiteProfile struct {
+	Singleton   bool               `json:"singleton"`
+	Name        string             `json:"name"`
+	Description string             `json:"description"`
+	Contact     string             `json:"contact"`
+	Version     int64              `json:"version"`
+	UpdatedBy   *uuid.UUID         `json:"updated_by"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
 type SystemState struct {
 	Singleton      bool               `json:"singleton"`
 	BootstrappedAt pgtype.Timestamptz `json:"bootstrapped_at"`

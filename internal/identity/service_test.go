@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"slices"
 	"sort"
 	"strings"
@@ -17,27 +18,74 @@ import (
 
 func TestBootstrapIssuesAuthenticSession(t *testing.T) {
 	userID := uuid.New()
+	var persistedPasswordHash string
 	repository := &repositoryStub{}
-	repository.bootstrap = func(_ context.Context, input NewUser) (User, error) {
-		return User{ID: userID, Email: input.Email, DisplayName: input.DisplayName, Role: input.Role, Status: input.Status, PasswordHash: input.PasswordHash}, nil
-	}
-	repository.createSession = func(_ context.Context, id uuid.UUID, tokenDigest, csrfDigest []byte, expiresAt time.Time) (Principal, error) {
-		if id != userID || len(tokenDigest) != 32 || len(csrfDigest) != 32 || !expiresAt.After(time.Now()) {
-			t.Fatal("session persistence did not receive complete facts")
+	repository.bootstrap = func(_ context.Context, input NewUser, session SessionCreation) (Principal, error) {
+		persistedPasswordHash = input.PasswordHash
+		if input.Email != "owner@example.com" || input.DisplayName != initialAdministratorDisplayName || input.Role != RoleAdministrator || input.Status != StatusActive {
+			t.Fatalf("bootstrap user facts = %+v", input)
 		}
-		return Principal{SessionID: uuid.New(), UserID: id, Email: "owner@example.com", DisplayName: "Owner", Role: RoleAdministrator, Status: StatusActive, CSRFDigest: append([]byte(nil), csrfDigest...), ExpiresAt: expiresAt}, nil
+		if len(session.TokenDigest) != 32 || len(session.CSRFDigest) != 32 || !session.ExpiresAt.After(time.Now()) {
+			t.Fatal("bootstrap transaction did not receive complete session facts")
+		}
+		return Principal{SessionID: uuid.New(), UserID: userID, Email: input.Email, DisplayName: input.DisplayName, Role: input.Role, Status: input.Status, CSRFDigest: append([]byte(nil), session.CSRFDigest...), ExpiresAt: session.ExpiresAt}, nil
 	}
 
 	service := newTestService(t, repository)
-	credentials, err := service.Bootstrap(context.Background(), "OWNER@example.com", "Owner", "correct horse battery staple")
+	credentials, err := service.Bootstrap(context.Background(), "OWNER@example.com")
 	if err != nil {
 		t.Fatal(err)
+	}
+	decodedPassword, err := base64.RawURLEncoding.Strict().DecodeString(credentials.InitialPassword)
+	if err != nil || len(decodedPassword) != security.TokenEntropyBytes {
+		t.Fatalf("initial password entropy = %d bytes / %v", len(decodedPassword), err)
+	}
+	passwordVerification, err := security.VerifyPassword(credentials.InitialPassword, persistedPasswordHash, security.RecommendedPasswordParameters())
+	if err != nil || !passwordVerification.Match {
+		t.Fatalf("initial password did not match persisted Argon2id digest: %+v / %v", passwordVerification, err)
 	}
 	if credentials.Principal.Role != RoleAdministrator || credentials.Token == "" || credentials.CSRFToken == "" {
 		t.Fatalf("bootstrap returned incomplete credentials: %#v", credentials)
 	}
 	if !service.VerifyCSRF(credentials.Principal, credentials.CSRFToken) {
 		t.Fatal("issued CSRF token did not verify")
+	}
+}
+
+func TestChangePasswordVerifiesCurrentPasswordAndPreservesCurrentSession(t *testing.T) {
+	userID, sessionID := uuid.New(), uuid.New()
+	currentHash, err := hashPassword("current password value", security.RecommendedPasswordParameters())
+	if err != nil {
+		t.Fatal(err)
+	}
+	changeCalls := 0
+	repository := &repositoryStub{
+		findUserByEmail: func(_ context.Context, email string) (User, error) {
+			if email != "owner@example.com" {
+				t.Fatalf("password lookup email = %q", email)
+			}
+			return User{ID: userID, Email: email, PasswordHash: currentHash}, nil
+		},
+		changeOwnPassword: func(_ context.Context, persistedUserID, persistedSessionID uuid.UUID, expectedHash, replacementHash, requestID string) (SessionRevocation, error) {
+			changeCalls++
+			if persistedUserID != userID || persistedSessionID != sessionID || expectedHash != currentHash || requestID != "password-change" {
+				t.Fatalf("password change identity = %s/%s/%q", persistedUserID, persistedSessionID, requestID)
+			}
+			verification, verifyErr := security.VerifyPassword("replacement password value", replacementHash, security.RecommendedPasswordParameters())
+			if verifyErr != nil || !verification.Match {
+				t.Fatalf("replacement password hash = %+v / %v", verification, verifyErr)
+			}
+			return SessionRevocation{RevokedSessions: 2}, nil
+		},
+	}
+	service := newTestService(t, repository)
+	principal := Principal{UserID: userID, SessionID: sessionID, Email: "owner@example.com", Status: StatusActive}
+	if _, err := service.ChangePassword(context.Background(), principal, "wrong current password", "replacement password value", "password-change"); err != ErrInvalidCredential {
+		t.Fatalf("wrong current password error = %v", err)
+	}
+	result, err := service.ChangePassword(context.Background(), principal, "current password value", "replacement password value", "password-change")
+	if err != nil || result.RevokedSessions != 2 || changeCalls != 1 {
+		t.Fatalf("ChangePassword() = %+v, %v; calls=%d", result, err, changeCalls)
 	}
 }
 
@@ -176,25 +224,25 @@ func TestInvitationCodeDerivationIsScopedToTheAdministrator(t *testing.T) {
 	}
 }
 
-func TestUserDisplayNamesRequiresAnActiveAdministratorAndDeduplicatesIDs(t *testing.T) {
-	firstUserID, secondUserID := uuid.New(), uuid.New()
+func TestUserDisplayNamesRequiresAnActiveAdministrator(t *testing.T) {
+	userID := uuid.New()
 	lookupCalls := 0
 	repository := &repositoryStub{
 		userDisplayNames: func(_ context.Context, userIDs []uuid.UUID) (map[uuid.UUID]string, error) {
 			lookupCalls++
-			if len(userIDs) != 2 || userIDs[0] != firstUserID || userIDs[1] != secondUserID {
-				t.Fatalf("display-name lookup ids = %v, want [%s %s]", userIDs, firstUserID, secondUserID)
+			if len(userIDs) != 1 || userIDs[0] != userID {
+				t.Fatalf("display-name lookup ids = %v, want [%s]", userIDs, userID)
 			}
-			return map[uuid.UUID]string{firstUserID: "First User", secondUserID: "Second User"}, nil
+			return map[uuid.UUID]string{userID: "Member"}, nil
 		},
 	}
 	service := newTestService(t, repository)
 
-	names, err := service.UserDisplayNames(context.Background(), Principal{Role: RoleAdministrator, Status: StatusActive}, []uuid.UUID{firstUserID, secondUserID, firstUserID})
+	names, err := service.UserDisplayNames(context.Background(), Principal{Role: RoleAdministrator, Status: StatusActive}, []uuid.UUID{userID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if names[firstUserID] != "First User" || names[secondUserID] != "Second User" || lookupCalls != 1 {
+	if names[userID] != "Member" || lookupCalls != 1 {
 		t.Fatalf("display-name result/calls = %v/%d", names, lookupCalls)
 	}
 
@@ -202,7 +250,7 @@ func TestUserDisplayNamesRequiresAnActiveAdministratorAndDeduplicatesIDs(t *test
 		{Role: RoleMember, Status: StatusActive},
 		{Role: RoleAdministrator, Status: StatusDisabled},
 	} {
-		if _, err := service.UserDisplayNames(context.Background(), actor, []uuid.UUID{firstUserID}); err != ErrForbidden {
+		if _, err := service.UserDisplayNames(context.Background(), actor, []uuid.UUID{userID}); err != ErrForbidden {
 			t.Fatalf("UserDisplayNames(%s/%s) error = %v, want ErrForbidden", actor.Role, actor.Status, err)
 		}
 	}
@@ -401,8 +449,9 @@ func newTestService(t *testing.T, repository Repository) *Service {
 }
 
 type repositoryStub struct {
-	bootstrap                func(context.Context, NewUser) (User, error)
+	bootstrap                func(context.Context, NewUser, SessionCreation) (Principal, error)
 	register                 func(context.Context, []byte, NewUser) (User, error)
+	findUserByEmail          func(context.Context, string) (User, error)
 	userDisplayNames         func(context.Context, []uuid.UUID) (map[uuid.UUID]string, error)
 	createSession            func(context.Context, uuid.UUID, []byte, []byte, time.Time) (Principal, error)
 	replayInvitation         func(context.Context, uuid.UUID, InvitationMutation) (Invitation, bool, error)
@@ -410,18 +459,22 @@ type repositoryStub struct {
 	createGatewayKey         func(context.Context, NewGatewayKey, uuid.UUID, GatewayKeyMutation) (GatewayKey, error)
 	gatewayKeyForReplacement func(context.Context, uuid.UUID) (GatewayKey, error)
 	resetMemberPassword      func(context.Context, uuid.UUID, string, uuid.UUID, PasswordResetMutation) (SessionRevocation, error)
+	changeOwnPassword        func(context.Context, uuid.UUID, uuid.UUID, string, string, string) (SessionRevocation, error)
 	revokeUserSessions       func(context.Context, uuid.UUID, uuid.UUID, *uuid.UUID, string) (SessionRevocation, error)
 	revokeGatewayKey         func(context.Context, uuid.UUID, uuid.UUID, bool) error
 }
 
 func (r *repositoryStub) IsBootstrapped(context.Context) (bool, error) { return false, nil }
-func (r *repositoryStub) Bootstrap(ctx context.Context, input NewUser) (User, error) {
-	return r.bootstrap(ctx, input)
+func (r *repositoryStub) Bootstrap(ctx context.Context, input NewUser, session SessionCreation) (Principal, error) {
+	return r.bootstrap(ctx, input, session)
 }
 func (r *repositoryStub) Register(ctx context.Context, digest []byte, input NewUser) (User, error) {
 	return r.register(ctx, digest, input)
 }
-func (r *repositoryStub) FindUserByEmail(context.Context, string) (User, error) {
+func (r *repositoryStub) FindUserByEmail(ctx context.Context, email string) (User, error) {
+	if r.findUserByEmail != nil {
+		return r.findUserByEmail(ctx, email)
+	}
 	return User{}, ErrNotFound
 }
 func (r *repositoryStub) UserDisplayNames(ctx context.Context, userIDs []uuid.UUID) (map[uuid.UUID]string, error) {
@@ -441,6 +494,12 @@ func (r *repositoryStub) ResetMemberPassword(ctx context.Context, userID uuid.UU
 		return SessionRevocation{}, nil
 	}
 	return r.resetMemberPassword(ctx, userID, passwordHash, actorID, mutation)
+}
+func (r *repositoryStub) ChangeOwnPassword(ctx context.Context, userID, sessionID uuid.UUID, expectedHash, replacementHash, requestID string) (SessionRevocation, error) {
+	if r.changeOwnPassword == nil {
+		return SessionRevocation{}, nil
+	}
+	return r.changeOwnPassword(ctx, userID, sessionID, expectedHash, replacementHash, requestID)
 }
 func (r *repositoryStub) RevokeUserSessions(ctx context.Context, userID, actorID uuid.UUID, preservedSessionID *uuid.UUID, requestID string) (SessionRevocation, error) {
 	if r.revokeUserSessions == nil {

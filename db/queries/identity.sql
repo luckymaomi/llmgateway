@@ -23,6 +23,10 @@ UPDATE users SET password_hash = sqlc.arg(password_hash), updated_at = now()
 WHERE id = sqlc.arg(id)
 RETURNING *;
 
+-- name: UpdateOwnPassword :execrows
+UPDATE users SET password_hash = sqlc.arg(replacement_password_hash), updated_at = now()
+WHERE id = sqlc.arg(id) AND password_hash = sqlc.arg(expected_password_hash);
+
 -- name: ClaimMemberPasswordResetMutation :one
 INSERT INTO member_password_reset_mutations (
   actor_user_id, idempotency_key, user_id, request_fingerprint, request_id

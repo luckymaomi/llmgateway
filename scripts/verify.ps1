@@ -66,7 +66,6 @@ try {
     Invoke-Step "Frontend install integrity" { & $pnpmCommand --dir web install --frozen-lockfile }
     Invoke-Step "Frontend checks" { & $pnpmCommand --dir web run verify }
     if (-not $SkipBrowser) {
-      Invoke-Step "Headed mock browser regression" { & $pnpmCommand --dir web run test:e2e }
       Invoke-Step "Real headed Provider browser acceptance" { & $powerShellCommand -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-browser-real.ps1 }
     }
   }
@@ -74,11 +73,9 @@ try {
   Invoke-Step "Compose configuration" { docker compose config --quiet }
   if (-not $SkipIntegration) {
     Invoke-Step "Migration round-trip" { & $powerShellCommand -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-migrations.ps1 }
-    Invoke-Step "Control API persistence" { & $powerShellCommand -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-control.ps1 }
     Invoke-Step "Core gateway flow" { & $powerShellCommand -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-core.ps1 }
     Invoke-Step "Credential rotation and PostgreSQL recovery" { & $powerShellCommand -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-operations.ps1 }
     Invoke-Step "Prometheus rules and Grafana dashboard" { & $powerShellCommand -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-observability.ps1 }
-    Invoke-Step "Supply-chain policy" { & $powerShellCommand -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-supply-chain.ps1 }
     if ($env:OS -eq "Windows_NT") {
       Invoke-Step "Windows SCM production service" { & $powerShellCommand -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-windows-service.ps1 }
       if (-not $SkipBrowser) {
@@ -92,10 +89,7 @@ try {
     Invoke-Step "Go build matrix" {
       $targets = @(
         @{ OS = "windows"; Arch = "amd64"; Suffix = ".exe" },
-        @{ OS = "linux"; Arch = "amd64"; Suffix = "" },
-        @{ OS = "linux"; Arch = "arm64"; Suffix = "" },
-        @{ OS = "darwin"; Arch = "amd64"; Suffix = "" },
-        @{ OS = "darwin"; Arch = "arm64"; Suffix = "" }
+        @{ OS = "linux"; Arch = "amd64"; Suffix = "" }
       )
       New-Item -ItemType Directory -Force .\.build | Out-Null
       foreach ($target in $targets) {

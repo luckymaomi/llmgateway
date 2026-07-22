@@ -8,6 +8,7 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type Querier interface {
@@ -35,6 +36,9 @@ type Querier interface {
 	CompleteProviderMutation(ctx context.Context, arg CompleteProviderMutationParams) (ProviderMutation, error)
 	CompleteRequest(ctx context.Context, arg CompleteRequestParams) (Request, error)
 	CompleteResponseRecord(ctx context.Context, arg CompleteResponseRecordParams) (ResponseRecord, error)
+	CountEntitlements(ctx context.Context, arg CountEntitlementsParams) (int64, error)
+	CountLedgerEvents(ctx context.Context, arg CountLedgerEventsParams) (int64, error)
+	CountRequestUsage(ctx context.Context, arg CountRequestUsageParams) (int64, error)
 	CountUsers(ctx context.Context, status *UserStatus) (int64, error)
 	CreateAttempt(ctx context.Context, arg CreateAttemptParams) (RequestAttempt, error)
 	CreateAuditEvent(ctx context.Context, arg CreateAuditEventParams) (AuditEvent, error)
@@ -53,7 +57,9 @@ type Querier interface {
 	CreateLedgerReservation(ctx context.Context, arg CreateLedgerReservationParams) (LedgerReservation, error)
 	CreateModel(ctx context.Context, arg CreateModelParams) (Model, error)
 	CreateModelPriceVersion(ctx context.Context, arg CreateModelPriceVersionParams) (ModelPriceVersion, error)
+	CreateModelWithID(ctx context.Context, arg CreateModelWithIDParams) (Model, error)
 	CreateProvider(ctx context.Context, arg CreateProviderParams) (Provider, error)
+	CreateProviderWithID(ctx context.Context, arg CreateProviderWithIDParams) (Provider, error)
 	CreateRequest(ctx context.Context, arg CreateRequestParams) (Request, error)
 	CreateResponseRecord(ctx context.Context, arg CreateResponseRecordParams) (ResponseRecord, error)
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
@@ -68,6 +74,8 @@ type Querier interface {
 	FinalizeRecoveredBackgroundResponse(ctx context.Context, arg FinalizeRecoveredBackgroundResponseParams) (ResponseRecord, error)
 	GetActiveConfig(ctx context.Context) (GetActiveConfigRow, error)
 	GetActiveGatewayKeyForRequest(ctx context.Context, arg GetActiveGatewayKeyForRequestParams) (uuid.UUID, error)
+	GetAdministratorResourceSummary(ctx context.Context, observedAt pgtype.Timestamptz) (GetAdministratorResourceSummaryRow, error)
+	GetAttemptLatencySummary(ctx context.Context, arg GetAttemptLatencySummaryParams) (GetAttemptLatencySummaryRow, error)
 	GetAuthorizedGatewayKeyModelDomain(ctx context.Context, arg GetAuthorizedGatewayKeyModelDomainParams) (ResourceDomain, error)
 	GetConfigMutation(ctx context.Context, arg GetConfigMutationParams) (ConfigMutation, error)
 	GetConfigRevision(ctx context.Context, id uuid.UUID) (ConfigRevision, error)
@@ -89,6 +97,7 @@ type Querier interface {
 	GetLedgerReservationByRequest(ctx context.Context, requestID uuid.UUID) (LedgerReservation, error)
 	GetLedgerReservationByRequestForUpdate(ctx context.Context, requestID uuid.UUID) (LedgerReservation, error)
 	GetLedgerReservationForUpdate(ctx context.Context, id uuid.UUID) (LedgerReservation, error)
+	GetMemberAccessSummary(ctx context.Context, arg GetMemberAccessSummaryParams) (GetMemberAccessSummaryRow, error)
 	GetMemberPasswordResetMutation(ctx context.Context, arg GetMemberPasswordResetMutationParams) (MemberPasswordResetMutation, error)
 	GetModelByPublicName(ctx context.Context, publicName string) (GetModelByPublicNameRow, error)
 	GetModelDomain(ctx context.Context, modelID uuid.UUID) (ResourceDomain, error)
@@ -102,8 +111,10 @@ type Querier interface {
 	GetRequest(ctx context.Context, id uuid.UUID) (Request, error)
 	GetRequestByIdempotencyKey(ctx context.Context, arg GetRequestByIdempotencyKeyParams) (Request, error)
 	GetRequestForUpdate(ctx context.Context, id uuid.UUID) (Request, error)
+	GetRequestWindowSummary(ctx context.Context, arg GetRequestWindowSummaryParams) (GetRequestWindowSummaryRow, error)
 	GetResponseRecord(ctx context.Context, arg GetResponseRecordParams) (ResponseRecord, error)
 	GetSessionByDigest(ctx context.Context, tokenDigest []byte) (GetSessionByDigestRow, error)
+	GetSiteProfile(ctx context.Context) (SiteProfile, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (User, error)
 	GetUserForAdministrativeRecovery(ctx context.Context, id uuid.UUID) (User, error)
@@ -132,7 +143,7 @@ type Querier interface {
 	ListGatewayKeyModelBindingsByUser(ctx context.Context, userID uuid.UUID) ([]ListGatewayKeyModelBindingsByUserRow, error)
 	ListGatewayKeysByUser(ctx context.Context, userID uuid.UUID) ([]ListGatewayKeysByUserRow, error)
 	ListInvitations(ctx context.Context, arg ListInvitationsParams) ([]Invitation, error)
-	ListLedgerEvents(ctx context.Context, arg ListLedgerEventsParams) ([]LedgerEvent, error)
+	ListLedgerEvents(ctx context.Context, arg ListLedgerEventsParams) ([]ListLedgerEventsRow, error)
 	ListLedgerEventsByEntitlement(ctx context.Context, entitlementID uuid.UUID) ([]LedgerEvent, error)
 	ListModelPriceVersions(ctx context.Context, arg ListModelPriceVersionsParams) ([]ListModelPriceVersionsRow, error)
 	ListModels(ctx context.Context) ([]ListModelsRow, error)
@@ -145,6 +156,8 @@ type Querier interface {
 	ListRegistryProvidersForSnapshot(ctx context.Context) ([]ListRegistryProvidersForSnapshotRow, error)
 	ListRegistryRoutesForSnapshot(ctx context.Context) ([]ListRegistryRoutesForSnapshotRow, error)
 	ListRequestAttempts(ctx context.Context, requestID uuid.UUID) ([]RequestAttempt, error)
+	ListRequestErrors(ctx context.Context, arg ListRequestErrorsParams) ([]ListRequestErrorsRow, error)
+	ListRequestTrend(ctx context.Context, arg ListRequestTrendParams) ([]ListRequestTrendRow, error)
 	ListRequestUsage(ctx context.Context, arg ListRequestUsageParams) ([]ListRequestUsageRow, error)
 	ListRequests(ctx context.Context, arg ListRequestsParams) ([]Request, error)
 	ListStaleQueuedRequests(ctx context.Context, arg ListStaleQueuedRequestsParams) ([]uuid.UUID, error)
@@ -177,7 +190,9 @@ type Querier interface {
 	UpdateCredential(ctx context.Context, arg UpdateCredentialParams) (ProviderCredential, error)
 	UpdateCredentialState(ctx context.Context, arg UpdateCredentialStateParams) (ProviderCredential, error)
 	UpdateModel(ctx context.Context, arg UpdateModelParams) (Model, error)
+	UpdateOwnPassword(ctx context.Context, arg UpdateOwnPasswordParams) (int64, error)
 	UpdateProvider(ctx context.Context, arg UpdateProviderParams) (Provider, error)
+	UpdateSiteProfile(ctx context.Context, arg UpdateSiteProfileParams) (SiteProfile, error)
 	UpdateUserPassword(ctx context.Context, arg UpdateUserPasswordParams) (User, error)
 	UpdateUserStatus(ctx context.Context, arg UpdateUserStatusParams) (User, error)
 }

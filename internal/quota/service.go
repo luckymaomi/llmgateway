@@ -25,52 +25,63 @@ func (s *Service) CreateEntitlement(ctx context.Context, actor identity.Principa
 	return s.repository.CreateEntitlement(ctx, input, actor.UserID)
 }
 
-func (s *Service) ListEntitlements(ctx context.Context, actor identity.Principal, userID *uuid.UUID, page Page) ([]Entitlement, error) {
-	page = normalizePage(page)
+func (s *Service) ListEntitlements(ctx context.Context, actor identity.Principal, query EntitlementQuery) (PageResult[Entitlement], error) {
+	query.Page = normalizePage(query.Page)
+	query.Search = strings.TrimSpace(query.Search)
 	if actor.Status != identity.StatusActive {
-		return nil, ErrForbidden
+		return PageResult[Entitlement]{}, ErrForbidden
+	}
+	if len(query.Search) > 200 || query.Status != "" && query.Status != "active" && query.Status != "scheduled" && query.Status != "expired" || query.ResourceDomain != "" && !validDomain(query.ResourceDomain) {
+		return PageResult[Entitlement]{}, ErrInvalidInput
 	}
 	if actor.CanManageUsers() {
-		return s.repository.ListEntitlements(ctx, userID, page)
+		return s.repository.ListEntitlements(ctx, query)
 	}
-	if userID != nil && *userID != actor.UserID {
-		return nil, ErrForbidden
+	if query.UserID != nil && *query.UserID != actor.UserID {
+		return PageResult[Entitlement]{}, ErrForbidden
 	}
-	ownUserID := actor.UserID
-	return s.repository.ListEntitlements(ctx, &ownUserID, page)
+	query.UserID = &actor.UserID
+	return s.repository.ListEntitlements(ctx, query)
 }
 
-func (s *Service) ListLedger(ctx context.Context, actor identity.Principal, filter LedgerFilter) ([]LedgerEvent, error) {
+func (s *Service) ListLedger(ctx context.Context, actor identity.Principal, filter LedgerFilter) (PageResult[LedgerEvent], error) {
 	filter.Page = normalizePage(filter.Page)
+	filter.Search = strings.TrimSpace(filter.Search)
 	if actor.Status != identity.StatusActive {
-		return nil, ErrForbidden
+		return PageResult[LedgerEvent]{}, ErrForbidden
+	}
+	if len(filter.Search) > 200 || filter.ResourceDomain != "" && !validDomain(filter.ResourceDomain) {
+		return PageResult[LedgerEvent]{}, ErrInvalidInput
 	}
 	if !actor.CanManageUsers() {
 		if filter.UserID != nil && *filter.UserID != actor.UserID {
-			return nil, ErrForbidden
+			return PageResult[LedgerEvent]{}, ErrForbidden
 		}
-		ownUserID := actor.UserID
-		filter.UserID = &ownUserID
+		filter.UserID = &actor.UserID
 	}
 	return s.repository.ListLedger(ctx, filter)
 }
 
-func (s *Service) ListUsage(ctx context.Context, actor identity.Principal, userID *uuid.UUID, page Page) ([]UsageRecord, error) {
-	page = normalizePage(page)
+func (s *Service) ListUsage(ctx context.Context, actor identity.Principal, query UsageQuery) (PageResult[UsageRecord], error) {
+	query.Page = normalizePage(query.Page)
+	query.Search = strings.TrimSpace(query.Search)
 	if actor.Status != identity.StatusActive {
-		return nil, ErrForbidden
+		return PageResult[UsageRecord]{}, ErrForbidden
+	}
+	if len(query.Search) > 200 || query.ResourceDomain != "" && !validDomain(query.ResourceDomain) {
+		return PageResult[UsageRecord]{}, ErrInvalidInput
 	}
 	if actor.CanManageUsers() {
-		return s.repository.ListUsage(ctx, userID, page)
+		return s.repository.ListUsage(ctx, query)
 	}
 	if actor.Role != identity.RoleMember {
-		return nil, ErrForbidden
+		return PageResult[UsageRecord]{}, ErrForbidden
 	}
-	if userID != nil && *userID != actor.UserID {
-		return nil, ErrForbidden
+	if query.UserID != nil && *query.UserID != actor.UserID {
+		return PageResult[UsageRecord]{}, ErrForbidden
 	}
-	ownUserID := actor.UserID
-	return s.repository.ListUsage(ctx, &ownUserID, page)
+	query.UserID = &actor.UserID
+	return s.repository.ListUsage(ctx, query)
 }
 
 func (s *Service) AcceptRequest(ctx context.Context, input AcceptInput) (AcceptedRequest, error) {

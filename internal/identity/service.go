@@ -17,12 +17,13 @@ import (
 )
 
 const (
-	minimumPasswordBytes  = 12
-	maximumPasswordBytes  = 1024
-	maximumNameRunes      = 80
-	credentialPrefixBytes = 13
-	defaultSessionLength  = 12 * time.Hour
-	maximumKeyModels      = 100
+	minimumPasswordBytes            = 12
+	maximumPasswordBytes            = 1024
+	maximumNameRunes                = 80
+	credentialPrefixBytes           = 13
+	defaultSessionLength            = 12 * time.Hour
+	maximumKeyModels                = 100
+	initialAdministratorDisplayName = "Administrator"
 )
 
 type Service struct {
@@ -60,16 +61,27 @@ func (s *Service) IsBootstrapped(ctx context.Context) (bool, error) {
 	return s.repository.IsBootstrapped(ctx)
 }
 
-func (s *Service) Bootstrap(ctx context.Context, email, displayName, password string) (SessionCredentials, error) {
-	newUser, err := s.prepareUser(email, displayName, password, RoleAdministrator, StatusActive)
+func (s *Service) Bootstrap(ctx context.Context, email string) (BootstrapCredentials, error) {
+	initialPassword, err := security.GenerateToken()
 	if err != nil {
-		return SessionCredentials{}, err
+		return BootstrapCredentials{}, err
 	}
-	user, err := s.repository.Bootstrap(ctx, newUser)
+	newUser, err := s.prepareUser(email, initialAdministratorDisplayName, initialPassword, RoleAdministrator, StatusActive)
 	if err != nil {
-		return SessionCredentials{}, err
+		return BootstrapCredentials{}, err
 	}
-	return s.issueSession(ctx, user)
+	material, err := s.prepareSession()
+	if err != nil {
+		return BootstrapCredentials{}, err
+	}
+	principal, err := s.repository.Bootstrap(ctx, newUser, material.creation)
+	if err != nil {
+		return BootstrapCredentials{}, err
+	}
+	return BootstrapCredentials{
+		SessionCredentials: SessionCredentials{Principal: principal, Token: material.token, CSRFToken: material.csrfToken},
+		InitialPassword:    initialPassword,
+	}, nil
 }
 
 func (s *Service) Register(ctx context.Context, invitationCode, email, displayName, password string) (User, error) {
@@ -139,6 +151,29 @@ func (s *Service) VerifyCSRF(principal Principal, token string) bool {
 
 func (s *Service) Logout(ctx context.Context, principal Principal) error {
 	return s.repository.RevokeSession(ctx, principal.SessionID)
+}
+
+func (s *Service) ChangePassword(ctx context.Context, principal Principal, currentPassword, replacementPassword, requestID string) (SessionRevocation, error) {
+	if principal.UserID == uuid.Nil || principal.SessionID == uuid.Nil || principal.Status != StatusActive || strings.TrimSpace(requestID) == "" {
+		return SessionRevocation{}, ErrForbidden
+	}
+	user, err := s.repository.FindUserByEmail(ctx, principal.Email)
+	if err != nil || user.ID != principal.UserID {
+		return SessionRevocation{}, ErrInvalidCredential
+	}
+	verification, err := security.VerifyPassword(currentPassword, user.PasswordHash, s.passwordParams)
+	if err != nil || !verification.Match {
+		return SessionRevocation{}, ErrInvalidCredential
+	}
+	replacementMatches, err := security.VerifyPassword(replacementPassword, user.PasswordHash, s.passwordParams)
+	if err == nil && replacementMatches.Match {
+		return SessionRevocation{}, ErrInvalidInput
+	}
+	replacementHash, err := hashPassword(replacementPassword, s.passwordParams)
+	if err != nil {
+		return SessionRevocation{}, err
+	}
+	return s.repository.ChangeOwnPassword(ctx, principal.UserID, principal.SessionID, user.PasswordHash, replacementHash, requestID)
 }
 
 func (s *Service) UserDisplayNames(ctx context.Context, actor Principal, userIDs []uuid.UUID) (map[uuid.UUID]string, error) {
@@ -413,27 +448,48 @@ func (s *Service) RevokeGatewayKey(ctx context.Context, actor Principal, keyID u
 }
 
 func (s *Service) issueSession(ctx context.Context, user User) (SessionCredentials, error) {
-	token, err := security.GenerateToken()
+	material, err := s.prepareSession()
 	if err != nil {
 		return SessionCredentials{}, err
+	}
+	principal, err := s.repository.CreateSession(ctx, user.ID, material.creation.TokenDigest, material.creation.CSRFDigest, material.creation.ExpiresAt)
+	if err != nil {
+		return SessionCredentials{}, err
+	}
+	return SessionCredentials{Principal: principal, Token: material.token, CSRFToken: material.csrfToken}, nil
+}
+
+type sessionMaterial struct {
+	token     string
+	csrfToken string
+	creation  SessionCreation
+}
+
+func (s *Service) prepareSession() (sessionMaterial, error) {
+	token, err := security.GenerateToken()
+	if err != nil {
+		return sessionMaterial{}, err
 	}
 	csrfToken, err := security.GenerateToken()
 	if err != nil {
-		return SessionCredentials{}, err
+		return sessionMaterial{}, err
 	}
 	tokenDigest, err := security.HMACSHA256(s.sessionPepper, []byte(token))
 	if err != nil {
-		return SessionCredentials{}, err
+		return sessionMaterial{}, err
 	}
 	csrfDigest, err := security.HMACSHA256(s.sessionPepper, []byte(csrfToken))
 	if err != nil {
-		return SessionCredentials{}, err
+		return sessionMaterial{}, err
 	}
-	principal, err := s.repository.CreateSession(ctx, user.ID, tokenDigest[:], csrfDigest[:], s.now().Add(defaultSessionLength))
-	if err != nil {
-		return SessionCredentials{}, err
-	}
-	return SessionCredentials{Principal: principal, Token: token, CSRFToken: csrfToken}, nil
+	return sessionMaterial{
+		token: token, csrfToken: csrfToken,
+		creation: SessionCreation{
+			TokenDigest: append([]byte(nil), tokenDigest[:]...),
+			CSRFDigest:  append([]byte(nil), csrfDigest[:]...),
+			ExpiresAt:   s.now().Add(defaultSessionLength),
+		},
+	}, nil
 }
 
 func (s *Service) prepareUser(email, displayName, password string, role Role, status Status) (NewUser, error) {

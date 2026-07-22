@@ -17,11 +17,32 @@ WHERE le.source_event_id = sqlc.arg(source_event_id)
 -- name: ListActiveEntitlements :many
 SELECT * FROM entitlements WHERE user_id = sqlc.arg(user_id) AND starts_at <= now() AND expires_at > now() ORDER BY resource_domain, expires_at, id;
 
+-- name: CountEntitlements :one
+SELECT count(*)
+FROM entitlements e
+JOIN users owner ON owner.id = e.user_id
+LEFT JOIN models model ON model.id = e.model_id
+WHERE (sqlc.narg(user_id)::uuid IS NULL OR e.user_id = sqlc.narg(user_id))
+  AND (sqlc.arg(search)::text = '' OR concat_ws(' ', owner.display_name, owner.email, model.public_name, e.plan::text, e.resource_domain::text) ILIKE '%' || sqlc.arg(search)::text || '%')
+  AND (sqlc.arg(status)::text = ''
+    OR sqlc.arg(status)::text = 'scheduled' AND e.starts_at > now()
+    OR sqlc.arg(status)::text = 'active' AND e.starts_at <= now() AND e.expires_at > now()
+    OR sqlc.arg(status)::text = 'expired' AND e.expires_at <= now())
+  AND (sqlc.arg(resource_domain)::text = '' OR e.resource_domain::text = sqlc.arg(resource_domain)::text);
+
 -- name: ListEntitlementsWithBalance :many
 SELECT e.*, coalesce(sum(le.token_delta), 0)::bigint AS balance_tokens
 FROM entitlements e
+JOIN users owner ON owner.id = e.user_id
+LEFT JOIN models model ON model.id = e.model_id
 LEFT JOIN ledger_events le ON le.entitlement_id = e.id
 WHERE (sqlc.narg(user_id)::uuid IS NULL OR e.user_id = sqlc.narg(user_id))
+  AND (sqlc.arg(search)::text = '' OR concat_ws(' ', owner.display_name, owner.email, model.public_name, e.plan::text, e.resource_domain::text) ILIKE '%' || sqlc.arg(search)::text || '%')
+  AND (sqlc.arg(status)::text = ''
+    OR sqlc.arg(status)::text = 'scheduled' AND e.starts_at > now()
+    OR sqlc.arg(status)::text = 'active' AND e.starts_at <= now() AND e.expires_at > now()
+    OR sqlc.arg(status)::text = 'expired' AND e.expires_at <= now())
+  AND (sqlc.arg(resource_domain)::text = '' OR e.resource_domain::text = sqlc.arg(resource_domain)::text)
 GROUP BY e.id
 ORDER BY e.created_at DESC, e.id
 LIMIT sqlc.arg(page_size) OFFSET sqlc.arg(page_offset);
@@ -90,11 +111,28 @@ SET state = sqlc.arg(state), charged_tokens = sqlc.arg(charged_tokens), usage_so
 WHERE id = sqlc.arg(id) AND state = 'reserved'
 RETURNING *;
 
+-- name: CountLedgerEvents :one
+SELECT count(*)
+FROM ledger_events event
+JOIN users owner ON owner.id = event.user_id
+JOIN entitlements entitlement ON entitlement.id = event.entitlement_id
+LEFT JOIN users actor ON actor.id = event.created_by
+WHERE (sqlc.narg(user_id)::uuid IS NULL OR event.user_id = sqlc.narg(user_id))
+  AND (sqlc.narg(entitlement_id)::uuid IS NULL OR event.entitlement_id = sqlc.narg(entitlement_id))
+  AND (sqlc.arg(search)::text = '' OR concat_ws(' ', owner.display_name, owner.email, actor.display_name, actor.email, event.note, event.request_id::text) ILIKE '%' || sqlc.arg(search)::text || '%')
+  AND (sqlc.arg(resource_domain)::text = '' OR entitlement.resource_domain::text = sqlc.arg(resource_domain)::text);
+
 -- name: ListLedgerEvents :many
-SELECT * FROM ledger_events
-WHERE (sqlc.narg(user_id)::uuid IS NULL OR user_id = sqlc.narg(user_id))
-  AND (sqlc.narg(entitlement_id)::uuid IS NULL OR entitlement_id = sqlc.narg(entitlement_id))
-ORDER BY created_at DESC, id LIMIT sqlc.arg(page_size) OFFSET sqlc.arg(page_offset);
+SELECT event.*, entitlement.resource_domain
+FROM ledger_events event
+JOIN users owner ON owner.id = event.user_id
+JOIN entitlements entitlement ON entitlement.id = event.entitlement_id
+LEFT JOIN users actor ON actor.id = event.created_by
+WHERE (sqlc.narg(user_id)::uuid IS NULL OR event.user_id = sqlc.narg(user_id))
+  AND (sqlc.narg(entitlement_id)::uuid IS NULL OR event.entitlement_id = sqlc.narg(entitlement_id))
+  AND (sqlc.arg(search)::text = '' OR concat_ws(' ', owner.display_name, owner.email, actor.display_name, actor.email, event.note, event.request_id::text) ILIKE '%' || sqlc.arg(search)::text || '%')
+  AND (sqlc.arg(resource_domain)::text = '' OR entitlement.resource_domain::text = sqlc.arg(resource_domain)::text)
+ORDER BY event.created_at DESC, event.id LIMIT sqlc.arg(page_size) OFFSET sqlc.arg(page_offset);
 
 -- name: CreateRequest :one
 INSERT INTO requests (id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain,
@@ -276,11 +314,10 @@ SELECT * FROM requests
 WHERE (sqlc.narg(user_id)::uuid IS NULL OR user_id = sqlc.narg(user_id))
 ORDER BY accepted_at DESC, id LIMIT sqlc.arg(page_size) OFFSET sqlc.arg(page_offset);
 
--- name: ListRequestUsage :many
-SELECT request.id, request.user_id, key.prefix AS key_prefix,
-       model.public_name AS model_alias, request.resource_domain,
-       request.input_tokens, request.output_tokens, request.usage_source, request.completed_at
+-- name: CountRequestUsage :one
+SELECT count(*)
 FROM requests AS request
+JOIN users AS owner ON owner.id = request.user_id
 JOIN gateway_keys AS key ON key.id = request.gateway_key_id
 JOIN config_revision_models AS model
   ON model.revision_id = request.config_revision_id AND model.model_id = request.model_id
@@ -289,6 +326,25 @@ WHERE (sqlc.narg(user_id)::uuid IS NULL OR request.user_id = sqlc.narg(user_id))
   AND request.output_tokens IS NOT NULL
   AND request.usage_source IN ('authoritative', 'estimated')
   AND request.completed_at IS NOT NULL
+  AND (sqlc.arg(search)::text = '' OR concat_ws(' ', owner.display_name, owner.email, key.prefix, model.public_name, request.id::text) ILIKE '%' || sqlc.arg(search)::text || '%')
+  AND (sqlc.arg(resource_domain)::text = '' OR request.resource_domain::text = sqlc.arg(resource_domain)::text);
+
+-- name: ListRequestUsage :many
+SELECT request.id, request.user_id, key.prefix AS key_prefix,
+       model.public_name AS model_alias, request.resource_domain,
+       request.input_tokens, request.output_tokens, request.usage_source, request.completed_at
+FROM requests AS request
+JOIN users AS owner ON owner.id = request.user_id
+JOIN gateway_keys AS key ON key.id = request.gateway_key_id
+JOIN config_revision_models AS model
+  ON model.revision_id = request.config_revision_id AND model.model_id = request.model_id
+WHERE (sqlc.narg(user_id)::uuid IS NULL OR request.user_id = sqlc.narg(user_id))
+  AND request.input_tokens IS NOT NULL
+  AND request.output_tokens IS NOT NULL
+  AND request.usage_source IN ('authoritative', 'estimated')
+  AND request.completed_at IS NOT NULL
+  AND (sqlc.arg(search)::text = '' OR concat_ws(' ', owner.display_name, owner.email, key.prefix, model.public_name, request.id::text) ILIKE '%' || sqlc.arg(search)::text || '%')
+  AND (sqlc.arg(resource_domain)::text = '' OR request.resource_domain::text = sqlc.arg(resource_domain)::text)
 ORDER BY request.completed_at DESC, request.id
 LIMIT sqlc.arg(page_size) OFFSET sqlc.arg(page_offset);
 

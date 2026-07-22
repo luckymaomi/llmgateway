@@ -23,7 +23,7 @@ export async function createGatewayKeyAfterLostResponse(
   catalog: PublishedCatalogFacts,
 ): Promise<GatewayKeyFacts> {
   const name = 'Browser member Key'
-  await page.getByRole('link', { name: '网关 Key', exact: true }).click()
+  await page.getByRole('link', { name: 'API Key', exact: true }).click()
   await page.getByRole('button', { name: '创建 Key' }).click()
   const dialog = page.getByRole('dialog')
   await dialog.getByLabel('所属用户').selectOption({ label: 'Browser Member' })
@@ -66,12 +66,12 @@ export async function createGatewayKeyAfterLostResponse(
     }
     expect(originalInput.name).toBe(name)
     expect(originalInput.authorizedModelIds).toEqual([catalog.authorizedModelID])
-    await expect(dialog.getByRole('alert')).toContainText('创建结果暂时无法确认')
+    await expect(dialog.getByRole('alert')).toBeVisible()
 
     await page.reload()
     await page.getByRole('button', { name: '创建 Key' }).click()
     const recoveryDialog = page.getByRole('dialog')
-    await expect(recoveryDialog.getByRole('alert')).toContainText('创建结果暂时无法确认')
+    await expect(recoveryDialog.getByRole('alert')).toBeVisible()
     const replayResponse = page.waitForResponse(
       (response) =>
         new URL(response.url()).pathname === keyPath && response.request().method() === 'POST',
@@ -87,14 +87,15 @@ export async function createGatewayKeyAfterLostResponse(
     expect(id).toMatch(uuidPattern)
 
     const acknowledgement = page.getByRole('dialog')
-    await acknowledgement.getByRole('button', { name: '复制 Key' }).click()
-    await expect(acknowledgement.getByRole('button', { name: '已复制' })).toBeVisible()
-    const secret = await page.evaluate(() => navigator.clipboard.readText())
-    expect(/^llmg_[A-Za-z0-9_-]+$/.test(secret)).toBe(true)
+    await acknowledgement.getByRole('button', { name: '复制调用配置' }).click()
+    const copiedConfiguration = await page.evaluate(() => navigator.clipboard.readText())
+    expect(copiedConfiguration).toContain(`OPENAI_BASE_URL=${new URL(page.url()).origin}/v1`)
+    const secret = copiedConfiguration.match(/^OPENAI_API_KEY=(llmg_[A-Za-z0-9_-]+)$/m)?.[1] ?? ''
+    expect(secret).toMatch(/^llmg_[A-Za-z0-9_-]+$/)
     await acknowledgement.getByRole('button', { name: '完成' }).click()
     await expect(page.getByTestId('created-key-secret')).toHaveCount(0)
     await clearClipboard(page)
-    await expect(page.getByRole('table', { name: '网关 Key 列表' })).toContainText(name)
+    await expect(page.getByRole('table', { name: 'API Key 列表' })).toContainText(name)
     return { id, name, secret }
   } finally {
     await clearClipboardBestEffort(page)

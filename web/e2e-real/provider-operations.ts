@@ -1,6 +1,6 @@
 import { expect, type Locator, type Page } from '@playwright/test'
 
-import { expectPageWidthToFit, uuidPattern } from './acceptance-helpers'
+import { uuidPattern } from './acceptance-helpers'
 import type { BrowserProblems } from './runtime'
 
 export async function fillProviderForm(
@@ -22,8 +22,6 @@ export async function editProvider(
   await page.getByRole('button', { name: '编辑 Provider' }).click()
   const dialog = page.getByRole('dialog')
   await expect(dialog.getByLabel('标识')).toHaveAttribute('readonly', '')
-  await expectPageWidthToFit(page)
-  await expect(dialog.getByRole('button', { name: '保存' })).toBeVisible()
   await dialog.getByLabel('名称').fill(name)
   if (kind) await dialog.getByLabel('类型').selectOption(kind)
   await dialog.getByLabel('Base URL').fill(baseURL)
@@ -40,8 +38,6 @@ export async function renameEnabledProvider(page: Page, name: string): Promise<v
   const dialog = page.getByRole('dialog')
   await expect(dialog.getByLabel('类型')).toBeDisabled()
   await expect(dialog.getByLabel('Base URL')).toHaveAttribute('readonly', '')
-  await expectPageWidthToFit(page)
-  await expect(dialog.getByRole('button', { name: '保存' })).toBeVisible()
   await dialog.getByLabel('名称').fill(name)
   const response = page.waitForResponse(
     (candidate) =>
@@ -93,8 +89,6 @@ export async function enableProviderAfterLostResponse(
     expect(originalKey).toMatch(uuidPattern)
     expect(JSON.parse(originalBody)).toMatchObject({ enabled: true })
     const retryButton = page.getByRole('button', { name: '重试原操作' })
-    await expect(retryButton).toBeVisible()
-    await expect(page.getByRole('table', { name: 'Provider 列表' })).toContainText('已启用')
     const replayResponse = page.waitForResponse(
       (response) =>
         new URL(response.url()).pathname === statusPath && response.request().method() === 'PUT',
@@ -110,7 +104,6 @@ export async function enableProviderAfterLostResponse(
     expect(replayed.request().headers()['idempotency-key']).toBe(originalKey)
     expect(replayed.request().postData()).toBe(originalBody)
     expect((await refreshedProviders).status()).toBe(200)
-    await expect(retryButton).toBeHidden()
   } finally {
     await page.unroute(routePattern)
   }

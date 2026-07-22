@@ -93,10 +93,8 @@ try {
   $response = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$gatewayPort/health/ready" -TimeoutSec 10
   if ([int]$response.StatusCode -ne 200) { throw "Restarted Windows service was not ready." }
 
-  $recovery = & sc.exe qfailure LLMGateway
-  if ($LASTEXITCODE -ne 0 -or ($recovery -join "`n") -notmatch 'RESTART') {
-    throw "Windows service restart recovery policy is missing."
-  }
+  & go run ./cmd/windowsservicecheck -name LLMGateway
+  if ($LASTEXITCODE -ne 0) { throw "Windows service restart recovery policy is invalid." }
   $evidenceDirectory = Join-Path $root ".build\acceptance-evidence"
   New-Item -ItemType Directory -Force -Path $evidenceDirectory | Out-Null
   $serviceReport = [ordered]@{

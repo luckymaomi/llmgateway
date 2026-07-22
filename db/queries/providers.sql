@@ -21,6 +21,11 @@ INSERT INTO providers (slug, name, kind, base_url, enabled, source_url, verified
 VALUES (sqlc.arg(slug), sqlc.arg(name), sqlc.arg(kind), sqlc.arg(base_url), sqlc.arg(enabled), sqlc.narg(source_url), sqlc.narg(verified_at))
 RETURNING *;
 
+-- name: CreateProviderWithID :one
+INSERT INTO providers (id, slug, name, kind, base_url, enabled, source_url, verified_at)
+VALUES (sqlc.arg(id), sqlc.arg(slug), sqlc.arg(name), sqlc.arg(kind), sqlc.arg(base_url), sqlc.arg(enabled), sqlc.narg(source_url), sqlc.narg(verified_at))
+RETURNING *;
+
 -- name: UpdateProvider :one
 UPDATE providers
 SET name = sqlc.arg(name),
@@ -51,6 +56,11 @@ INSERT INTO models (provider_id, public_name, upstream_name, display_name, resou
 VALUES (sqlc.arg(provider_id), sqlc.arg(public_name), sqlc.arg(upstream_name), sqlc.arg(display_name), sqlc.arg(resource_domain), sqlc.arg(capabilities), sqlc.arg(enabled))
 RETURNING *;
 
+-- name: CreateModelWithID :one
+INSERT INTO models (id, provider_id, public_name, upstream_name, display_name, resource_domain, capabilities, enabled)
+VALUES (sqlc.arg(id), sqlc.arg(provider_id), sqlc.arg(public_name), sqlc.arg(upstream_name), sqlc.arg(display_name), sqlc.arg(resource_domain), sqlc.arg(capabilities), sqlc.arg(enabled))
+RETURNING *;
+
 -- name: UpdateModel :one
 UPDATE models SET public_name = sqlc.arg(public_name), upstream_name = sqlc.arg(upstream_name), display_name = sqlc.arg(display_name), resource_domain = sqlc.arg(resource_domain), capabilities = sqlc.arg(capabilities), enabled = sqlc.arg(enabled), updated_at = now()
 WHERE id = sqlc.arg(id) RETURNING *;
@@ -76,15 +86,8 @@ WHERE ac.singleton = true
   AND EXISTS (
     SELECT 1
     FROM config_revision_routes route
-    JOIN config_revision_credentials credential
-      ON credential.revision_id = route.revision_id AND credential.credential_id = route.credential_id
-    JOIN provider_credentials live_credential ON live_credential.id = credential.credential_id
     WHERE route.revision_id = ac.revision_id
       AND route.model_id = m.model_id
-      AND (
-        live_credential.status = 'active'
-        OR (live_credential.status = 'cooling' AND live_credential.cooldown_until <= now())
-      )
   )
 ORDER BY m.public_name, m.model_id;
 
@@ -181,8 +184,34 @@ SET status = 'cooling', cooldown_until = sqlc.narg(cooldown_until),
 WHERE id = sqlc.arg(id) AND status <> 'disabled';
 
 -- name: ListCredentials :many
-SELECT id, provider_id, name, resource_domain, status, rpm_limit, tpm_limit, concurrency_limit, cooldown_until, consecutive_failures, last_success_at, last_error_kind, last_probe_at, last_probe_latency_ms, last_probe_kind, last_probe_status, last_probe_error_kind, created_at, updated_at
-FROM provider_credentials ORDER BY name, id;
+SELECT credential.id, credential.provider_id, credential.name, credential.resource_domain, credential.status,
+       credential.rpm_limit, credential.tpm_limit, credential.concurrency_limit, credential.cooldown_until,
+       credential.consecutive_failures, credential.last_success_at, credential.last_error_kind,
+       credential.last_probe_at, credential.last_probe_latency_ms, credential.last_probe_kind,
+       credential.last_probe_status, credential.last_probe_error_kind, credential.created_at, credential.updated_at,
+       recent.terminal_count,
+       recent.completed_count,
+       recent.last_checked_unix_seconds,
+       recent.first_byte_p95_ms,
+       recent.total_latency_p95_ms
+FROM provider_credentials credential
+LEFT JOIN LATERAL (
+  SELECT
+    count(*) FILTER (WHERE attempt.status IN ('completed', 'failed', 'uncertain')) AS terminal_count,
+    count(*) FILTER (WHERE attempt.status = 'completed') AS completed_count,
+    COALESCE(extract(epoch FROM max(COALESCE(attempt.completed_at, attempt.first_byte_at, attempt.sent_at, attempt.created_at))
+      FILTER (WHERE attempt.status IN ('completed', 'failed', 'uncertain'))), -1)::bigint AS last_checked_unix_seconds,
+    COALESCE((percentile_cont(0.95) WITHIN GROUP (
+      ORDER BY extract(epoch FROM (attempt.first_byte_at - attempt.sent_at)) * 1000
+    ) FILTER (WHERE attempt.sent_at IS NOT NULL AND attempt.first_byte_at IS NOT NULL))::bigint, -1)::bigint AS first_byte_p95_ms,
+    COALESCE((percentile_cont(0.95) WITHIN GROUP (
+      ORDER BY extract(epoch FROM (attempt.completed_at - attempt.sent_at)) * 1000
+    ) FILTER (WHERE attempt.sent_at IS NOT NULL AND attempt.completed_at IS NOT NULL))::bigint, -1)::bigint AS total_latency_p95_ms
+  FROM request_attempts attempt
+  WHERE attempt.credential_id = credential.id
+    AND attempt.created_at >= CURRENT_TIMESTAMP - interval '24 hours'
+) recent ON true
+ORDER BY credential.name, credential.id;
 
 -- name: GetCredentialSecret :one
 SELECT * FROM provider_credentials WHERE id = sqlc.arg(id);
@@ -218,6 +247,6 @@ WHERE route.revision_id = sqlc.arg(revision_id)
   AND credential.resource_domain = sqlc.arg(resource_domain)
   AND (
     live_credential.status = 'active'
-    OR (live_credential.status = 'cooling' AND live_credential.cooldown_until <= now())
+    OR (live_credential.status = 'cooling' AND live_credential.cooldown_until IS NOT NULL)
   )
 ORDER BY route.priority, route.credential_id;

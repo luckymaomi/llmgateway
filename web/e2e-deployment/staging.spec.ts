@@ -18,13 +18,9 @@ test('preserves administrator and member boundaries through the production TLS t
   }
   expect(mode).toBe('setup')
 
-  await page.goto('/setup')
-  await expect(page.locator('script[src*="/@vite/client"]')).toHaveCount(0)
-  await expect(page.locator('script[type="module"][src^="/assets/"]')).toHaveCount(1)
-  await page.getByLabel('管理员名称').fill('Deployment Administrator')
-  await page.getByLabel('邮箱').fill(administratorEmail)
-  await page.getByLabel('密码', { exact: true }).fill(administratorPassword)
-  await page.getByLabel('确认密码').fill(administratorPassword)
+  await page.goto('/')
+  await expect(page).toHaveURL(/\/setup$/)
+  await page.getByLabel('管理员邮箱').fill(administratorEmail)
   const setupResponsePromise = page.waitForResponse(
     (response) =>
       response.url().endsWith('/api/control/setup') && response.request().method() === 'POST',
@@ -32,11 +28,52 @@ test('preserves administrator and member boundaries through the production TLS t
   await page.getByRole('button', { name: '创建管理员' }).click()
   const setupResponse = await setupResponsePromise
   expect(setupResponse.status()).toBe(201)
+  expect(setupResponse.headers()['cache-control']).toBe('no-store')
+  expect(setupResponse.request().postDataJSON()).toEqual({ email: administratorEmail })
   const setupPayload = (await setupResponse.json()) as { data?: { csrfToken?: unknown } }
   const csrfToken =
     typeof setupPayload.data?.csrfToken === 'string' ? setupPayload.data.csrfToken : ''
   expect(csrfToken).not.toBe('')
-  await expect(page.getByRole('complementary', { name: '主导航' })).toBeVisible()
+  const initialAdministratorPassword =
+    (await page.getByTestId('initial-administrator-password').textContent()) ?? ''
+  expect(initialAdministratorPassword).toMatch(/^[A-Za-z0-9_-]{40,}$/)
+  await page.getByRole('button', { name: '我已保存，进入控制面' }).click()
+
+  await page
+    .getByRole('complementary', { name: '主导航' })
+    .getByRole('button', { name: '更换密码' })
+    .click()
+  const passwordDialog = page.getByRole('dialog', { name: '更换密码' })
+  await passwordDialog.getByLabel('当前密码').fill(initialAdministratorPassword)
+  await passwordDialog.getByLabel('新密码', { exact: true }).fill(administratorPassword)
+  await passwordDialog.getByLabel('确认新密码').fill(administratorPassword)
+  const passwordChangeResponsePromise = page.waitForResponse(
+    (response) =>
+      response.url().endsWith('/api/control/password') && response.request().method() === 'POST',
+  )
+  await passwordDialog.getByRole('button', { name: '确认更换' }).click()
+  expect((await passwordChangeResponsePromise).status()).toBe(200)
+  await page
+    .getByRole('dialog', { name: '密码已更换' })
+    .getByRole('button', { name: '完成' })
+    .click()
+
+  const passwordVerificationContext = await browser.newContext({
+    baseURL: new URL(page.url()).origin,
+    ignoreHTTPSErrors: true,
+  })
+  try {
+    const rejectedLogin = await passwordVerificationContext.request.post('/api/control/session', {
+      data: { email: administratorEmail, password: initialAdministratorPassword },
+    })
+    expect(rejectedLogin.status()).toBe(401)
+    const acceptedLogin = await passwordVerificationContext.request.post('/api/control/session', {
+      data: { email: administratorEmail, password: administratorPassword },
+    })
+    expect(acceptedLogin.status()).toBe(200)
+  } finally {
+    await passwordVerificationContext.close()
+  }
 
   const invitationResponse = await page.request.post('/api/control/invitations', {
     data: { expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() },
@@ -65,12 +102,10 @@ test('preserves administrator and member boundaries through the production TLS t
   )
   await registrationPage.getByRole('button', { name: '提交注册' }).click()
   expect((await registrationResponsePromise).status()).toBe(202)
-  await expect(registrationPage.getByRole('heading', { name: '等待审核' })).toBeVisible()
   await registrationContext.close()
 
   await page.goto('/access/users')
   const memberRow = page.getByRole('row').filter({ hasText: memberEmail })
-  await expect(memberRow).toContainText('待审核')
   const approvalResponsePromise = page.waitForResponse(
     (response) =>
       response.url().includes('/api/control/users/') &&
@@ -79,21 +114,19 @@ test('preserves administrator and member boundaries through the production TLS t
   )
   await memberRow.getByRole('button', { name: '批准' }).click()
   expect((await approvalResponsePromise).status()).toBe(200)
-  await expect(memberRow).toContainText('可用')
 
   await page
     .getByRole('complementary', { name: '主导航' })
     .getByRole('button', { name: '退出登录' })
     .click()
   await login(page, memberEmail, memberPassword)
-  await expect(page.getByRole('heading', { name: '我的网关 Key' })).toBeVisible()
+  await expect(page).toHaveURL(/\/overview$/)
   const managementRequests: string[] = []
   page.on('request', (request) => {
     const path = new URL(request.url()).pathname
     if (request.method() === 'GET' && path === '/api/control/users') managementRequests.push(path)
   })
   await page.goto('/access/users')
-  await expect(page.getByRole('heading', { name: '当前会话无权执行此任务' })).toBeVisible()
   expect(managementRequests).toEqual([])
   const forbidden = await page.request.get('/api/control/users')
   expect(forbidden.status()).toBe(403)
@@ -103,15 +136,12 @@ test('preserves administrator and member boundaries through the production TLS t
 async function verifyRestoredIdentities(page: Page): Promise<void> {
   await page.goto('/login')
   await login(page, administratorEmail, administratorPassword)
-  await expect(page.getByRole('complementary', { name: '主导航' })).toContainText(
-    'Deployment Administrator',
-  )
   await page
     .getByRole('complementary', { name: '主导航' })
     .getByRole('button', { name: '退出登录' })
     .click()
   await login(page, memberEmail, memberPassword)
-  await expect(page.getByRole('heading', { name: '我的网关 Key' })).toBeVisible()
+  await expect(page).toHaveURL(/\/overview$/)
   const forbidden = await page.request.get('/api/control/users')
   expect(forbidden.status()).toBe(403)
 }

@@ -1,17 +1,29 @@
 [Unit]
-Description=LLMGateway encrypted offsite backup
+Description=LLMGateway encrypted remote S3 backup
 Requires=docker.service
-After=docker.service llmgateway-compose.service
+Wants=network-online.target
+After=docker.service network-online.target llmgateway-compose.service
+RequiresMountsFor=/opt/llmgateway /etc/llmgateway /etc/llmgateway-backup /var/lib/llmgateway-backup
 
 [Service]
 Type=oneshot
-ExecStart=/opt/llmgateway/deploy/backup-linux.sh @@BACKUP_ENVIRONMENT@@
+ExecStart=/opt/llmgateway/backup-bundle-launcher-linux.sh scheduled-backup /etc/llmgateway-backup/backup.env
+TimeoutStartSec=85m
 User=root
 Group=root
 UMask=0077
+RuntimeDirectory=llmgateway-restic
+RuntimeDirectoryMode=0700
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
 ReadOnlyPaths=/etc/llmgateway /etc/llmgateway-backup /opt/llmgateway
-ReadWritePaths=/var/lib/llmgateway-backup
+ReadWritePaths=/var/lib/llmgateway-backup /run/lock /run/llmgateway-restic
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native

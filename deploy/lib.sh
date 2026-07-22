@@ -3,7 +3,9 @@ set -euo pipefail
 
 load_llmgateway_environment() {
   local file=$1 line key value
+  local -A seen_keys=()
   [[ -f "$file" ]] || { echo "environment file does not exist: $file" >&2; return 1; }
+  [[ ! -L "$file" ]] || { echo "environment file must not be a symbolic link: $file" >&2; return 1; }
   while IFS= read -r line || [[ -n "$line" ]]; do
     line=${line%$'\r'}
     [[ -z "$line" || "$line" == \#* ]] && continue
@@ -11,13 +13,64 @@ load_llmgateway_environment() {
     key=${line%%=*}
     value=${line#*=}
     [[ "$key" =~ ^LLMGATEWAY_[A-Z0-9_]+$ ]] || { echo "invalid environment key" >&2; return 1; }
+    [[ -z ${seen_keys[$key]+x} ]] || { echo "duplicate environment key: $key" >&2; return 1; }
+    seen_keys[$key]=true
     export "$key=$value"
   done < "$file"
+}
+
+acquire_llmgateway_maintenance_lock() {
+  local operation=$1 lock_file=/run/lock/llmgateway-maintenance.lock
+  local path_identity descriptor_identity
+  [[ $(id -u) -eq 0 ]] || { echo "maintenance operations require root" >&2; return 1; }
+  [[ $operation =~ ^[a-z][a-z0-9-]{1,31}$ ]] || { echo "maintenance operation name is invalid" >&2; return 1; }
+  [[ ${LLMGATEWAY_MAINTENANCE_LOCK_HELD:-false} != true ]] || {
+    echo "this process already holds the LLMGateway maintenance lock" >&2
+    return 1
+  }
+  [[ -d /run/lock && ! -L /run/lock ]] || { echo "/run/lock is unavailable or unsafe" >&2; return 1; }
+
+  if [[ ! -e $lock_file && ! -L $lock_file ]]; then
+    (umask 0077; set -o noclobber; : > "$lock_file") 2>/dev/null || true
+  fi
+  [[ -f $lock_file && ! -L $lock_file ]] || { echo "maintenance lock file is unsafe" >&2; return 1; }
+  [[ $(stat -c %u "$lock_file") -eq 0 && $(stat -c %a "$lock_file") == 600 ]] || {
+    echo "maintenance lock file must be root-owned with mode 0600" >&2
+    return 1
+  }
+
+  exec {LLMGATEWAY_MAINTENANCE_LOCK_FD}<>"$lock_file"
+  path_identity=$(stat -Lc '%d:%i' "$lock_file")
+  descriptor_identity=$(stat -Lc '%d:%i' "/proc/$$/fd/$LLMGATEWAY_MAINTENANCE_LOCK_FD")
+  if [[ $path_identity != "$descriptor_identity" ]]; then
+    exec {LLMGATEWAY_MAINTENANCE_LOCK_FD}>&-
+    echo "maintenance lock file changed while it was opened" >&2
+    return 1
+  fi
+  if ! flock -n "$LLMGATEWAY_MAINTENANCE_LOCK_FD"; then
+    exec {LLMGATEWAY_MAINTENANCE_LOCK_FD}>&-
+    echo "another LLMGateway maintenance operation is running" >&2
+    return 1
+  fi
+  LLMGATEWAY_MAINTENANCE_LOCK_HELD=true
+  LLMGATEWAY_MAINTENANCE_OPERATION=$operation
+}
+
+release_llmgateway_maintenance_lock() {
+  [[ ${LLMGATEWAY_MAINTENANCE_LOCK_HELD:-false} == true ]] || return 0
+  [[ ${LLMGATEWAY_MAINTENANCE_LOCK_FD:-} =~ ^[0-9]+$ ]] || {
+    echo "maintenance lock descriptor is invalid" >&2
+    return 1
+  }
+  flock -u "$LLMGATEWAY_MAINTENANCE_LOCK_FD"
+  exec {LLMGATEWAY_MAINTENANCE_LOCK_FD}>&-
+  unset LLMGATEWAY_MAINTENANCE_LOCK_HELD LLMGATEWAY_MAINTENANCE_OPERATION
 }
 
 require_file_secrets() {
   local name path
   for name in \
+    LLMGATEWAY_POSTGRES_PASSWORD \
     LLMGATEWAY_DATABASE_URL \
     LLMGATEWAY_VALKEY_PASSWORD \
     LLMGATEWAY_MASTER_KEYS \

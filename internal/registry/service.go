@@ -18,6 +18,8 @@ import (
 
 var slugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$`)
 
+const credentialProbePersistenceTimeout = 3 * time.Second
+
 type Service struct {
 	repository Repository
 	envelope   *security.EnvelopeCipher
@@ -223,11 +225,11 @@ func (s *Service) SetCredentialEnabled(ctx context.Context, actor identity.Princ
 	return s.repository.SetCredentialStatus(ctx, credentialID, status, expectedUpdatedAt, actor.UserID, mutation)
 }
 
-func (s *Service) ProbeCredential(ctx context.Context, actor identity.Principal, credentialID uuid.UUID, requestID string) (CredentialProbeExecution, Credential, error) {
+func (s *Service) ProbeCredential(ctx context.Context, actor identity.Principal, credentialID, modelID uuid.UUID, requestID string) (CredentialProbeExecution, Credential, error) {
 	if !actor.CanOperateProviders() {
 		return CredentialProbeExecution{}, Credential{}, ErrForbidden
 	}
-	if credentialID == uuid.Nil || requestID == "" || len(requestID) > 128 {
+	if credentialID == uuid.Nil || modelID == uuid.Nil || requestID == "" || len(requestID) > 128 {
 		return CredentialProbeExecution{}, Credential{}, ErrInvalidInput
 	}
 	credential, err := s.repository.GetCredential(ctx, credentialID)
@@ -238,7 +240,11 @@ func (s *Service) ProbeCredential(ctx context.Context, actor identity.Principal,
 	if err != nil {
 		return CredentialProbeExecution{}, Credential{}, err
 	}
-	execution := CredentialProbeExecution{Kind: "models", Status: "unavailable", MayUseTokens: false}
+	model, err := s.credentialProbeModel(ctx, credential, modelID)
+	if err != nil {
+		return CredentialProbeExecution{}, Credential{}, err
+	}
+	execution := CredentialProbeExecution{Kind: "generation", Status: "unavailable", MayUseTokens: true, ModelID: model.ID, ModelName: model.PublicName}
 	unavailable := "probe_runtime_unavailable"
 	execution.ErrorKind = &unavailable
 	if s.prober != nil {
@@ -246,11 +252,38 @@ func (s *Service) ProbeCredential(ctx context.Context, actor identity.Principal,
 		if err != nil {
 			return CredentialProbeExecution{}, Credential{}, err
 		}
-		execution = s.prober.Execute(ctx, CredentialProbeTarget{Provider: provider, CredentialID: credentialID, Secret: secret})
+		execution = s.prober.Execute(ctx, CredentialProbeTarget{
+			Provider: provider, Model: model, CredentialID: credentialID, Secret: secret, RequestID: requestID,
+		})
 	}
 	checkedAt := time.Now().UTC()
-	credential, err = s.repository.RecordCredentialProbe(ctx, credentialID, checkedAt, execution, actor.UserID, requestID)
+	persistenceContext, cancelPersistence := context.WithTimeout(context.WithoutCancel(ctx), credentialProbePersistenceTimeout)
+	defer cancelPersistence()
+	credential, err = s.repository.RecordCredentialProbe(persistenceContext, credentialID, checkedAt, execution, actor.UserID, requestID)
 	return execution, credential, err
+}
+
+func (s *Service) credentialProbeModel(ctx context.Context, credential Credential, modelID uuid.UUID) (Model, error) {
+	bound := false
+	for _, binding := range credential.ModelBindings {
+		if binding.ModelID == modelID {
+			bound = true
+			break
+		}
+	}
+	if !bound {
+		return Model{}, ErrInvalidInput
+	}
+	models, err := s.repository.ListModels(ctx)
+	if err != nil {
+		return Model{}, err
+	}
+	for _, model := range models {
+		if model.ID == modelID && model.ProviderID == credential.ProviderID {
+			return model, nil
+		}
+	}
+	return Model{}, ErrInvalidInput
 }
 
 func (s *Service) ListCredentials(ctx context.Context, actor identity.Principal) ([]Credential, error) {

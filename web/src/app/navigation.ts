@@ -1,8 +1,9 @@
 import {
   BookOpenCheck,
   Boxes,
-  FlaskConical,
   KeyRound,
+  LayoutDashboard,
+  Settings,
   UsersRound,
   type LucideIcon,
 } from 'lucide-react'
@@ -19,52 +20,59 @@ export interface NavigationItem {
 
 const managementNavigation: NavigationItem[] = [
   {
-    label: 'Provider 与模型',
+    label: '总览',
+    to: '/overview',
+    capability: 'access:read',
+    icon: LayoutDashboard,
+    activePrefix: '/overview',
+  },
+  {
+    label: 'Provider 接入',
     to: '/providers/providers',
     capability: 'providers:read',
     icon: Boxes,
     activePrefix: '/providers',
   },
   {
-    label: '上游凭据池',
+    label: 'Provider API Key',
     to: '/credentials',
     capability: 'credentials:read',
     icon: KeyRound,
     activePrefix: '/credentials',
   },
   {
-    label: '用户与网关 Key',
+    label: '成员与 API Key',
     to: '/access/users',
     capability: 'access:read',
     icon: UsersRound,
     activePrefix: '/access',
   },
   {
-    label: '用量与账本',
+    label: '用量与额度',
     to: '/ledger/entitlements',
     capability: 'ledger:read',
     icon: BookOpenCheck,
     activePrefix: '/ledger',
   },
   {
-    label: 'Playground',
-    to: '/playground',
-    capability: 'playground:use',
-    icon: FlaskConical,
-    activePrefix: '/playground',
+    label: '设置',
+    to: '/settings',
+    capability: 'access:read',
+    icon: Settings,
+    activePrefix: '/settings',
   },
 ]
 
 const memberNavigation: NavigationItem[] = [
   {
-    label: 'Playground',
-    to: '/playground',
-    capability: 'playground:use',
-    icon: FlaskConical,
-    activePrefix: '/playground',
+    label: '总览',
+    to: '/overview',
+    capability: 'access:read',
+    icon: LayoutDashboard,
+    activePrefix: '/overview',
   },
   {
-    label: '我的网关 Key',
+    label: '我的 API Key',
     to: '/access/keys',
     capability: 'access:read',
     icon: KeyRound,
@@ -77,6 +85,13 @@ const memberNavigation: NavigationItem[] = [
     icon: BookOpenCheck,
     activePrefix: '/ledger/usage',
   },
+  {
+    label: '设置',
+    to: '/settings',
+    capability: 'access:read',
+    icon: Settings,
+    activePrefix: '/settings',
+  },
 ]
 
 export function navigationFor(session: Session): NavigationItem[] {
@@ -86,8 +101,8 @@ export function navigationFor(session: Session): NavigationItem[] {
 
 export function defaultRouteFor(
   session: Session,
-): '/providers/providers' | '/access/keys' | '/forbidden' {
+): '/overview' | '/providers/providers' | '/forbidden' {
+  if (session.capabilities.includes('access:read')) return '/overview'
   if (session.capabilities.includes('providers:read')) return '/providers/providers'
-  if (session.capabilities.includes('access:read')) return '/access/keys'
   return '/forbidden'
 }

@@ -58,11 +58,11 @@ $gatewayProcesses = @()
 $environmentSnapshot = Save-LLMGatewayEnvironment
 $testFailure = $null
 $cleanupFailures = @()
-$isWindows = $env:OS -eq "Windows_NT"
-$gatewayName = if ($isWindows) { "gateway.exe" } else { "gateway" }
-$providerName = if ($isWindows) { "fixture-provider.exe" } else { "fixture-provider" }
-$capacityName = if ($isWindows) { "capacity.exe" } else { "capacity" }
-$recoveryName = if ($isWindows) { "recovery.exe" } else { "recovery" }
+$runningOnWindows = $env:OS -eq "Windows_NT"
+$gatewayName = if ($runningOnWindows) { "gateway.exe" } else { "gateway" }
+$providerName = if ($runningOnWindows) { "fixture-provider.exe" } else { "fixture-provider" }
+$capacityName = if ($runningOnWindows) { "capacity.exe" } else { "capacity" }
+$recoveryName = if ($runningOnWindows) { "recovery.exe" } else { "recovery" }
 $buildDirectory = Join-Path (Get-Location) ".build\capacity-$runID"
 $evidenceDirectory = Join-Path (Get-Location) ".build\acceptance-evidence"
 $gatewayPath = Join-Path $buildDirectory $gatewayName
@@ -144,9 +144,11 @@ try {
 
   $adminSession = New-Object Microsoft.PowerShell.Commands.WebRequestSession
   $setup = Invoke-CapacityControl -Method Post -Uri "$($gatewayURLs[0])/api/control/setup" -Session $adminSession -Body @{
-    email = "capacity-owner@example.test"; displayName = "Capacity Owner"; password = "correct horse battery staple"
+    email = "capacity-owner@example.test"
   }
+  if (-not $setup.data.initialPassword) { throw "Capacity setup did not return one-time administrator credentials." }
   $csrf = $setup.data.csrfToken
+  $setup.data.initialPassword = $null
   $provider = Invoke-CapacityControl -Method Post -Uri "$($gatewayURLs[0])/api/control/providers" -Session $adminSession -CSRF $csrf `
     -IdempotencyKey ([guid]::NewGuid().ToString()) -Body @{ slug = "capacity-openai"; name = "Capacity fixture"; kind = "openai-compatible"; baseUrl = $providerBaseURL }
   $model = Invoke-CapacityControl -Method Post -Uri "$($gatewayURLs[0])/api/control/models" -Session $adminSession -CSRF $csrf -Body @{

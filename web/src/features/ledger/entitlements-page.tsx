@@ -78,12 +78,11 @@ export function EntitlementsPage() {
   return (
     <Page>
       <PageHeader
-        title="用量与账本"
-        description="权威 usage、估算与额度事件"
+        title="用量与额度"
         actions={
           hasCapability(session, 'ledger:write') ? (
             <Button icon={<Plus size={16} />} onClick={() => setCreating(true)}>
-              分配套餐
+              分配额度
             </Button>
           ) : null
         }
@@ -103,7 +102,7 @@ export function EntitlementsPage() {
           ]}
         />
         <DataTable
-          ariaLabel="额度与套餐列表"
+          ariaLabel="成员额度列表"
           data={query.data?.items ?? []}
           columns={columns}
           getRowId={(entitlement) => entitlement.id}
@@ -111,7 +110,7 @@ export function EntitlementsPage() {
           fetching={query.isFetching}
           error={query.error}
           onRetry={() => void query.refetch()}
-          emptyLabel="没有符合条件的额度或套餐"
+          emptyLabel="还没有成员额度"
           page={query.data?.page ?? state.page}
           pageSize={query.data?.pageSize ?? state.pageSize}
           total={query.data?.total ?? 0}

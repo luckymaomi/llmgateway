@@ -154,7 +154,7 @@ export function EntitlementForm({
       onOpenChange={(nextOpen) => {
         if (!nextOpen) requestClose()
       }}
-      title="分配额度或套餐"
+      title="分配成员额度"
       width="lg"
       dismissible={!controlsLocked}
       footer={

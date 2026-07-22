@@ -205,6 +205,16 @@ func (r *RegistryRepository) ListCredentials(ctx context.Context) ([]registry.Cr
 	}
 	result := make([]registry.Credential, 0, len(items))
 	for _, item := range items {
+		var lastCheckedAt *time.Time
+		if item.LastCheckedUnixSeconds >= 0 {
+			value := time.Unix(item.LastCheckedUnixSeconds, 0).UTC()
+			lastCheckedAt = &value
+		}
+		var recentSuccessRate *float64
+		if item.TerminalCount > 0 {
+			value := float64(item.CompletedCount) / float64(item.TerminalCount)
+			recentSuccessRate = &value
+		}
 		credential := registry.Credential{
 			ID: item.ID, ProviderID: item.ProviderID, Name: item.Name, ResourceDomain: registry.ResourceDomain(item.ResourceDomain),
 			Status: registry.CredentialStatus(item.Status), RPMLimit: item.RpmLimit, TPMLimit: item.TpmLimit,
@@ -212,12 +222,21 @@ func (r *RegistryRepository) ListCredentials(ctx context.Context) ([]registry.Cr
 			ConsecutiveFailures: item.ConsecutiveFailures, LastSuccessAt: timePointer(item.LastSuccessAt), LastErrorKind: item.LastErrorKind,
 			LastProbeAt: timePointer(item.LastProbeAt), LastProbeLatencyMs: item.LastProbeLatencyMs, LastProbeKind: item.LastProbeKind,
 			LastProbeStatus: item.LastProbeStatus, LastProbeErrorKind: item.LastProbeErrorKind,
+			LastCheckedAt: lastCheckedAt, RecentSuccessRate: recentSuccessRate,
+			FirstByteP95Ms: optionalNonNegativeInt64(item.FirstByteP95Ms), TotalLatencyP95Ms: optionalNonNegativeInt64(item.TotalLatencyP95Ms),
 			CreatedAt: item.CreatedAt.Time, UpdatedAt: item.UpdatedAt.Time,
 		}
 		credential.ModelBindings = modelBindings[item.ID]
 		result = append(result, credential)
 	}
 	return result, nil
+}
+
+func optionalNonNegativeInt64(value int64) *int64 {
+	if value < 0 {
+		return nil
+	}
+	return &value
 }
 
 func (r *RegistryRepository) GetCredential(ctx context.Context, id uuid.UUID) (registry.Credential, error) {
@@ -260,6 +279,8 @@ func (r *RegistryRepository) RecordCredentialProbe(ctx context.Context, id uuid.
 	params := auditParams(&actorID, "credential.probed", "credential", id.String(), map[string]any{
 		"kind": execution.Kind, "status": execution.Status, "latency_ms": execution.LatencyMillis,
 		"error_kind": execution.ErrorKind, "may_use_tokens": execution.MayUseTokens,
+		"model_id": execution.ModelID, "model_name": execution.ModelName,
+		"input_tokens": execution.InputTokens, "output_tokens": execution.OutputTokens,
 	})
 	params.RequestID = &requestID
 	if _, err := queries.CreateAuditEvent(ctx, params); err != nil {

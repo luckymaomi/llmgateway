@@ -24,20 +24,6 @@ type usageView struct {
 	RequestID      string               `json:"requestId"`
 }
 
-func (a *QuotaAPI) collectUsage(ctx context.Context, principal identity.Principal) ([]quota.UsageRecord, error) {
-	var result []quota.UsageRecord
-	for offset := int32(0); ; offset += 200 {
-		items, err := a.service.ListUsage(ctx, principal, nil, quota.Page{Offset: offset, Size: 200})
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, items...)
-		if len(items) < 200 {
-			return result, nil
-		}
-	}
-}
-
 func (a *QuotaAPI) presentUsage(ctx context.Context, principal identity.Principal, items []quota.UsageRecord) ([]usageView, error) {
 	if len(items) == 0 {
 		return []usageView{}, nil

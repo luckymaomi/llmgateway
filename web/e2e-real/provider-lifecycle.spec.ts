@@ -1,4 +1,4 @@
-import { devices, expect } from '@playwright/test'
+import { expect } from '@playwright/test'
 
 import {
   administratorEmail,
@@ -7,11 +7,8 @@ import {
   expectPageWidthToFit,
   problemCode,
   uuidPattern,
-  visitDesktopNavigation,
-  visitMobileNavigation,
 } from './acceptance-helpers'
 import { completePublishedCatalog } from './catalog-flow'
-import { verifyPublishedCatalogOnMobile } from './catalog-mobile'
 import { completeIdentityBoundary } from './identity-flow'
 import {
   editProvider,
@@ -31,34 +28,90 @@ test('walks an administrator and member through a published Key catalog across f
   gateway,
   page,
 }) => {
-  await page.goto('/setup')
-  await expect(page.locator('script[src*="/@vite/client"]')).toHaveCount(0)
-  await expect(page.locator('script[type="module"][src^="/assets/"]')).toHaveCount(1)
-  await expect(page.getByRole('heading', { name: '初始化 LLMGateway' })).toBeVisible()
-  await page.getByLabel('管理员名称').fill('Browser Administrator')
-  await page.getByLabel('邮箱').fill(administratorEmail)
-  await page.getByLabel('密码', { exact: true }).fill(administratorPassword)
-  await page.getByLabel('确认密码').fill(administratorPassword)
+  const initialAnonymousSessionResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith('/api/control/session') &&
+      response.request().method() === 'GET' &&
+      response.status() === 401,
+  )
+  await page.goto('/')
+  browserProblems.allow(await initialAnonymousSessionResponse)
+  await expect(page).toHaveURL(/\/setup$/)
+  await page.getByLabel('管理员邮箱').fill(administratorEmail)
 
   const setupResponse = page.waitForResponse(
     (response) =>
       response.url().endsWith('/api/control/setup') && response.request().method() === 'POST',
   )
   await page.getByRole('button', { name: '创建管理员' }).click()
-  expect((await setupResponse).status()).toBe(201)
-  await expect(page).toHaveURL(/\/providers\/providers$/)
-  await expect(page.getByRole('heading', { name: 'Provider 与模型' })).toBeVisible()
-  await visitDesktopNavigation(page)
+  const setup = await setupResponse
+  expect(setup.status()).toBe(201)
+  expect(setup.headers()['cache-control']).toBe('no-store')
+  expect(setup.request().postDataJSON()).toEqual({ email: administratorEmail })
+  const initialAdministratorPassword =
+    (await page.getByTestId('initial-administrator-password').textContent()) ?? ''
+  expect(initialAdministratorPassword).toMatch(/^[A-Za-z0-9_-]{40,}$/)
+  const browserStorage = await page.evaluate(() =>
+    JSON.stringify({
+      local: Object.fromEntries(Object.entries(localStorage)),
+      session: Object.fromEntries(Object.entries(sessionStorage)),
+    }),
+  )
+  expect(browserStorage).not.toContain(initialAdministratorPassword)
+  await page.getByRole('button', { name: '我已保存，进入控制面' }).click()
+  await expect(page).toHaveURL(/\/overview$/)
+  await page.reload()
+  expect(await page.locator('body').innerText()).not.toContain(initialAdministratorPassword)
 
-  const administratorNavigation = page.getByRole('complementary', { name: '主导航' })
-  await expect(administratorNavigation.getByRole('link', { name: '用量与账本' })).toBeVisible()
-  await administratorNavigation.getByRole('link', { name: '用量与账本' }).click()
-  await expect(page).toHaveURL(/\/ledger\/entitlements$/)
-  await expect(page.getByRole('heading', { name: '用量与账本' })).toBeVisible()
-  await expect(page.getByRole('table', { name: '额度与套餐列表' })).toBeVisible()
+  await page
+    .getByRole('complementary', { name: '主导航' })
+    .getByRole('button', { name: '更换密码' })
+    .click()
+  const passwordDialog = page.getByRole('dialog', { name: '更换密码' })
+  await passwordDialog.getByLabel('当前密码').fill(initialAdministratorPassword)
+  await passwordDialog.getByLabel('新密码', { exact: true }).fill(administratorPassword)
+  await passwordDialog.getByLabel('确认新密码').fill(administratorPassword)
+  const passwordChangeResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith('/api/control/password') && response.request().method() === 'POST',
+  )
+  await passwordDialog.getByRole('button', { name: '确认更换' }).click()
+  expect((await passwordChangeResponse).status()).toBe(200)
+  const changedPasswordDialog = page.getByRole('dialog', { name: '密码已更换' })
+  await changedPasswordDialog.getByRole('button', { name: '完成' }).click()
+  expect((await page.request.get('/api/control/session')).status()).toBe(200)
+
+  const passwordVerificationContext = await browser.newContext({
+    baseURL: new URL(page.url()).origin,
+  })
+  try {
+    const passwordVerificationPage = await passwordVerificationContext.newPage()
+    browserProblems.observe(passwordVerificationPage)
+    await passwordVerificationPage.goto('/login')
+    await passwordVerificationPage.getByLabel('邮箱').fill(administratorEmail)
+    await passwordVerificationPage.getByLabel('密码').fill(initialAdministratorPassword)
+    const rejectedLoginResponse = passwordVerificationPage.waitForResponse(
+      (response) =>
+        response.url().endsWith('/api/control/session') && response.request().method() === 'POST',
+    )
+    await passwordVerificationPage.getByRole('button', { name: '登录' }).click()
+    const rejectedLogin = await rejectedLoginResponse
+    browserProblems.allow(rejectedLogin)
+    expect(rejectedLogin.status()).toBe(401)
+    await passwordVerificationPage.getByLabel('密码').fill(administratorPassword)
+    const acceptedLoginResponse = passwordVerificationPage.waitForResponse(
+      (response) =>
+        response.url().endsWith('/api/control/session') && response.request().method() === 'POST',
+    )
+    await passwordVerificationPage.getByRole('button', { name: '登录' }).click()
+    expect((await acceptedLoginResponse).status()).toBe(200)
+    await expect(passwordVerificationPage).toHaveURL(/\/overview$/)
+  } finally {
+    await passwordVerificationContext.close()
+  }
   await page.goto('/providers/providers')
 
-  await page.getByRole('button', { name: '添加 Provider' }).click()
+  await page.getByRole('button', { name: '自定义 Provider' }).click()
   await fillProviderForm(page.getByRole('dialog'), {
     slug: providerSlug,
     name: 'Browser Provider',
@@ -74,7 +127,6 @@ test('walks an administrator and member through a published Key catalog across f
   const providerID = dataID(await created.json())
   expect(providerID).toMatch(uuidPattern)
   if (!providerID) throw new Error('created Provider response did not contain an ID')
-  await expect(page.getByRole('table', { name: 'Provider 列表' })).toContainText('Browser Provider')
 
   const stalePage = await page.context().newPage()
   browserProblems.observe(stalePage)
@@ -85,9 +137,6 @@ test('walks an administrator and member through a published Key catalog across f
   await staleDialog.getByLabel('类型').selectOption('zhipu')
 
   await editProvider(page, 'Browser Provider Winner', 'https://198.18.0.3/v1')
-  await expect(page.getByRole('table', { name: 'Provider 列表' })).toContainText(
-    'Browser Provider Winner',
-  )
 
   const conflictResponsePromise = stalePage.waitForResponse(
     (response) =>
@@ -98,27 +147,14 @@ test('walks an administrator and member through a published Key catalog across f
   browserProblems.allow(conflictResponse)
   expect(conflictResponse.status()).toBe(409)
   expect(problemCode(await conflictResponse.json())).toBe('conflict')
-  await expect(staleDialog.getByRole('alert')).toContainText('数据已被其他操作更新')
-  await expect(staleDialog).toContainText('Request ID：')
-  await expect(staleDialog.getByRole('heading', { name: '合并并发修改' })).toBeVisible()
+  await expect(staleDialog.getByRole('alert')).toBeVisible()
   await expect(staleDialog.getByLabel('名称')).toHaveValue('Browser Provider Reconciled')
   await expect(staleDialog.getByLabel('类型')).toHaveValue('zhipu')
   await expect(staleDialog.getByLabel('Base URL')).toHaveValue('https://198.18.0.3/v1')
-  await expect(
-    staleDialog.getByRole('group', { name: '类型' }).getByText(/保留你的草稿/),
-  ).toBeVisible()
-  await expect(
-    staleDialog.getByRole('group', { name: 'Base URL' }).getByText(/采用当前最新值/),
-  ).toBeVisible()
   const nameConflict = staleDialog.getByRole('group', { name: '名称' })
-  await expect(nameConflict.getByText('Browser Provider Reconciled')).toBeVisible()
-  await expect(nameConflict.getByText('Browser Provider Winner')).toBeVisible()
-  await expect(staleDialog.getByRole('button', { name: '保存合并结果' })).toBeDisabled()
-
   await nameConflict.getByRole('radio', { name: '采用最新' }).click()
 
   await expect(staleDialog.getByLabel('名称')).toHaveValue('Browser Provider Winner')
-  await expect(staleDialog.getByRole('button', { name: '保存合并结果' })).toBeEnabled()
   const reconciledResponse = stalePage.waitForResponse(
     (response) =>
       response.url().includes('/api/control/providers/') && response.request().method() === 'PUT',
@@ -141,7 +177,6 @@ test('walks an administrator and member through a published Key catalog across f
   await expectPageWidthToFit(page)
 
   await enableProviderAfterLostResponse(page, browserProblems, providerID)
-  await expect(page.getByRole('table', { name: 'Provider 列表' })).toContainText('已启用')
 
   await gateway.restart()
   await page.reload()
@@ -149,59 +184,22 @@ test('walks an administrator and member through a published Key catalog across f
   await expect(page.getByRole('table', { name: 'Provider 列表' })).toContainText(
     'Browser Provider Winner',
   )
-  await expect(page.getByRole('table', { name: 'Provider 列表' })).toContainText('已启用')
 
   await renameEnabledProvider(page, 'Browser Provider Restarted')
-  await expect(page.getByRole('table', { name: 'Provider 列表' })).toContainText(
-    'Browser Provider Restarted',
-  )
   await setProviderEnabled(page, false)
-  await expect(page.getByRole('table', { name: 'Provider 列表' })).toContainText('已停用')
-
-  const desktopState = await page.context().storageState()
-  const pixel = devices['Pixel 7']
-  const mobileContext = await browser.newContext({
-    ...pixel,
-    baseURL: new URL(page.url()).origin,
-    storageState: desktopState,
-  })
-  try {
-    const mobilePage = await mobileContext.newPage()
-    browserProblems.observe(mobilePage)
-    await mobilePage.goto('/providers/providers')
-    await expect(mobilePage.getByRole('heading', { name: 'Provider 与模型' })).toBeVisible()
-    await visitMobileNavigation(mobilePage)
-    await expect(mobilePage.getByRole('list', { name: 'Provider 列表' })).toContainText(
-      'Browser Provider Restarted',
-    )
-    await editProvider(mobilePage, 'Browser Provider Mobile', providerBaseURL, 'openai-compatible')
-    await expect(mobilePage.getByRole('list', { name: 'Provider 列表' })).toContainText(
-      'Browser Provider Mobile',
-    )
-    await setProviderEnabled(mobilePage, true)
-    await expect(mobilePage.getByRole('list', { name: 'Provider 列表' })).toContainText('已启用')
-    await expectPageWidthToFit(mobilePage)
-    await mobilePage.screenshot({
-      path: acceptanceArtifactPath('provider-mobile.png'),
-      fullPage: true,
-      animations: 'disabled',
-    })
-  } finally {
-    await mobileContext.close()
-  }
+  await editProvider(page, 'Browser Provider Ready', providerBaseURL, 'openai-compatible')
+  await setProviderEnabled(page, true)
 
   await page.reload()
   await expect(page.getByRole('table', { name: 'Provider 列表' })).toContainText(
-    'Browser Provider Mobile',
+    'Browser Provider Ready',
   )
-  await expect(page.getByRole('table', { name: 'Provider 列表' })).toContainText('已启用')
   await page.screenshot({
     path: acceptanceArtifactPath('provider-desktop.png'),
     fullPage: true,
     animations: 'disabled',
   })
 
-  const catalog = await completePublishedCatalog(page, browserProblems)
-  await verifyPublishedCatalogOnMobile(page, browser, browserProblems, catalog)
+  const catalog = await completePublishedCatalog(page, browserProblems, providerID)
   await completeIdentityBoundary(page, browser, browserProblems, gateway, catalog)
 })

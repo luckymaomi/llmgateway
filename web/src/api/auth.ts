@@ -8,9 +8,11 @@ export interface SetupStatus {
 }
 
 export interface BootstrapInput {
-  displayName: string
   email: string
-  password: string
+}
+
+export interface BootstrapResult extends Session {
+  initialPassword: string
 }
 
 export interface LoginInput {
@@ -31,7 +33,7 @@ export interface RegistrationResult {
   status: 'pending_review' | 'active'
 }
 
-function adoptSession(session: Session): Session {
+function adoptSession<T extends Session>(session: T): T {
   apiClient.setCsrfToken(session.csrfToken)
   return session
 }
@@ -40,7 +42,7 @@ export const authApi = {
   setupStatus: () => apiClient.request<SetupStatus>(`${base}/setup/status`),
   bootstrap: (input: BootstrapInput) =>
     apiClient
-      .request<Session, BootstrapInput>(`${base}/setup`, { method: 'POST', body: input })
+      .request<BootstrapResult, BootstrapInput>(`${base}/setup`, { method: 'POST', body: input })
       .then(adoptSession),
   login: (input: LoginInput) =>
     apiClient
@@ -48,6 +50,11 @@ export const authApi = {
       .then(adoptSession),
   logout: () => apiClient.request<void>(`${base}/session`, { method: 'DELETE' }),
   session: () => apiClient.request<Session>(`${base}/session`).then(adoptSession),
+  changePassword: (currentPassword: string, replacementPassword: string) =>
+    apiClient.request<
+      { revokedSessions: number },
+      { currentPassword: string; replacementPassword: string }
+    >(`${base}/password`, { method: 'POST', body: { currentPassword, replacementPassword } }),
   register: (input: RegistrationInput) =>
     apiClient.request<RegistrationResult, RegistrationInput>(`${base}/registrations`, {
       method: 'POST',

@@ -1,5 +1,5 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { KeyRound, Plus, RotateCw, XCircle } from 'lucide-react'
+import { CirclePlay, KeyRound, Plus, RotateCw, XCircle } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
 import { accessApi, type GatewayKey } from '@/api'
@@ -15,16 +15,19 @@ import { useListSearch } from '@/hooks/use-list-search'
 import { formatDateTime } from '@/lib/format'
 
 import { AccessTabs } from './access-tabs'
+import { GatewayKeyTestDialog } from './gateway-key-test-dialog'
 import { KeyForm } from './key-form'
 import { KeyReplacementDialog } from './key-replacement-dialog'
 
 export function KeysPage() {
   const session = useSession()
   const canRevoke = session.role === 'member' || hasCapability(session, 'access:write')
+  const canTest = hasCapability(session, 'gateway-key:test')
   const { state, setPage, setSearch, setStatus } = useListSearch()
   const [creating, setCreating] = useState(false)
   const [replacementKey, setReplacementKey] = useState<GatewayKey | null>(null)
   const [revokeKey, setRevokeKey] = useState<GatewayKey | null>(null)
+  const [testKey, setTestKey] = useState<GatewayKey | null>(null)
   const queryClient = useQueryClient()
   const query = useQuery({
     queryKey: ['gateway-keys', state],
@@ -80,41 +83,51 @@ export function KeysPage() {
         id: 'actions',
         header: '操作',
         cell: ({ row }) =>
-          canRevoke && row.original.status === 'active' ? (
+          row.original.status === 'active' && (canRevoke || canTest) ? (
             <div className="row-actions">
-              <Button
-                size="sm"
-                variant="quiet"
-                icon={<RotateCw size={15} />}
-                disabled={revoke.isPending}
-                onClick={() => setReplacementKey(row.original)}
-              >
-                更换
-              </Button>
-              <Button
-                size="sm"
-                variant="quiet"
-                icon={<XCircle size={15} />}
-                disabled={revoke.isPending}
-                onClick={() => setRevokeKey(row.original)}
-              >
-                撤销
-              </Button>
+              {canTest ? (
+                <Button
+                  size="sm"
+                  variant="quiet"
+                  icon={<CirclePlay size={15} />}
+                  disabled={revoke.isPending}
+                  onClick={() => setTestKey(row.original)}
+                >
+                  测试请求
+                </Button>
+              ) : null}
+              {canRevoke ? (
+                <>
+                  <Button
+                    size="sm"
+                    variant="quiet"
+                    icon={<RotateCw size={15} />}
+                    disabled={revoke.isPending}
+                    onClick={() => setReplacementKey(row.original)}
+                  >
+                    更换
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="quiet"
+                    icon={<XCircle size={15} />}
+                    disabled={revoke.isPending}
+                    onClick={() => setRevokeKey(row.original)}
+                  >
+                    撤销
+                  </Button>
+                </>
+              ) : null}
             </div>
           ) : null,
       },
     ],
-    [canRevoke, revoke, session.role],
+    [canRevoke, canTest, revoke, session.role],
   )
   return (
     <Page>
       <PageHeader
-        title={session.role === 'member' ? '我的网关 Key' : '用户与网关 Key'}
-        description={
-          session.role === 'member'
-            ? '查看并撤销当前账号的调用凭据'
-            : '查看用户调用凭据并撤销失效 Key'
-        }
+        title={session.role === 'member' ? '我的 API Key' : '成员与 API Key'}
         actions={
           session.role === 'administrator' ? (
             <Button icon={<Plus size={16} />} onClick={() => setCreating(true)}>
@@ -139,7 +152,7 @@ export function KeysPage() {
           ]}
         />
         <DataTable
-          ariaLabel="网关 Key 列表"
+          ariaLabel="API Key 列表"
           data={query.data?.items ?? []}
           columns={columns}
           getRowId={(key) => key.id}
@@ -147,7 +160,7 @@ export function KeysPage() {
           fetching={query.isFetching}
           error={query.error}
           onRetry={() => void query.refetch()}
-          emptyLabel="没有符合条件的网关 Key"
+          emptyLabel="还没有 API Key"
           page={query.data?.page ?? state.page}
           pageSize={query.data?.pageSize ?? state.pageSize}
           total={query.data?.total ?? 0}
@@ -176,10 +189,16 @@ export function KeysPage() {
         gatewayKey={replacementKey}
         onOpenChange={(open) => !open && setReplacementKey(null)}
       />
+      {testKey ? (
+        <GatewayKeyTestDialog
+          gatewayKey={testKey}
+          onOpenChange={(open) => !open && setTestKey(null)}
+        />
+      ) : null}
       <ConfirmDialog
         open={revokeKey !== null}
         onOpenChange={(open) => !open && setRevokeKey(null)}
-        title="撤销网关 Key"
+        title="撤销 API Key"
         description={`撤销 ${revokeKey?.name ?? ''} 后，使用该 Key 的请求将立即失败。`}
         confirmLabel="确认撤销"
         onConfirm={() => revokeKey && revoke.mutate(revokeKey.id)}

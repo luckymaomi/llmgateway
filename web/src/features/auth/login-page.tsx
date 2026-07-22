@@ -40,7 +40,7 @@ export function LoginPage({ redirectTo }: { redirectTo?: string }) {
   })
 
   return (
-    <AuthPanel title="登录" subtitle="使用 LLMGateway 管理会话">
+    <AuthPanel title="登录">
       <form className="form-stack" onSubmit={form.handleSubmit((values) => login.mutate(values))}>
         <Field label="邮箱" htmlFor="login-email" error={form.formState.errors.email?.message}>
           <Input

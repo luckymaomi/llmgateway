@@ -10,9 +10,9 @@ export function LedgerTabs() {
           ? [{ label: '我的用量', to: '/ledger/usage' }]
           : [
               { label: '请求用量', to: '/ledger/usage' },
-              { label: '账本事件', to: '/ledger/entries' },
-              { label: '额度与套餐', to: '/ledger/entitlements' },
-              { label: '成本', to: '/ledger/costs' },
+              { label: '额度变更记录', to: '/ledger/entries' },
+              { label: '成员额度', to: '/ledger/entitlements' },
+              { label: '上游成本', to: '/ledger/costs' },
             ]
       }
     />

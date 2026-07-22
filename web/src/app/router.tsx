@@ -6,12 +6,13 @@ import {
   createRootRouteWithContext,
   createRoute,
   createRouter,
+  isRedirect,
   lazyRouteComponent,
   redirect,
   type AsyncRouteComponent,
 } from '@tanstack/react-router'
 
-import { ApiProblem, type Capability, type Role } from '@/api'
+import { ApiProblem, authApi, type Capability, type Role } from '@/api'
 import { AppShell, PublicShell } from '@/components/layout'
 import { ForbiddenPage, NotFoundPage, RouteErrorPage } from '@/features/errors/error-pages'
 
@@ -55,9 +56,13 @@ const EntitlementsPage = lazyRouteComponent(
   'EntitlementsPage',
 )
 const CostsPage = lazyRouteComponent(() => import('@/features/ledger/costs-page'), 'CostsPage')
-const PlaygroundPage = lazyRouteComponent(
-  () => import('@/features/playground/playground-page'),
-  'PlaygroundPage',
+const SettingsPage = lazyRouteComponent(
+  () => import('@/features/settings/settings-page'),
+  'SettingsPage',
+)
+const OverviewPage = lazyRouteComponent(
+  () => import('@/features/overview/overview-page'),
+  'OverviewPage',
 )
 
 interface RouterContext {
@@ -98,7 +103,9 @@ const rootIndex = createRoute({
       throw redirect({ to: defaultRouteFor(session) })
     } catch (error) {
       if (isRedirect(error)) throw error
-      throw redirect({ to: '/login' })
+      if (error instanceof ApiProblem && error.status !== 401) throw error
+      const setup = await authApi.setupStatus()
+      throw redirect({ to: setup.required ? '/setup' : '/login' })
     }
   },
 })
@@ -106,6 +113,10 @@ const rootIndex = createRoute({
 const setupRoute = createRoute({
   getParentRoute: () => publicLayout,
   path: '/setup',
+  beforeLoad: async () => {
+    const setup = await authApi.setupStatus()
+    if (!setup.required) throw redirect({ to: '/' })
+  },
   component: SetupPage,
 })
 const loginRoute = createRoute({
@@ -211,7 +222,8 @@ const entitlementsRoute = protectedRoute(
 const costsRoute = protectedRoute('/ledger/costs', 'ledger:write', CostsPage, true, [
   'administrator',
 ])
-const playgroundRoute = protectedRoute('/playground', 'playground:use', PlaygroundPage)
+const settingsRoute = protectedRoute('/settings', 'access:read', SettingsPage)
+const overviewRoute = protectedRoute('/overview', 'access:read', OverviewPage)
 const forbiddenRoute = createRoute({
   getParentRoute: () => authenticatedLayout,
   path: '/forbidden',
@@ -245,7 +257,8 @@ const routeTree = rootRoute.addChildren([
     entriesRoute,
     entitlementsRoute,
     costsRoute,
-    playgroundRoute,
+    settingsRoute,
+    overviewRoute,
     forbiddenRoute,
   ]),
 ])
@@ -258,10 +271,6 @@ export function createAppRouter(queryClient: QueryClient, initialEntries?: strin
     defaultPreloadStaleTime: 0,
     ...(initialEntries ? { history: createMemoryHistory({ initialEntries }) } : {}),
   })
-}
-
-function isRedirect(error: unknown): boolean {
-  return typeof error === 'object' && error !== null && 'isRedirect' in error
 }
 
 export type AppRouter = ReturnType<typeof createAppRouter>

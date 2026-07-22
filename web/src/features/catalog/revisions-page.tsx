@@ -150,8 +150,7 @@ export function RevisionsPage() {
   return (
     <Page>
       <PageHeader
-        title="Provider 与模型"
-        description="上游端点、模型能力与可发布配置"
+        title="Provider 接入"
         actions={
           canPublish ? (
             <Button

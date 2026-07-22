@@ -21,7 +21,7 @@ const optionalPositiveInteger = z
   .or(z.nan().transform(() => undefined))
 
 const schema = z.object({
-  label: z.string().trim().min(2, '请输入凭据名称'),
+  label: z.string().trim().min(2, '请输入 API Key 名称'),
   resourceDomain: z.enum(['free', 'professional']),
   modelBindings: modelBindingsSchema,
   rpmLimit: optionalPositiveInteger,
@@ -115,8 +115,7 @@ export function CredentialEditForm({
       onOpenChange={(nextOpen) => {
         if (!nextOpen && !locked) onOpenChange(false)
       }}
-      title="编辑上游凭据"
-      description="模型绑定与运行限制原子更新；已保存的密钥保持不变。"
+      title="编辑 Provider API Key"
       width="lg"
       dismissible={!locked}
       footer={

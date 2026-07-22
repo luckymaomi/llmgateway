@@ -267,6 +267,50 @@ func (q *Queries) CreateModel(ctx context.Context, arg CreateModelParams) (Model
 	return i, err
 }
 
+const createModelWithID = `-- name: CreateModelWithID :one
+INSERT INTO models (id, provider_id, public_name, upstream_name, display_name, resource_domain, capabilities, enabled)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING id, provider_id, public_name, upstream_name, display_name, resource_domain, capabilities, enabled, created_at, updated_at
+`
+
+type CreateModelWithIDParams struct {
+	ID             uuid.UUID      `json:"id"`
+	ProviderID     uuid.UUID      `json:"provider_id"`
+	PublicName     string         `json:"public_name"`
+	UpstreamName   string         `json:"upstream_name"`
+	DisplayName    string         `json:"display_name"`
+	ResourceDomain ResourceDomain `json:"resource_domain"`
+	Capabilities   []byte         `json:"capabilities"`
+	Enabled        bool           `json:"enabled"`
+}
+
+func (q *Queries) CreateModelWithID(ctx context.Context, arg CreateModelWithIDParams) (Model, error) {
+	row := q.db.QueryRow(ctx, createModelWithID,
+		arg.ID,
+		arg.ProviderID,
+		arg.PublicName,
+		arg.UpstreamName,
+		arg.DisplayName,
+		arg.ResourceDomain,
+		arg.Capabilities,
+		arg.Enabled,
+	)
+	var i Model
+	err := row.Scan(
+		&i.ID,
+		&i.ProviderID,
+		&i.PublicName,
+		&i.UpstreamName,
+		&i.DisplayName,
+		&i.ResourceDomain,
+		&i.Capabilities,
+		&i.Enabled,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const createProvider = `-- name: CreateProvider :one
 INSERT INTO providers (slug, name, kind, base_url, enabled, source_url, verified_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -285,6 +329,50 @@ type CreateProviderParams struct {
 
 func (q *Queries) CreateProvider(ctx context.Context, arg CreateProviderParams) (Provider, error) {
 	row := q.db.QueryRow(ctx, createProvider,
+		arg.Slug,
+		arg.Name,
+		arg.Kind,
+		arg.BaseUrl,
+		arg.Enabled,
+		arg.SourceUrl,
+		arg.VerifiedAt,
+	)
+	var i Provider
+	err := row.Scan(
+		&i.ID,
+		&i.Slug,
+		&i.Name,
+		&i.Kind,
+		&i.BaseUrl,
+		&i.Enabled,
+		&i.SourceUrl,
+		&i.VerifiedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const createProviderWithID = `-- name: CreateProviderWithID :one
+INSERT INTO providers (id, slug, name, kind, base_url, enabled, source_url, verified_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING id, slug, name, kind, base_url, enabled, source_url, verified_at, created_at, updated_at
+`
+
+type CreateProviderWithIDParams struct {
+	ID         uuid.UUID          `json:"id"`
+	Slug       string             `json:"slug"`
+	Name       string             `json:"name"`
+	Kind       string             `json:"kind"`
+	BaseUrl    string             `json:"base_url"`
+	Enabled    bool               `json:"enabled"`
+	SourceUrl  *string            `json:"source_url"`
+	VerifiedAt pgtype.Timestamptz `json:"verified_at"`
+}
+
+func (q *Queries) CreateProviderWithID(ctx context.Context, arg CreateProviderWithIDParams) (Provider, error) {
+	row := q.db.QueryRow(ctx, createProviderWithID,
+		arg.ID,
 		arg.Slug,
 		arg.Name,
 		arg.Kind,
@@ -634,30 +722,61 @@ func (q *Queries) ListCredentialModelBindingsForCredential(ctx context.Context, 
 }
 
 const listCredentials = `-- name: ListCredentials :many
-SELECT id, provider_id, name, resource_domain, status, rpm_limit, tpm_limit, concurrency_limit, cooldown_until, consecutive_failures, last_success_at, last_error_kind, last_probe_at, last_probe_latency_ms, last_probe_kind, last_probe_status, last_probe_error_kind, created_at, updated_at
-FROM provider_credentials ORDER BY name, id
+SELECT credential.id, credential.provider_id, credential.name, credential.resource_domain, credential.status,
+       credential.rpm_limit, credential.tpm_limit, credential.concurrency_limit, credential.cooldown_until,
+       credential.consecutive_failures, credential.last_success_at, credential.last_error_kind,
+       credential.last_probe_at, credential.last_probe_latency_ms, credential.last_probe_kind,
+       credential.last_probe_status, credential.last_probe_error_kind, credential.created_at, credential.updated_at,
+       recent.terminal_count,
+       recent.completed_count,
+       recent.last_checked_unix_seconds,
+       recent.first_byte_p95_ms,
+       recent.total_latency_p95_ms
+FROM provider_credentials credential
+LEFT JOIN LATERAL (
+  SELECT
+    count(*) FILTER (WHERE attempt.status IN ('completed', 'failed', 'uncertain')) AS terminal_count,
+    count(*) FILTER (WHERE attempt.status = 'completed') AS completed_count,
+    COALESCE(extract(epoch FROM max(COALESCE(attempt.completed_at, attempt.first_byte_at, attempt.sent_at, attempt.created_at))
+      FILTER (WHERE attempt.status IN ('completed', 'failed', 'uncertain'))), -1)::bigint AS last_checked_unix_seconds,
+    COALESCE((percentile_cont(0.95) WITHIN GROUP (
+      ORDER BY extract(epoch FROM (attempt.first_byte_at - attempt.sent_at)) * 1000
+    ) FILTER (WHERE attempt.sent_at IS NOT NULL AND attempt.first_byte_at IS NOT NULL))::bigint, -1)::bigint AS first_byte_p95_ms,
+    COALESCE((percentile_cont(0.95) WITHIN GROUP (
+      ORDER BY extract(epoch FROM (attempt.completed_at - attempt.sent_at)) * 1000
+    ) FILTER (WHERE attempt.sent_at IS NOT NULL AND attempt.completed_at IS NOT NULL))::bigint, -1)::bigint AS total_latency_p95_ms
+  FROM request_attempts attempt
+  WHERE attempt.credential_id = credential.id
+    AND attempt.created_at >= CURRENT_TIMESTAMP - interval '24 hours'
+) recent ON true
+ORDER BY credential.name, credential.id
 `
 
 type ListCredentialsRow struct {
-	ID                  uuid.UUID          `json:"id"`
-	ProviderID          uuid.UUID          `json:"provider_id"`
-	Name                string             `json:"name"`
-	ResourceDomain      ResourceDomain     `json:"resource_domain"`
-	Status              CredentialStatus   `json:"status"`
-	RpmLimit            *int32             `json:"rpm_limit"`
-	TpmLimit            *int64             `json:"tpm_limit"`
-	ConcurrencyLimit    *int32             `json:"concurrency_limit"`
-	CooldownUntil       pgtype.Timestamptz `json:"cooldown_until"`
-	ConsecutiveFailures int32              `json:"consecutive_failures"`
-	LastSuccessAt       pgtype.Timestamptz `json:"last_success_at"`
-	LastErrorKind       *string            `json:"last_error_kind"`
-	LastProbeAt         pgtype.Timestamptz `json:"last_probe_at"`
-	LastProbeLatencyMs  *int64             `json:"last_probe_latency_ms"`
-	LastProbeKind       *string            `json:"last_probe_kind"`
-	LastProbeStatus     *string            `json:"last_probe_status"`
-	LastProbeErrorKind  *string            `json:"last_probe_error_kind"`
-	CreatedAt           pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
+	ID                     uuid.UUID          `json:"id"`
+	ProviderID             uuid.UUID          `json:"provider_id"`
+	Name                   string             `json:"name"`
+	ResourceDomain         ResourceDomain     `json:"resource_domain"`
+	Status                 CredentialStatus   `json:"status"`
+	RpmLimit               *int32             `json:"rpm_limit"`
+	TpmLimit               *int64             `json:"tpm_limit"`
+	ConcurrencyLimit       *int32             `json:"concurrency_limit"`
+	CooldownUntil          pgtype.Timestamptz `json:"cooldown_until"`
+	ConsecutiveFailures    int32              `json:"consecutive_failures"`
+	LastSuccessAt          pgtype.Timestamptz `json:"last_success_at"`
+	LastErrorKind          *string            `json:"last_error_kind"`
+	LastProbeAt            pgtype.Timestamptz `json:"last_probe_at"`
+	LastProbeLatencyMs     *int64             `json:"last_probe_latency_ms"`
+	LastProbeKind          *string            `json:"last_probe_kind"`
+	LastProbeStatus        *string            `json:"last_probe_status"`
+	LastProbeErrorKind     *string            `json:"last_probe_error_kind"`
+	CreatedAt              pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt              pgtype.Timestamptz `json:"updated_at"`
+	TerminalCount          int64              `json:"terminal_count"`
+	CompletedCount         int64              `json:"completed_count"`
+	LastCheckedUnixSeconds int64              `json:"last_checked_unix_seconds"`
+	FirstByteP95Ms         int64              `json:"first_byte_p95_ms"`
+	TotalLatencyP95Ms      int64              `json:"total_latency_p95_ms"`
 }
 
 func (q *Queries) ListCredentials(ctx context.Context) ([]ListCredentialsRow, error) {
@@ -689,6 +808,11 @@ func (q *Queries) ListCredentials(ctx context.Context) ([]ListCredentialsRow, er
 			&i.LastProbeErrorKind,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.TerminalCount,
+			&i.CompletedCount,
+			&i.LastCheckedUnixSeconds,
+			&i.FirstByteP95Ms,
+			&i.TotalLatencyP95Ms,
 		); err != nil {
 			return nil, err
 		}
@@ -801,7 +925,7 @@ WHERE route.revision_id = $1
   AND credential.resource_domain = $3
   AND (
     live_credential.status = 'active'
-    OR (live_credential.status = 'cooling' AND live_credential.cooldown_until <= now())
+    OR (live_credential.status = 'cooling' AND live_credential.cooldown_until IS NOT NULL)
   )
 ORDER BY route.priority, route.credential_id
 `
@@ -867,15 +991,8 @@ WHERE ac.singleton = true
   AND EXISTS (
     SELECT 1
     FROM config_revision_routes route
-    JOIN config_revision_credentials credential
-      ON credential.revision_id = route.revision_id AND credential.credential_id = route.credential_id
-    JOIN provider_credentials live_credential ON live_credential.id = credential.credential_id
     WHERE route.revision_id = ac.revision_id
       AND route.model_id = m.model_id
-      AND (
-        live_credential.status = 'active'
-        OR (live_credential.status = 'cooling' AND live_credential.cooldown_until <= now())
-      )
   )
 ORDER BY m.public_name, m.model_id
 `

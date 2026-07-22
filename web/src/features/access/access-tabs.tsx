@@ -7,11 +7,11 @@ export function AccessTabs() {
     <SectionTabs
       tabs={
         session.role === 'member'
-          ? [{ label: '我的网关 Key', to: '/access/keys' }]
+          ? [{ label: '我的 API Key', to: '/access/keys' }]
           : [
-              { label: '用户', to: '/access/users' },
+              { label: '成员', to: '/access/users' },
               { label: '邀请', to: '/access/invitations' },
-              { label: '网关 Key', to: '/access/keys' },
+              { label: 'API Key', to: '/access/keys' },
             ]
       }
     />

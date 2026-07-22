@@ -83,6 +83,11 @@ type SessionCredentials struct {
 	CSRFToken string    `json:"csrf_token"`
 }
 
+type BootstrapCredentials struct {
+	SessionCredentials
+	InitialPassword string `json:"-"`
+}
+
 type Invitation struct {
 	ID         uuid.UUID  `json:"id"`
 	CreatedBy  uuid.UUID  `json:"created_by"`
@@ -160,6 +165,12 @@ type NewUser struct {
 	Status       Status
 }
 
+type SessionCreation struct {
+	TokenDigest []byte
+	CSRFDigest  []byte
+	ExpiresAt   time.Time
+}
+
 type Page struct {
 	Offset int32
 	Size   int32
@@ -172,13 +183,14 @@ type UserPage struct {
 
 type Repository interface {
 	IsBootstrapped(context.Context) (bool, error)
-	Bootstrap(context.Context, NewUser) (User, error)
+	Bootstrap(context.Context, NewUser, SessionCreation) (Principal, error)
 	Register(context.Context, []byte, NewUser) (User, error)
 	FindUserByEmail(context.Context, string) (User, error)
 	UserDisplayNames(context.Context, []uuid.UUID) (map[uuid.UUID]string, error)
 	ListUsers(context.Context, *Status, Page) (UserPage, error)
 	SetUserStatus(context.Context, uuid.UUID, Status, uuid.UUID) (User, error)
 	ResetMemberPassword(context.Context, uuid.UUID, string, uuid.UUID, PasswordResetMutation) (SessionRevocation, error)
+	ChangeOwnPassword(context.Context, uuid.UUID, uuid.UUID, string, string, string) (SessionRevocation, error)
 	RevokeUserSessions(context.Context, uuid.UUID, uuid.UUID, *uuid.UUID, string) (SessionRevocation, error)
 
 	CreateSession(context.Context, uuid.UUID, []byte, []byte, time.Time) (Principal, error)

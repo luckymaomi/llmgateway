@@ -8,7 +8,7 @@ Prometheus 从 backend 网络分别抓取 `gateway-a:8080/metrics` 与 `gateway-
 
 ## Admission Saturated
 
-比较 `queue_full`、`timeout`、`capacity_exhausted`，并查看 active leases、HTTP p95/p99、PostgreSQL acquire wait、Valkey latency 和主机 RSS/CPU。单次 300 人突发的受控 429 不升级事故；持续 10 分钟才行动。先限制入口/降载，再按 `architecture.md` 的容量信号增加 Gateway 或调整有真实 Provider 额度依据的域级容量，不能放宽成员/Key/credential 硬限制。
+比较 `queue_full`、`timeout`、`capacity_exhausted`，并查看 active leases、HTTP p95/p99、PostgreSQL acquire wait、Valkey latency 和主机 RSS/CPU。单次 300 人突发的受控 429 不升级事故；持续 10 分钟才行动。先限制入口/降载，再按 `spec.md` 的容量信号增加 Gateway 或调整有真实 Provider 额度依据的域级容量，不能放宽成员/Key/credential 硬限制。
 
 ## Provider Failures
 
@@ -28,6 +28,8 @@ Prometheus 从 backend 网络分别抓取 `gateway-a:8080/metrics` 与 `gateway-
 
 ## Account Recovery
 
+首位管理员 setup 只接收邮箱，生成的初始密码只在成功页面显示一次，必须直接保存到受控密码管理器，禁止写入容器日志、工单或聊天。已登录用户从侧栏执行“更换密码”，提交当前密码和新密码；事务保留当前会话、撤销其他会话并写 `identity.password_changed` audit。换密后确认另一浏览器会话已失效。
+
 成员忘记密码时，管理员在“用户”页执行“重置密码”。操作使用 CSRF 与 idempotency key，同一事务更新 Argon2id hash、撤销成员全部活动会话并写 `identity.member_password_reset` audit；通过撤销数确认旧客户端已下线。不要经聊天、工单或日志传递临时密码。
 
 管理员只需清理其他登录位置时，在自己的用户行执行“撤销会话”；当前操作会话被保留，其他活动会话在同一事务撤销。唯一管理员无法登录时，从受控运维主机执行 `dbtool -action recover-administrator`，必须同时提供管理员邮箱、只读 password file 和 `-confirm-account-recovery`。命令只允许恢复 administrator，激活账号、撤销全部旧会话并写 system actor audit；完成后立即删除 password file，再从新的浏览器会话登录并检查 audit。匿名公网找回不存在。
@@ -38,6 +40,6 @@ Prometheus 从 backend 网络分别抓取 `gateway-a:8080/metrics` 与 `gateway-
 
 ## Backup And Disaster Recovery
 
-每班检查 `llmgateway-backup.timer`、最近一次 service 退出码、最后快照时间和 Restic check。最后成功快照超过 6 小时、远端 backend 不可达或 check 失败立即告警；不要删除锁、跳过 check 或把本机 staging 当备份。数据库、主密钥与 pepper 同属恢复集合，Restic password 和远端凭据必须在另一保管路径。
+每班检查 `llmgateway-backup.timer`、`llmgateway-backup-freshness.timer`、最近一次 service 退出码、最后快照时间和 Restic check。备份每 2 小时调度，单次失败在 10 分钟后重试一次，新鲜度每 15 分钟检查；最后成功恢复点超过 6 小时、远端 backend 不可达或 check 失败立即告警。不要删除共享维护锁、跳过 check 或把本机 staging 当备份。数据库、主密钥与 pepper 同属恢复集合，Restic password 和远端凭据必须在另一保管路径。
 
-主机或卷丢失时停止旧入口写流量，在新主机只向空目录恢复最新已验证快照，只向新数据库执行 `pg_restore`。依次核对 dump SHA-256、migration version、管理员/成员登录、成员管理 API 403、active revision、Provider credential 可解密、Key/额度/账本，再启动 Caddy。DNS/TLS 切换后观察 readiness、5xx、quota/recovery 指标和日志至少一个业务窗口。回切使用恢复库和逐实例 readiness；未知副作用请求保持 uncertain，不因灾备自动重放。
+主机或卷丢失时停止旧入口写流量，先列出快照并记录要恢复的完整 64 位 ID；禁止用 `latest` 隐式选择。在新主机只向空目录恢复经过 manifest 与 checksum 验证的快照，只向新数据库执行 `pg_restore`。依次核对 dump SHA-256、migration version、管理员/成员登录、成员管理 API 403、active revision、Provider credential 可解密、Key/额度/账本，再启动 Caddy。DNS/TLS 切换后观察 readiness、5xx、quota/recovery 指标和日志至少一个业务窗口。回切使用恢复库和逐实例 readiness；未知副作用请求保持 uncertain，不因灾备自动重放。

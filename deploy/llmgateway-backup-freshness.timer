@@ -1,0 +1,12 @@
+[Unit]
+Description=Check LLMGateway backup freshness every fifteen minutes
+
+[Timer]
+OnCalendar=*-*-* *:00,15,30,45:00
+Persistent=true
+RandomizedDelaySec=30s
+AccuracySec=1m
+Unit=llmgateway-backup-freshness.service
+
+[Install]
+WantedBy=timers.target

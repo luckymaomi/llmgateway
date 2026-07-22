@@ -47,19 +47,19 @@ func (r *IdentityRepository) IsBootstrapped(ctx context.Context) (bool, error) {
 	return r.queries.IsBootstrapped(ctx)
 }
 
-func (r *IdentityRepository) Bootstrap(ctx context.Context, input identity.NewUser) (identity.User, error) {
+func (r *IdentityRepository) Bootstrap(ctx context.Context, input identity.NewUser, session identity.SessionCreation) (identity.Principal, error) {
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
-		return identity.User{}, err
+		return identity.Principal{}, err
 	}
 	defer tx.Rollback(ctx)
 	queries := r.queries.WithTx(tx)
 	bootstrapped, err := queries.IsBootstrapped(ctx)
 	if err != nil {
-		return identity.User{}, err
+		return identity.Principal{}, translateStoreError(err)
 	}
 	if bootstrapped {
-		return identity.User{}, identity.ErrConflict
+		return identity.Principal{}, identity.ErrConflict
 	}
 	now := time.Now().UTC()
 	user, err := queries.CreateUser(ctx, db.CreateUserParams{
@@ -68,22 +68,32 @@ func (r *IdentityRepository) Bootstrap(ctx context.Context, input identity.NewUs
 		ApprovedAt: pgtype.Timestamptz{Time: now, Valid: true},
 	})
 	if err != nil {
-		return identity.User{}, translateStoreError(err)
+		return identity.Principal{}, translateStoreError(err)
 	}
 	rows, err := queries.MarkBootstrapped(ctx)
 	if err != nil {
-		return identity.User{}, err
+		return identity.Principal{}, translateStoreError(err)
 	}
 	if rows != 1 {
-		return identity.User{}, identity.ErrConflict
+		return identity.Principal{}, identity.ErrConflict
 	}
 	if _, err := queries.CreateAuditEvent(ctx, auditParams(&user.ID, "system.bootstrap", "system", "singleton", map[string]any{"administrator_user_id": user.ID})); err != nil {
-		return identity.User{}, err
+		return identity.Principal{}, translateStoreError(err)
+	}
+	createdSession, err := queries.CreateSession(ctx, db.CreateSessionParams{
+		UserID: user.ID, TokenDigest: session.TokenDigest, CsrfDigest: session.CSRFDigest, ExpiresAt: timestamp(session.ExpiresAt),
+	})
+	if err != nil {
+		return identity.Principal{}, translateStoreError(err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return identity.User{}, translateStoreError(err)
+		return identity.Principal{}, translateStoreError(err)
 	}
-	return userFromDB(user), nil
+	return identity.Principal{
+		SessionID: createdSession.ID, UserID: user.ID, Email: user.Email, DisplayName: user.DisplayName,
+		Role: identity.Role(user.Role), Status: identity.Status(user.Status),
+		CSRFDigest: append([]byte(nil), createdSession.CsrfDigest...), ExpiresAt: createdSession.ExpiresAt.Time,
+	}, nil
 }
 
 func (r *IdentityRepository) Register(ctx context.Context, invitationDigest []byte, input identity.NewUser) (identity.User, error) {
@@ -248,6 +258,37 @@ func (r *IdentityRepository) ResetMemberPassword(ctx context.Context, userID uui
 		return identity.SessionRevocation{}, err
 	}
 	return result, nil
+}
+
+func (r *IdentityRepository) ChangeOwnPassword(ctx context.Context, userID, sessionID uuid.UUID, expectedPasswordHash, replacementPasswordHash, requestID string) (identity.SessionRevocation, error) {
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		return identity.SessionRevocation{}, err
+	}
+	defer tx.Rollback(ctx)
+	queries := r.queries.WithTx(tx)
+	updated, err := queries.UpdateOwnPassword(ctx, db.UpdateOwnPasswordParams{
+		ID: userID, ExpectedPasswordHash: expectedPasswordHash, ReplacementPasswordHash: replacementPasswordHash,
+	})
+	if err != nil {
+		return identity.SessionRevocation{}, translateStoreError(err)
+	}
+	if updated != 1 {
+		return identity.SessionRevocation{}, identity.ErrConflict
+	}
+	revoked, err := queries.RevokeUserSessionsExcept(ctx, db.RevokeUserSessionsExceptParams{UserID: userID, PreservedSessionID: sessionID})
+	if err != nil {
+		return identity.SessionRevocation{}, translateStoreError(err)
+	}
+	audit := auditParams(&userID, "identity.password_changed", "user", userID.String(), map[string]any{"revoked_sessions": revoked})
+	audit.RequestID = &requestID
+	if _, err := queries.CreateAuditEvent(ctx, audit); err != nil {
+		return identity.SessionRevocation{}, translateStoreError(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return identity.SessionRevocation{}, translateStoreError(err)
+	}
+	return identity.SessionRevocation{RevokedSessions: revoked}, nil
 }
 
 func passwordResetMutationLookup(actorID uuid.UUID, mutation identity.PasswordResetMutation) db.GetMemberPasswordResetMutationParams {

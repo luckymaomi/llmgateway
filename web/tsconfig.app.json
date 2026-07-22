@@ -18,7 +18,7 @@
     "jsx": "react-jsx",
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
-    "types": ["vite/client", "vitest/globals", "@testing-library/jest-dom"],
+    "types": ["vite/client", "vitest/globals"],
     "baseUrl": ".",
     "paths": {
       "@/*": ["src/*"]

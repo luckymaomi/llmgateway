@@ -1,15 +1,19 @@
 import { Outlet } from '@tanstack/react-router'
+import { useQuery } from '@tanstack/react-query'
 import { Network } from 'lucide-react'
 import { Suspense, type ReactNode } from 'react'
+
+import { siteProfileQuery } from '@/app/site-profile'
 
 import { LoadingState } from '../ui/state'
 
 export function PublicShell() {
+  const siteProfile = useQuery(siteProfileQuery)
   return (
     <div className="public-shell">
       <header className="public-brand">
         <Network size={24} />
-        <span>LLMGateway</span>
+        <span>{siteProfile.data?.name ?? 'LLMGateway'}</span>
       </header>
       <main className="public-main">
         <Suspense fallback={<LoadingState label="正在加载页面" />}>
@@ -20,20 +24,11 @@ export function PublicShell() {
   )
 }
 
-export function AuthPanel({
-  title,
-  subtitle,
-  children,
-}: {
-  title: string
-  subtitle?: string
-  children: ReactNode
-}) {
+export function AuthPanel({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="auth-panel">
       <header>
         <h1>{title}</h1>
-        {subtitle ? <p>{subtitle}</p> : null}
       </header>
       {children}
     </section>

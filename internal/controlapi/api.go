@@ -23,13 +23,14 @@ const (
 
 type identityService interface {
 	IsBootstrapped(context.Context) (bool, error)
-	Bootstrap(context.Context, string, string, string) (identity.SessionCredentials, error)
+	Bootstrap(context.Context, string) (identity.BootstrapCredentials, error)
 	Register(context.Context, string, string, string, string) (identity.User, error)
 	Login(context.Context, string, string) (identity.SessionCredentials, error)
 	AuthenticateSession(context.Context, string) (identity.Principal, error)
 	UserDisplayNames(context.Context, identity.Principal, []uuid.UUID) (map[uuid.UUID]string, error)
 	VerifyCSRF(identity.Principal, string) bool
 	Logout(context.Context, identity.Principal) error
+	ChangePassword(context.Context, identity.Principal, string, string, string) (identity.SessionRevocation, error)
 	ListUsers(context.Context, identity.Principal, *identity.Status, identity.Page) (identity.UserPage, error)
 	SetUserStatus(context.Context, identity.Principal, uuid.UUID, identity.Status) (identity.User, error)
 	ResetMemberPassword(context.Context, identity.Principal, uuid.UUID, string, identity.MutationRequest) (identity.SessionRevocation, error)
@@ -44,6 +45,7 @@ type identityService interface {
 }
 
 type registryService interface {
+	InstallProviderPreset(context.Context, identity.Principal, string, registry.MutationRequest) (registry.ProviderPresetInstallation, error)
 	CreateProvider(context.Context, identity.Principal, registry.Provider, registry.MutationRequest) (registry.Provider, error)
 	UpdateProvider(context.Context, identity.Principal, registry.Provider, registry.MutationRequest) (registry.Provider, error)
 	SetProviderEnabled(context.Context, identity.Principal, uuid.UUID, bool, time.Time, registry.MutationRequest) (registry.Provider, error)
@@ -55,7 +57,7 @@ type registryService interface {
 	CreateCredential(context.Context, identity.Principal, registry.NewCredential, string, registry.MutationRequest) (registry.Credential, error)
 	UpdateCredential(context.Context, identity.Principal, registry.CredentialChange, string, registry.MutationRequest) (registry.Credential, error)
 	SetCredentialEnabled(context.Context, identity.Principal, uuid.UUID, bool, time.Time, registry.MutationRequest) (registry.Credential, error)
-	ProbeCredential(context.Context, identity.Principal, uuid.UUID, string) (registry.CredentialProbeExecution, registry.Credential, error)
+	ProbeCredential(context.Context, identity.Principal, uuid.UUID, uuid.UUID, string) (registry.CredentialProbeExecution, registry.Credential, error)
 	ListCredentials(context.Context, identity.Principal) ([]registry.Credential, error)
 }
 
@@ -72,22 +74,33 @@ type LoginGuard interface {
 	Reset(context.Context, string) error
 }
 
-type playgroundWorkflow interface {
+type gatewayKeyTestWorkflow interface {
 	Models(context.Context, uuid.UUID) ([]requestflow.Model, error)
-	Chat(context.Context, requestflow.ChatCommand) (requestflow.ChatResult, *canonical.Error)
 	Stream(context.Context, requestflow.ChatCommand, requestflow.StreamSink) *canonical.Error
 }
 
 type API struct {
-	identity      identityService
-	registry      registryService
-	configuration configurationService
-	loginGuard    LoginGuard
-	config        config.Security
-	logger        *slog.Logger
-	quota         *QuotaAPI
-	costing       *CostingAPI
-	playground    playgroundWorkflow
+	identity       identityService
+	registry       registryService
+	configuration  configurationService
+	loginGuard     LoginGuard
+	config         config.Security
+	logger         *slog.Logger
+	quota          *QuotaAPI
+	costing        *CostingAPI
+	gatewayKeyTest gatewayKeyTestWorkflow
+	siteProfile    *SiteProfileAPI
+	operations     *OperationsAPI
+}
+
+func (a *API) WithSiteProfileAPI(siteProfileAPI *SiteProfileAPI) *API {
+	a.siteProfile = siteProfileAPI
+	return a
+}
+
+func (a *API) WithOperationsAPI(operationsAPI *OperationsAPI) *API {
+	a.operations = operationsAPI
+	return a
 }
 
 func (a *API) WithCostingAPI(costingAPI *CostingAPI) *API {
@@ -100,8 +113,8 @@ func (a *API) WithQuotaAPI(quotaAPI *QuotaAPI) *API {
 	return a
 }
 
-func (a *API) WithPlaygroundWorkflow(workflow playgroundWorkflow) *API {
-	a.playground = workflow
+func (a *API) WithGatewayKeyTestWorkflow(workflow gatewayKeyTestWorkflow) *API {
+	a.gatewayKeyTest = workflow
 	return a
 }
 
@@ -119,6 +132,9 @@ func New(identity identityService, registry registryService, configuration confi
 func (a *API) Routes() http.Handler {
 	router := chi.NewRouter()
 	router.Route("/control", func(control chi.Router) {
+		if a.siteProfile != nil {
+			control.Get("/site-profile", a.siteProfile.get)
+		}
 		control.Get("/setup/status", a.setupStatus)
 		control.Post("/setup", a.bootstrap)
 		control.Post("/session", a.login)
@@ -128,18 +144,25 @@ func (a *API) Routes() http.Handler {
 			authenticated.Use(a.authenticate)
 			authenticated.Get("/session", a.session)
 			authenticated.With(a.requireCSRF).Delete("/session", a.logout)
+			authenticated.With(a.requireCSRF).Post("/password", a.changePassword)
 
 			a.registerAccessRoutes(authenticated)
 			a.registerRegistryRoutes(authenticated)
 			a.registerConfigurationRoutes(authenticated)
+			if a.operations != nil {
+				a.operations.RegisterRoutes(authenticated)
+			}
+			if a.siteProfile != nil {
+				a.siteProfile.RegisterAuthenticatedRoutes(authenticated, a.requireAdministrator, a.requireCSRF)
+			}
 			if a.quota != nil {
 				a.quota.RegisterRoutes(authenticated, a.requireAdministrator, a.requireCSRF)
 			}
 			if a.costing != nil {
 				a.costing.RegisterRoutes(authenticated, a.requireAdministrator, a.requireCSRF)
 			}
-			if a.playground != nil {
-				a.registerPlaygroundRoutes(authenticated)
+			if a.gatewayKeyTest != nil {
+				a.registerGatewayKeyTestRoutes(authenticated)
 			}
 		})
 	})
@@ -162,6 +185,8 @@ func (a *API) registerAccessRoutes(router chi.Router) {
 
 func (a *API) registerRegistryRoutes(router chi.Router) {
 	router.With(a.requireProviderAdministrator).Get("/provider-kinds", a.listProviderKinds)
+	router.With(a.requireProviderAdministrator).Get("/provider-presets", a.listProviderPresets)
+	router.With(a.requireProviderAdministrator, a.requireCSRF).Post("/provider-presets/{presetID}/install", a.installProviderPreset)
 	router.With(a.requireProviderAdministrator).Get("/providers", a.listProviders)
 	router.With(a.requireProviderAdministrator).Get("/providers/{providerID}", a.getProvider)
 	router.With(a.requireProviderAdministrator, a.requireCSRF).Post("/providers", a.createProvider)

@@ -141,7 +141,7 @@ export function UsersPage() {
 
   return (
     <Page>
-      <PageHeader title="用户与网关 Key" description="邀请、审核、模型授权和调用凭据" />
+      <PageHeader title="成员与 API Key" />
       <AccessTabs />
       <PageSection>
         <TableToolbar

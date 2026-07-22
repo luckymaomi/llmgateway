@@ -14,6 +14,8 @@ import type {
   Provider,
   ProviderCreateInput,
   ProviderKind,
+  ProviderPreset,
+  ProviderPresetInstallation,
   ProviderRecord,
   ProviderUpdateInput,
 } from './types'
@@ -29,6 +31,15 @@ export const catalogApi = {
     apiClient.request<ProviderKind[]>(`${base}/provider-kinds`, {
       ...(signal ? { signal } : {}),
     }),
+  providerPresets: (signal?: AbortSignal) =>
+    apiClient.request<ProviderPreset[]>(`${base}/provider-presets`, {
+      ...(signal ? { signal } : {}),
+    }),
+  installProviderPreset: (id: string, idempotencyKey: string) =>
+    apiClient.request<ProviderPresetInstallation>(
+      `${base}/provider-presets/${encodeURIComponent(id)}/install`,
+      { method: 'POST', headers: mutationHeaders(idempotencyKey) },
+    ),
   providers: (query: ListQuery, signal?: AbortSignal) =>
     apiClient.request<Page<Provider>>(`${base}/providers`, {
       query: listQuery(query),
@@ -142,9 +153,13 @@ export const catalogApi = {
         headers: mutationHeaders(idempotencyKey),
       },
     ),
-  probeCredential: (id: string, signal?: AbortSignal) =>
-    apiClient.request<CredentialProbeResult>(`${item('credentials', id)}/probe`, {
-      method: 'POST',
-      ...(signal ? { signal } : {}),
-    }),
+  probeCredential: (id: string, modelId: string, signal?: AbortSignal) =>
+    apiClient.request<CredentialProbeResult, { modelId: string }>(
+      `${item('credentials', id)}/probe`,
+      {
+        method: 'POST',
+        body: { modelId },
+        ...(signal ? { signal } : {}),
+      },
+    ),
 }

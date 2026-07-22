@@ -27,6 +27,26 @@ type providerKindContractView struct {
 	Status            providers.VerificationStatus `json:"status"`
 }
 
+type providerPresetView struct {
+	ID                   string                    `json:"id"`
+	Name                 string                    `json:"name"`
+	Kind                 providers.Kind            `json:"kind"`
+	BaseURL              string                    `json:"baseUrl"`
+	VerifiedAt           string                    `json:"verifiedAt"`
+	Models               []providerPresetModelView `json:"models"`
+	State                string                    `json:"state"`
+	InstalledProviderID  *string                   `json:"installedProviderId,omitempty"`
+	InstalledCredentials int                       `json:"installedCredentials"`
+}
+
+type providerPresetModelView struct {
+	Alias           string   `json:"alias"`
+	UpstreamModelID string   `json:"upstreamModelId"`
+	Capabilities    []string `json:"capabilities"`
+	ReasoningMode   string   `json:"reasoningMode,omitempty"`
+	ContextTokens   int64    `json:"contextTokens"`
+}
+
 func (a *API) listProviderKinds(w http.ResponseWriter, r *http.Request) {
 	kinds := providers.DefaultCatalog().Kinds()
 	views := make([]providerKindView, 0, len(kinds))
@@ -38,6 +58,70 @@ func (a *API) listProviderKinds(w http.ResponseWriter, r *http.Request) {
 		}})
 	}
 	writeData(w, http.StatusOK, views)
+}
+
+func (a *API) listProviderPresets(w http.ResponseWriter, r *http.Request) {
+	snapshot, err := a.loadRegistrySnapshot(r)
+	if err != nil {
+		a.writeRegistrySnapshotError(w, r, err)
+		return
+	}
+	providersBySlug := make(map[string]registry.Provider, len(snapshot.providers))
+	for _, provider := range snapshot.providers {
+		providersBySlug[provider.Slug] = provider
+	}
+	presets := providers.DefaultCatalog().Presets()
+	views := make([]providerPresetView, 0, len(presets))
+	for _, preset := range presets {
+		view := presentProviderPreset(preset)
+		if installed, found := providersBySlug[preset.Slug]; found {
+			providerID := installed.ID.String()
+			view.InstalledProviderID = &providerID
+			view.InstalledCredentials = snapshot.credentialCounts[installed.ID]
+			view.State = "conflict"
+			if installed.Kind == preset.Kind && installed.BaseURL == preset.BaseURL {
+				view.State = "installed"
+			}
+		}
+		views = append(views, view)
+	}
+	writeData(w, http.StatusOK, views)
+}
+
+func (a *API) installProviderPreset(w http.ResponseWriter, r *http.Request) {
+	mutation, ok := providerMutationRequest(w, r)
+	if !ok {
+		return
+	}
+	installed, err := a.registry.InstallProviderPreset(r.Context(), principalFromContext(r.Context()), chi.URLParam(r, "presetID"), mutation)
+	if err != nil {
+		a.writeRegistryError(w, r, err)
+		return
+	}
+	models := make([]modelView, 0, len(installed.Models))
+	snapshot := registrySnapshot{providerNames: map[uuid.UUID]string{installed.Provider.ID: installed.Provider.Name}}
+	for _, model := range installed.Models {
+		models = append(models, snapshot.presentModel(model))
+	}
+	writeData(w, http.StatusCreated, struct {
+		PresetID string             `json:"presetId"`
+		Provider providerRecordView `json:"provider"`
+		Models   []modelView        `json:"models"`
+	}{PresetID: installed.PresetID, Provider: presentProviderRecord(installed.Provider), Models: models})
+}
+
+func presentProviderPreset(preset providers.ProviderPreset) providerPresetView {
+	models := make([]providerPresetModelView, 0, len(preset.Models))
+	for _, model := range preset.Models {
+		models = append(models, providerPresetModelView{
+			Alias: model.PublicName, UpstreamModelID: model.UpstreamName,
+			Capabilities: append([]string(nil), model.Capabilities...), ReasoningMode: model.ReasoningMode, ContextTokens: model.ContextTokens,
+		})
+	}
+	return providerPresetView{
+		ID: preset.ID, Name: preset.Name, Kind: preset.Kind, BaseURL: preset.BaseURL,
+		VerifiedAt: preset.VerifiedAt, Models: models, State: "not_installed",
+	}
 }
 
 func (a *API) listProviders(w http.ResponseWriter, r *http.Request) {
@@ -423,13 +507,25 @@ func (a *API) probeCredential(w http.ResponseWriter, r *http.Request) {
 		writeDecodeError(w, r, err)
 		return
 	}
+	var input struct {
+		ModelID string `json:"modelId"`
+	}
+	if err := decodeJSON(w, r, &input); err != nil {
+		writeDecodeError(w, r, err)
+		return
+	}
+	modelID, err := uuid.Parse(input.ModelID)
+	if err != nil {
+		writeDecodeError(w, r, err)
+		return
+	}
 	requestID := httpserver.RequestIDFromContext(r.Context())
 	snapshot, err := a.loadRegistrySnapshot(r)
 	if err != nil {
 		a.writeRegistrySnapshotError(w, r, err)
 		return
 	}
-	execution, credential, err := a.registry.ProbeCredential(r.Context(), principalFromContext(r.Context()), credentialID, requestID)
+	execution, credential, err := a.registry.ProbeCredential(r.Context(), principalFromContext(r.Context()), credentialID, modelID, requestID)
 	if err != nil {
 		a.writeRegistryError(w, r, err)
 		return
@@ -437,6 +533,8 @@ func (a *API) probeCredential(w http.ResponseWriter, r *http.Request) {
 	writeData(w, http.StatusOK, credentialProbeView{
 		Credential: snapshot.presentCredential(credential), Kind: execution.Kind, Status: execution.Status,
 		ErrorKind: execution.ErrorKind, Retryable: execution.Retryable, MayUseTokens: execution.MayUseTokens,
-		LatencyMillis: execution.LatencyMillis, RequestID: requestID,
+		LatencyMillis: execution.LatencyMillis, ModelID: execution.ModelID.String(), ModelName: execution.ModelName,
+		ResponseText: execution.ResponseText, InputTokens: execution.InputTokens, OutputTokens: execution.OutputTokens,
+		RequestID: requestID,
 	})
 }

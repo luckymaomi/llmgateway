@@ -1,10 +1,11 @@
 [Unit]
-Description=Run LLMGateway encrypted backup every six hours
+Description=Run LLMGateway encrypted offsite backup with missed-cycle margin
 
 [Timer]
-OnCalendar=*-*-* 00,06,12,18:15:00
+OnCalendar=*-*-* 00,02,04,06,08,10,12,14,16,18,20,22:00:00
 Persistent=true
-RandomizedDelaySec=15m
+RandomizedDelaySec=10m
+AccuracySec=1m
 Unit=llmgateway-backup.service
 
 [Install]

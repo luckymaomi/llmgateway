@@ -38,7 +38,7 @@ export function RegisterPage({ invitation = '' }: { invitation?: string }) {
   })
 
   return (
-    <AuthPanel title="邀请注册" subtitle="提交后由管理员审核">
+    <AuthPanel title="邀请注册">
       <form
         className="form-stack"
         onSubmit={form.handleSubmit((values) => register.mutate(values))}

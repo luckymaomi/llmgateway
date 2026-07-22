@@ -1,0 +1,22 @@
+[Unit]
+Description=Check the LLMGateway backup recovery point age
+RequiresMountsFor=/opt/llmgateway /etc/llmgateway-backup /var/lib/llmgateway-backup
+
+[Service]
+Type=oneshot
+ExecStart=/opt/llmgateway/backup-bundle-launcher-linux.sh check-freshness /etc/llmgateway-backup/backup.env
+User=root
+Group=root
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/etc/llmgateway /etc/llmgateway-backup /opt/llmgateway /var/lib/llmgateway-backup
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native

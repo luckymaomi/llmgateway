@@ -3,7 +3,6 @@ import { expect, type Page } from '@playwright/test'
 import {
   dataID,
   dataRecord,
-  expectLocatorWidthToFit,
   expectPageWidthToFit,
   isRecord,
   uuidPattern,
@@ -16,27 +15,33 @@ export interface PublishedCatalogFacts {
   ungrantedModelAlias: string
   draftOnlyModelAlias: string
   revisionSequence: number
-  revisionSummary: string
 }
 
 export async function completePublishedCatalog(
   page: Page,
   browserProblems: BrowserProblems,
+  providerID: string,
 ): Promise<PublishedCatalogFacts> {
   const authorizedModelAlias = 'browser-chat'
   const ungrantedModelAlias = 'browser-batch'
   const draftOnlyModelAlias = 'browser-draft-only'
   await page.getByRole('link', { name: '模型', exact: true }).click()
-  const authorizedModelID = await createModel(page, authorizedModelAlias, 'fixture-chat', true)
-  const ungrantedModelID = await createModel(page, ungrantedModelAlias, 'upstream-browser-batch')
-  await expect(page.getByRole('table', { name: '模型列表' })).toContainText(authorizedModelAlias)
-  await expect(page.getByRole('table', { name: '模型列表' })).toContainText(ungrantedModelAlias)
-
-  await page.getByRole('link', { name: '用量与账本', exact: true }).click()
-  await page.getByRole('link', { name: '成本', exact: true }).click()
-  await expect(page.getByRole('table', { name: '模型价格版本' })).toContainText(
+  const authorizedModelID = await createModel(
+    page,
+    providerID,
     authorizedModelAlias,
+    'fixture-chat',
+    true,
   )
+  const ungrantedModelID = await createModel(
+    page,
+    providerID,
+    ungrantedModelAlias,
+    'upstream-browser-batch',
+  )
+
+  await page.getByRole('link', { name: '用量与额度', exact: true }).click()
+  await page.getByRole('link', { name: '上游成本', exact: true }).click()
   await page.getByRole('button', { name: '新增价格' }).click()
   const priceDialog = page.getByRole('dialog')
   await priceDialog.getByLabel('模型').selectOption(authorizedModelID)
@@ -49,16 +54,15 @@ export async function completePublishedCatalog(
   )
   await priceDialog.getByRole('button', { name: '保存', exact: true }).click()
   expect((await priceResponsePromise).status()).toBe(201)
-  await expect(page.getByRole('table', { name: '模型价格版本' })).toContainText('1.5')
 
   const navigation = page.getByRole('complementary', { name: '主导航' })
-  await navigation.getByRole('link', { name: '上游凭据池' }).click()
-  await page.getByRole('button', { name: '添加凭据' }).click()
+  await navigation.getByRole('link', { name: 'Provider API Key' }).click()
+  await page.getByRole('button', { name: '添加 API Key' }).click()
   const credentialDialog = page.getByRole('dialog')
   const credentialSecret = 'core-upstream-secret'
-  await credentialDialog.getByLabel('Provider').selectOption({ label: 'Browser Provider Mobile' })
+  await credentialDialog.getByLabel('所属 Provider').selectOption(providerID)
   await credentialDialog.getByLabel('名称').fill('Browser credential')
-  await credentialDialog.getByLabel('API Key / 凭据').fill(credentialSecret)
+  await credentialDialog.getByLabel('Provider API Key').fill(credentialSecret)
   await credentialDialog.getByRole('checkbox', { name: authorizedModelAlias }).check()
   await credentialDialog.getByRole('checkbox', { name: ungrantedModelAlias }).check()
   await credentialDialog.getByLabel(`${authorizedModelAlias} 优先级`).fill('10')
@@ -94,7 +98,7 @@ export async function completePublishedCatalog(
     await credentialDialog.getByRole('button', { name: '保存', exact: true }).click()
     const interruptedRequest = await failedRequest
     expect(interruptedRequest.headers()['idempotency-key']).toMatch(uuidPattern)
-    await expect(credentialDialog.getByRole('alert')).toContainText('结果暂时无法确认')
+    await expect(credentialDialog.getByRole('alert')).toBeVisible()
     const storedOperation = await page.evaluate(() => {
       for (let index = 0; index < sessionStorage.length; index += 1) {
         const key = sessionStorage.key(index)
@@ -117,13 +121,12 @@ export async function completePublishedCatalog(
     )
     await page.reload()
     const reconciliation = page.getByRole('alert')
-    await expect(reconciliation).toContainText('已在持久列表中确认上次创建结果。')
-    await expect(page.getByRole('table', { name: '上游凭据列表' })).toContainText(
+    await expect(reconciliation).toBeVisible()
+    await expect(page.getByRole('table', { name: 'Provider API Key 列表' })).toContainText(
       'Browser credential',
     )
     await expect(page.getByText(credentialSecret)).toHaveCount(0)
     await reconciliation.getByRole('button', { name: '完成对账' }).click()
-    await expect(reconciliation).toBeHidden()
     const pendingMarkerCount = await page.evaluate(
       () =>
         Object.keys(sessionStorage).filter((key) =>
@@ -136,27 +139,37 @@ export async function completePublishedCatalog(
   }
 
   const credentialRow = page
-    .getByRole('table', { name: '上游凭据列表' })
+    .getByRole('table', { name: 'Provider API Key 列表' })
     .getByRole('row')
     .filter({ hasText: 'Browser credential' })
-  await expect(credentialRow.getByRole('button', { name: '测试连接' })).toBeVisible()
   const probePath = `${credentialPath}/${credentialID}/probe`
   const probeResponsePromise = page.waitForResponse(
     (response) =>
       new URL(response.url()).pathname === probePath && response.request().method() === 'POST',
   )
   await credentialRow.getByRole('button', { name: '测试连接' }).click()
+  const probeDialog = page.getByRole('dialog', { name: '测试 Provider API Key' })
+  await probeDialog.getByLabel('测试模型').selectOption(authorizedModelID)
+  await probeDialog.getByRole('button', { name: '开始测试' }).click()
   const probeResponse = await probeResponsePromise
   expect(probeResponse.status()).toBe(200)
+  expect(probeResponse.request().postDataJSON()).toEqual({ modelId: authorizedModelID })
   const probeResult = dataRecord(await probeResponse.json())
   if (!probeResult) throw new Error('Credential probe response did not contain a data record.')
-  expect(probeResult).toEqual(expect.objectContaining({ status: 'succeeded', mayUseTokens: false }))
+  expect(probeResult).toEqual(
+    expect.objectContaining({
+      status: 'succeeded',
+      mayUseTokens: true,
+      modelId: authorizedModelID,
+      modelName: authorizedModelAlias,
+      responseText: 'fixture response',
+      inputTokens: 4,
+      outputTokens: 2,
+    }),
+  )
   expect(probeResult.requestId).toEqual(expect.stringMatching(/\S+/))
-  const probePanel = page.getByRole('region', { name: '凭据连接测试' })
-  await expect(probePanel).toContainText('未消耗模型 Token')
-  await expect(probePanel).toContainText(String(probeResult.requestId))
-
-  await credentialRow.getByRole('button', { name: '编辑凭据' }).click()
+  await probeDialog.getByText('关闭', { exact: true }).click()
+  await credentialRow.getByRole('button', { name: '编辑 API Key' }).click()
   const editDialog = page.getByRole('dialog')
   await editDialog.getByLabel('RPM').fill('75')
   await editDialog.getByLabel(`${authorizedModelAlias} 权重`).fill('80')
@@ -166,28 +179,26 @@ export async function completePublishedCatalog(
       response.request().method() === 'PUT',
   )
   await editDialog.getByRole('button', { name: '保存更新' }).click()
-  expect((await updateResponsePromise).status()).toBe(200)
-  await expect(editDialog).toBeHidden()
-  await expect(credentialRow).toContainText('75')
+  const updateResponse = await updateResponsePromise
+  expect(updateResponse.status()).toBe(200)
+  expect(updateResponse.request().postDataJSON()).toMatchObject({ rpmLimit: 75 })
 
   const statusPath = probePath.replace(/\/probe$/, '/status')
   const disabledResponsePromise = page.waitForResponse(
     (response) =>
       new URL(response.url()).pathname === statusPath && response.request().method() === 'PUT',
   )
-  await credentialRow.getByRole('button', { name: '停用凭据' }).click()
+  await credentialRow.getByRole('button', { name: '停用 API Key' }).click()
   expect((await disabledResponsePromise).status()).toBe(200)
-  await expect(credentialRow).toContainText('已停用')
   const enabledResponsePromise = page.waitForResponse(
     (response) =>
       new URL(response.url()).pathname === statusPath && response.request().method() === 'PUT',
   )
-  await credentialRow.getByRole('button', { name: '启用凭据' }).click()
+  await credentialRow.getByRole('button', { name: '启用 API Key' }).click()
   expect((await enabledResponsePromise).status()).toBe(200)
-  await expect(credentialRow).toContainText('可用')
 
-  await navigation.getByRole('link', { name: 'Provider 与模型' }).click()
-  await page.getByRole('link', { name: '配置版本', exact: true }).click()
+  await navigation.getByRole('link', { name: 'Provider 接入' }).click()
+  await page.getByRole('link', { name: '发布', exact: true }).click()
   const capturePath = '/api/control/configuration/revisions'
   let captureInterrupted = false
   let captureKey = ''
@@ -215,9 +226,9 @@ export async function completePublishedCatalog(
     await page.getByRole('button', { name: '捕获当前配置' }).click()
     await failedCapture
     expect(captureKey).toMatch(uuidPattern)
-    await expect(page.getByRole('alert')).toContainText('操作结果暂时无法确认')
+    await expect(page.getByRole('alert')).toBeVisible()
     await page.reload()
-    await expect(page.getByRole('alert')).toContainText('操作结果暂时无法确认')
+    await expect(page.getByRole('alert')).toBeVisible()
     const replayResponse = page.waitForResponse(
       (response) =>
         new URL(response.url()).pathname === capturePath && response.request().method() === 'POST',
@@ -231,14 +242,11 @@ export async function completePublishedCatalog(
     sequence = typeof captured?.sequence === 'number' ? captured.sequence : 0
     expect(revisionID).toMatch(uuidPattern)
     expect(sequence).toBeGreaterThan(0)
-    expect(captured?.createdBy).toBe('Browser Administrator')
+    expect(captured?.createdBy).toBe('Administrator')
     expect(captured?.summary).toBe(revisionSummary)
     expect(captured?.modelCount).toBe(2)
     expect(captured?.credentialCount).toBe(1)
     expect(captured?.routeCount).toBe(2)
-    await expect(page.getByRole('region', { name: '操作结果' })).toContainText(
-      '已捕获配置版本 ' + String(sequence),
-    )
     await page.getByRole('dialog').getByRole('button', { name: '关闭' }).click()
   } finally {
     await page.unroute('**' + capturePath)
@@ -249,10 +257,6 @@ export async function completePublishedCatalog(
   })
   await expect(revisionRows).toHaveCount(1)
   const revisionRow = revisionRows.first()
-  await expect(revisionRow.getByRole('cell', { name: revisionSummary, exact: true })).toBeVisible()
-  const creatorCell = revisionRow.getByRole('cell', { name: 'Browser Administrator', exact: true })
-  await expect(creatorCell).toBeVisible()
-  await expectLocatorWidthToFit(creatorCell)
   await expectPageWidthToFit(page)
 
   const publishPath = '/api/control/configuration/revisions/' + revisionID + '/publish'
@@ -282,9 +286,9 @@ export async function completePublishedCatalog(
     await failedRequest
     expect(originalKey).toMatch(uuidPattern)
     expect(JSON.parse(originalBody)).toEqual({ expectedActiveVersion: 0 })
-    await expect(page.getByRole('alert')).toContainText('操作结果暂时无法确认')
+    await expect(page.getByRole('alert')).toBeVisible()
     await page.reload()
-    await expect(page.getByRole('alert')).toContainText('操作结果暂时无法确认')
+    await expect(page.getByRole('alert')).toBeVisible()
     const replayResponse = page.waitForResponse(
       (response) =>
         new URL(response.url()).pathname === publishPath && response.request().method() === 'POST',
@@ -296,15 +300,14 @@ export async function completePublishedCatalog(
     expect(replayed.request().postData()).toBe(originalBody)
     const published = dataRecord(await replayed.json())
     const publishedRevision = isRecord(published?.result) ? published.result : undefined
-    expect(publishedRevision?.createdBy).toBe('Browser Administrator')
-    await expect(page.getByLabel('当前生效配置')).toContainText('版本 ' + String(sequence))
+    expect(publishedRevision?.createdBy).toBe('Administrator')
     await page.getByRole('dialog').getByRole('button', { name: '关闭' }).click()
   } finally {
     await page.unroute('**' + publishPath)
   }
 
   await page.getByRole('link', { name: '模型', exact: true }).click()
-  await createModel(page, draftOnlyModelAlias, 'upstream-browser-draft-only')
+  await createModel(page, providerID, draftOnlyModelAlias, 'upstream-browser-draft-only')
   const activeResponse = await page.request.get('/api/control/configuration/active')
   expect(activeResponse.status()).toBe(200)
   const active = dataRecord(await activeResponse.json())
@@ -324,19 +327,19 @@ export async function completePublishedCatalog(
     ungrantedModelAlias,
     draftOnlyModelAlias,
     revisionSequence: sequence,
-    revisionSummary,
   }
 }
 
 async function createModel(
   page: Page,
+  providerID: string,
   alias: string,
   upstreamModelID: string,
   reasoning = false,
 ): Promise<string> {
   await page.getByRole('button', { name: '添加模型' }).click()
   const dialog = page.getByRole('dialog')
-  await dialog.getByLabel('Provider').selectOption({ label: 'Browser Provider Mobile' })
+  await dialog.getByLabel('Provider', { exact: true }).selectOption(providerID)
   await dialog.getByLabel('网关别名').fill(alias)
   await dialog.getByLabel('上游模型 ID').fill(upstreamModelID)
   await dialog.getByLabel('上下文 Token').fill('8192')

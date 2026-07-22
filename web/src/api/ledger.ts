@@ -2,7 +2,6 @@ import { apiClient, listQuery } from './client'
 import type {
   Entitlement,
   EntitlementInput,
-  LedgerAdjustmentInput,
   LedgerEntry,
   ListQuery,
   Page,
@@ -21,12 +20,6 @@ export const ledgerApi = {
     apiClient.request<Page<LedgerEntry>>(`${base}/ledger/entries`, {
       query: listQuery(query),
       ...(signal ? { signal } : {}),
-    }),
-  adjust: (input: LedgerAdjustmentInput) =>
-    apiClient.request<LedgerEntry, LedgerAdjustmentInput>(`${base}/ledger/adjustments`, {
-      method: 'POST',
-      body: input,
-      headers: { 'Idempotency-Key': input.idempotencyKey },
     }),
   entitlements: (query: ListQuery, signal?: AbortSignal) =>
     apiClient.request<Page<Entitlement>>(`${base}/entitlements`, {

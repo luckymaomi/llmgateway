@@ -27,8 +27,8 @@ const optionalPositiveInteger = z
 
 const schema = z.object({
   providerId: z.string().min(1, '请选择 Provider'),
-  label: z.string().trim().min(2, '请输入凭据名称'),
-  secret: z.string().min(8, '凭据至少需要 8 个字符'),
+  label: z.string().trim().min(2, '请输入 API Key 名称'),
+  secret: z.string().min(8, 'API Key 至少需要 8 个字符'),
   resourceDomain: z.enum(['free', 'professional']),
   modelBindings: modelBindingsSchema,
   rpmLimit: optionalPositiveInteger,
@@ -158,8 +158,7 @@ export function CredentialForm({
       onOpenChange={(nextOpen) => {
         if (!nextOpen) requestClose()
       }}
-      title="添加上游凭据"
-      description="凭据与所选模型原子保存，密钥提交后不再返回浏览器。"
+      title="添加 Provider API Key"
       width="lg"
       dismissible={!controlsLocked}
       footer={
@@ -190,7 +189,7 @@ export function CredentialForm({
         onSubmit={(event) => void handleSubmit(event)}
       >
         <Field
-          label="Provider"
+          label="所属 Provider"
           htmlFor="credential-provider"
           error={form.formState.errors.providerId?.message}
         >
@@ -214,7 +213,7 @@ export function CredentialForm({
           <Input id="credential-label" readOnly={controlsLocked} {...form.register('label')} />
         </Field>
         <Field
-          label="API Key / 凭据"
+          label="Provider API Key"
           htmlFor="credential-secret"
           error={form.formState.errors.secret?.message}
         >

@@ -1194,6 +1194,25 @@ func (q *Queries) TouchSession(ctx context.Context, id uuid.UUID) error {
 	return err
 }
 
+const updateOwnPassword = `-- name: UpdateOwnPassword :execrows
+UPDATE users SET password_hash = $1, updated_at = now()
+WHERE id = $2 AND password_hash = $3
+`
+
+type UpdateOwnPasswordParams struct {
+	ReplacementPasswordHash string    `json:"replacement_password_hash"`
+	ID                      uuid.UUID `json:"id"`
+	ExpectedPasswordHash    string    `json:"expected_password_hash"`
+}
+
+func (q *Queries) UpdateOwnPassword(ctx context.Context, arg UpdateOwnPasswordParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateOwnPassword, arg.ReplacementPasswordHash, arg.ID, arg.ExpectedPasswordHash)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const updateUserPassword = `-- name: UpdateUserPassword :one
 UPDATE users SET password_hash = $1, updated_at = now()
 WHERE id = $2

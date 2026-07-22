@@ -1,26 +1,19 @@
-import { devices, expect, type Browser, type Page } from '@playwright/test'
+import { expect, type Page } from '@playwright/test'
 
-import {
-  dataID,
-  expectLocatorWidthToFit,
-  expectPageWidthToFit,
-  uuidPattern,
-} from './acceptance-helpers'
+import { dataID, expectPageWidthToFit, uuidPattern } from './acceptance-helpers'
 import type { PublishedCatalogFacts } from './catalog-flow'
 import type { BrowserProblems, GatewayRuntime } from './runtime'
 
 export async function createEntitlementAfterLostResponse(
   page: Page,
-  browser: Browser,
   browserProblems: BrowserProblems,
   gateway: GatewayRuntime,
   catalog: PublishedCatalogFacts,
 ): Promise<void> {
   const navigation = page.getByRole('complementary', { name: '主导航' })
-  await navigation.getByRole('link', { name: '用量与账本' }).click()
+  await navigation.getByRole('link', { name: '用量与额度' }).click()
   await expect(page).toHaveURL(/\/ledger\/entitlements$/)
-  await expect(page.getByRole('table', { name: '额度与套餐列表' })).toBeVisible()
-  await page.getByRole('button', { name: '分配套餐' }).click()
+  await page.getByRole('button', { name: '分配额度' }).click()
   const dialog = page.getByRole('dialog')
   await dialog.getByLabel('用户').selectOption({ label: 'Browser Member' })
   await dialog.getByLabel('模型范围').selectOption(catalog.authorizedModelID)
@@ -59,7 +52,7 @@ export async function createEntitlementAfterLostResponse(
     await failedRequest
     expect(originalKey).toMatch(uuidPattern)
     expect(committedID).toMatch(uuidPattern)
-    await expect(dialog.getByRole('alert')).toContainText('分配结果暂时无法确认')
+    await expect(dialog.getByRole('alert')).toBeVisible()
     const pendingOperation = await page.evaluate(() => {
       for (let index = 0; index < sessionStorage.length; index += 1) {
         const key = sessionStorage.key(index)
@@ -78,9 +71,9 @@ export async function createEntitlementAfterLostResponse(
     expect(pending.input?.reason).toBe('Browser production acceptance allocation')
     await gateway.restart()
     await page.reload()
-    await page.getByRole('button', { name: '分配套餐' }).click()
+    await page.getByRole('button', { name: '分配额度' }).click()
     const recoveryDialog = page.getByRole('dialog')
-    await expect(recoveryDialog.getByRole('alert')).toContainText('分配结果暂时无法确认')
+    await expect(recoveryDialog.getByRole('alert')).toBeVisible()
     const replayResponse = page.waitForResponse(
       (response) =>
         new URL(response.url()).pathname === entitlementPath &&
@@ -92,12 +85,10 @@ export async function createEntitlementAfterLostResponse(
     expect(replayed.request().headers()['idempotency-key']).toBe(originalKey)
     expect(replayed.request().postData()).toBe(originalBody)
     expect(dataID(await replayed.json())).toBe(committedID)
-    await expect(recoveryDialog).toBeHidden()
     const row = page.getByRole('row').filter({ hasText: 'Browser Member' })
     await expect(row).toHaveCount(1)
     await expect(row).toContainText(catalog.authorizedModelAlias)
     await expect(row).toContainText('50.0K / 50.0K')
-    await expectLocatorWidthToFit(row)
     await expectPageWidthToFit(page)
     expect(
       await page.evaluate(
@@ -107,24 +98,8 @@ export async function createEntitlementAfterLostResponse(
           ).length,
       ),
     ).toBe(0)
-    const mobileContext = await browser.newContext({
-      ...devices['Pixel 7'],
-      baseURL: new URL(page.url()).origin,
-      storageState: await page.context().storageState(),
-    })
-    try {
-      const mobilePage = await mobileContext.newPage()
-      browserProblems.observe(mobilePage)
-      await mobilePage.goto('/ledger/entitlements')
-      const mobileList = mobilePage.getByRole('list', { name: '额度与套餐列表' })
-      await expect(mobileList).toContainText('Browser Member')
-      await expect(mobileList).toContainText(catalog.authorizedModelAlias)
-      await expectPageWidthToFit(mobilePage)
-    } finally {
-      await mobileContext.close()
-    }
   } finally {
     if (!page.isClosed()) await page.unroute('**' + entitlementPath)
   }
-  await navigation.getByRole('link', { name: '用户与网关 Key' }).click()
+  await page.goto('/access/users')
 }

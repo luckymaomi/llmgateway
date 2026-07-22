@@ -127,6 +127,7 @@ type AdmissionRequest struct {
 }
 
 type AdmissionPermit interface {
+	CapacityWaitDeadline() time.Time
 	Release()
 }
 
@@ -182,6 +183,7 @@ type LeaseRequest struct {
 	EntitlementConcurrency int32
 	EntitlementRPMLimit    *int32
 	EntitlementTPMLimit    *int64
+	CapacityWaitDeadline   time.Time
 }
 
 type Lease interface {

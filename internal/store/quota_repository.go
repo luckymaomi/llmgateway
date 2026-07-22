@@ -129,10 +129,18 @@ func (r *QuotaRepository) reconcileEntitlementGrant(ctx context.Context, input q
 	}
 }
 
-func (r *QuotaRepository) ListEntitlements(ctx context.Context, userID *uuid.UUID, page quota.Page) ([]quota.Entitlement, error) {
-	rows, err := r.queries.ListEntitlementsWithBalance(ctx, db.ListEntitlementsWithBalanceParams{UserID: userID, PageOffset: page.Offset, PageSize: page.Size})
+func (r *QuotaRepository) ListEntitlements(ctx context.Context, query quota.EntitlementQuery) (quota.PageResult[quota.Entitlement], error) {
+	parameters := db.CountEntitlementsParams{UserID: query.UserID, Search: query.Search, Status: query.Status, ResourceDomain: string(query.ResourceDomain)}
+	total, err := r.queries.CountEntitlements(ctx, parameters)
 	if err != nil {
-		return nil, translateQuotaError(err)
+		return quota.PageResult[quota.Entitlement]{}, translateQuotaError(err)
+	}
+	rows, err := r.queries.ListEntitlementsWithBalance(ctx, db.ListEntitlementsWithBalanceParams{
+		UserID: parameters.UserID, Search: parameters.Search, Status: parameters.Status, ResourceDomain: parameters.ResourceDomain,
+		PageOffset: query.Page.Offset, PageSize: query.Page.Size,
+	})
+	if err != nil {
+		return quota.PageResult[quota.Entitlement]{}, translateQuotaError(err)
 	}
 	items := make([]quota.Entitlement, 0, len(rows))
 	for _, row := range rows {
@@ -142,32 +150,54 @@ func (r *QuotaRepository) ListEntitlements(ctx context.Context, userID *uuid.UUI
 			ConcurrencyLimit: row.ConcurrencyLimit, RpmLimit: row.RpmLimit, TpmLimit: row.TpmLimit, CreatedAt: row.CreatedAt,
 		}, row.BalanceTokens))
 	}
-	return items, nil
+	return quota.PageResult[quota.Entitlement]{Items: items, Total: total}, nil
 }
 
-func (r *QuotaRepository) ListLedger(ctx context.Context, filter quota.LedgerFilter) ([]quota.LedgerEvent, error) {
+func (r *QuotaRepository) ListLedger(ctx context.Context, filter quota.LedgerFilter) (quota.PageResult[quota.LedgerEvent], error) {
+	parameters := db.CountLedgerEventsParams{
+		UserID: filter.UserID, EntitlementID: filter.EntitlementID, Search: filter.Search, ResourceDomain: string(filter.ResourceDomain),
+	}
+	total, err := r.queries.CountLedgerEvents(ctx, parameters)
+	if err != nil {
+		return quota.PageResult[quota.LedgerEvent]{}, translateQuotaError(err)
+	}
 	rows, err := r.queries.ListLedgerEvents(ctx, db.ListLedgerEventsParams{
-		UserID: filter.UserID, EntitlementID: filter.EntitlementID, PageOffset: filter.Page.Offset, PageSize: filter.Page.Size,
+		UserID: parameters.UserID, EntitlementID: parameters.EntitlementID, Search: parameters.Search, ResourceDomain: parameters.ResourceDomain,
+		PageOffset: filter.Page.Offset, PageSize: filter.Page.Size,
 	})
 	if err != nil {
-		return nil, translateQuotaError(err)
+		return quota.PageResult[quota.LedgerEvent]{}, translateQuotaError(err)
 	}
 	items := make([]quota.LedgerEvent, 0, len(rows))
 	for _, row := range rows {
-		items = append(items, ledgerEventFromDB(row))
+		items = append(items, quota.LedgerEvent{
+			ID: row.ID, UserID: row.UserID, EntitlementID: row.EntitlementID, RequestID: row.RequestID,
+			ReservationID: row.ReservationID, Kind: quota.LedgerKind(row.Kind), TokenDelta: row.TokenDelta,
+			ReservedTokens: row.ReservedTokens, InputTokens: row.InputTokens, OutputTokens: row.OutputTokens,
+			UsageSource: quota.UsageSource(row.UsageSource), ResourceDomain: quota.ResourceDomain(row.ResourceDomain),
+			Note: row.Note, CreatedBy: row.CreatedBy, CreatedAt: row.CreatedAt.Time.UTC(),
+		})
 	}
-	return items, nil
+	return quota.PageResult[quota.LedgerEvent]{Items: items, Total: total}, nil
 }
 
-func (r *QuotaRepository) ListUsage(ctx context.Context, userID *uuid.UUID, page quota.Page) ([]quota.UsageRecord, error) {
-	rows, err := r.queries.ListRequestUsage(ctx, db.ListRequestUsageParams{UserID: userID, PageOffset: page.Offset, PageSize: page.Size})
+func (r *QuotaRepository) ListUsage(ctx context.Context, query quota.UsageQuery) (quota.PageResult[quota.UsageRecord], error) {
+	parameters := db.CountRequestUsageParams{UserID: query.UserID, Search: query.Search, ResourceDomain: string(query.ResourceDomain)}
+	total, err := r.queries.CountRequestUsage(ctx, parameters)
 	if err != nil {
-		return nil, translateQuotaError(err)
+		return quota.PageResult[quota.UsageRecord]{}, translateQuotaError(err)
+	}
+	rows, err := r.queries.ListRequestUsage(ctx, db.ListRequestUsageParams{
+		UserID: parameters.UserID, Search: parameters.Search, ResourceDomain: parameters.ResourceDomain,
+		PageOffset: query.Page.Offset, PageSize: query.Page.Size,
+	})
+	if err != nil {
+		return quota.PageResult[quota.UsageRecord]{}, translateQuotaError(err)
 	}
 	items := make([]quota.UsageRecord, 0, len(rows))
 	for _, row := range rows {
 		if row.InputTokens == nil || row.OutputTokens == nil || !row.CompletedAt.Valid {
-			return nil, fmt.Errorf("quota store: request usage row is incomplete")
+			return quota.PageResult[quota.UsageRecord]{}, fmt.Errorf("quota store: request usage row is incomplete")
 		}
 		items = append(items, quota.UsageRecord{
 			RequestID: row.ID, UserID: row.UserID, KeyPrefix: row.KeyPrefix, ModelAlias: row.ModelAlias,
@@ -175,7 +205,7 @@ func (r *QuotaRepository) ListUsage(ctx context.Context, userID *uuid.UUID, page
 			UsageSource: quota.UsageSource(row.UsageSource), OccurredAt: row.CompletedAt.Time.UTC(),
 		})
 	}
-	return items, nil
+	return quota.PageResult[quota.UsageRecord]{Items: items, Total: total}, nil
 }
 
 func entitlementFromDB(value db.Entitlement, balance int64) quota.Entitlement {

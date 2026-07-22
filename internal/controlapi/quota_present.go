@@ -43,20 +43,6 @@ type entitlementInput struct {
 	Reason           string               `json:"reason"`
 }
 
-func (a *QuotaAPI) collectEntitlements(ctx context.Context, principal identity.Principal) ([]quota.Entitlement, error) {
-	var result []quota.Entitlement
-	for offset := int32(0); ; offset += 200 {
-		items, err := a.service.ListEntitlements(ctx, principal, nil, quota.Page{Offset: offset, Size: 200})
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, items...)
-		if len(items) < 200 {
-			return result, nil
-		}
-	}
-}
-
 func (a *QuotaAPI) presentEntitlements(ctx context.Context, principal identity.Principal, items []quota.Entitlement) ([]entitlementView, error) {
 	if len(items) == 0 {
 		return []entitlementView{}, nil

@@ -1,22 +1,18 @@
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
-import { Plus } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 
 import { ledgerApi, type LedgerEntry } from '@/api'
 import { DataTable, type ColumnDef } from '@/components/data-table/data-table'
 import { TableToolbar } from '@/components/data-table/table-toolbar'
 import { Page, PageHeader, PageSection } from '@/components/layout'
 import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
 import { useListSearch } from '@/hooks/use-list-search'
 import { formatDateTime, formatSignedTokens } from '@/lib/format'
 
-import { AdjustmentForm } from './adjustment-form'
 import { LedgerTabs } from './ledger-tabs'
 
 export function EntriesPage() {
   const { state, setPage, setSearch } = useListSearch()
-  const [adjusting, setAdjusting] = useState(false)
   const query = useQuery({
     queryKey: ['ledger-entries', state],
     queryFn: ({ signal }) => ledgerApi.entries(state, signal),
@@ -61,15 +57,7 @@ export function EntriesPage() {
   )
   return (
     <Page>
-      <PageHeader
-        title="用量与账本"
-        description="权威 usage、估算与额度事件"
-        actions={
-          <Button icon={<Plus size={16} />} onClick={() => setAdjusting(true)}>
-            人工调整
-          </Button>
-        }
-      />
+      <PageHeader title="额度变更记录" />
       <LedgerTabs />
       <PageSection>
         <TableToolbar
@@ -78,7 +66,7 @@ export function EntriesPage() {
           searchLabel="搜索用户、原因或 Request ID"
         />
         <DataTable
-          ariaLabel="账本事件列表"
+          ariaLabel="额度变更记录"
           data={query.data?.items ?? []}
           columns={columns}
           getRowId={(entry) => entry.id}
@@ -86,7 +74,7 @@ export function EntriesPage() {
           fetching={query.isFetching}
           error={query.error}
           onRetry={() => void query.refetch()}
-          emptyLabel="没有符合条件的账本事件"
+          emptyLabel="暂无额度变更记录"
           page={query.data?.page ?? state.page}
           pageSize={query.data?.pageSize ?? state.pageSize}
           total={query.data?.total ?? 0}
@@ -109,17 +97,14 @@ export function EntriesPage() {
           )}
         />
       </PageSection>
-      <AdjustmentForm open={adjusting} onOpenChange={setAdjusting} />
     </Page>
   )
 }
 
 const entryLabel = {
   grant: '发放',
-  reserve: '预留',
-  settle: '结算',
+  reservation: '预留',
+  settlement: '结算',
   release: '释放',
-  adjust: '调整',
-  expire: '到期',
-  compensate: '补偿',
+  compensation: '补偿',
 } as const

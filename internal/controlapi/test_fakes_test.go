@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/luckymaomi/llmgateway/internal/configuration"
 	"github.com/luckymaomi/llmgateway/internal/identity"
+	"github.com/luckymaomi/llmgateway/internal/providers"
 	"github.com/luckymaomi/llmgateway/internal/registry"
 )
 
@@ -19,7 +20,7 @@ type identityStub struct {
 	keys                  map[uuid.UUID][]identity.GatewayKey
 	bootstrapped          bool
 	bootstrapEmail        string
-	bootstrapName         string
+	changedPassword       bool
 	registrationCode      string
 	reviewedUserID        uuid.UUID
 	reviewedStatus        identity.Status
@@ -43,10 +44,9 @@ func (s *identityStub) IsBootstrapped(context.Context) (bool, error) {
 	return s.bootstrapped, nil
 }
 
-func (s *identityStub) Bootstrap(_ context.Context, email, displayName, _ string) (identity.SessionCredentials, error) {
+func (s *identityStub) Bootstrap(_ context.Context, email string) (identity.BootstrapCredentials, error) {
 	s.bootstrapEmail = email
-	s.bootstrapName = displayName
-	return s.credentials, nil
+	return identity.BootstrapCredentials{SessionCredentials: s.credentials, InitialPassword: "generated-initial-password"}, nil
 }
 
 func (s *identityStub) Register(_ context.Context, invitation, _, _, _ string) (identity.User, error) {
@@ -86,6 +86,11 @@ func (s *identityStub) VerifyCSRF(_ identity.Principal, token string) bool {
 func (s *identityStub) Logout(context.Context, identity.Principal) error {
 	s.loggedOut = true
 	return nil
+}
+
+func (s *identityStub) ChangePassword(_ context.Context, _ identity.Principal, currentPassword, replacementPassword, requestID string) (identity.SessionRevocation, error) {
+	s.changedPassword = currentPassword == "current password" && replacementPassword == "replacement password" && requestID != ""
+	return identity.SessionRevocation{RevokedSessions: 2}, nil
 }
 
 func (s *identityStub) ListUsers(_ context.Context, _ identity.Principal, status *identity.Status, page identity.Page) (identity.UserPage, error) {
@@ -228,6 +233,30 @@ type registryStub struct {
 	providerTime    time.Time
 }
 
+func (s *registryStub) InstallProviderPreset(_ context.Context, _ identity.Principal, presetID string, _ registry.MutationRequest) (registry.ProviderPresetInstallation, error) {
+	preset, found := providers.DefaultCatalog().Preset(presetID)
+	if !found {
+		return registry.ProviderPresetInstallation{}, registry.ErrNotFound
+	}
+	provider := registry.Provider{
+		ID: uuid.New(), Slug: preset.Slug, Name: preset.Name, Kind: preset.Kind, BaseURL: preset.BaseURL,
+		UpdatedAt: s.nextProviderTime(time.Time{}),
+	}
+	provider.CreatedAt = provider.UpdatedAt
+	models := make([]registry.Model, 0, len(preset.Models))
+	for _, source := range preset.Models {
+		model := registry.Model{
+			ID: uuid.New(), ProviderID: provider.ID, ProviderName: provider.Name, PublicName: source.PublicName,
+			UpstreamName: source.UpstreamName, DisplayName: source.DisplayName, ResourceDomain: registry.ResourceDomain(source.ResourceDomain),
+			Capabilities: registry.ModelCapabilities{Chat: true, Streaming: true, Tools: true, Reasoning: source.ReasoningMode != "", ReasoningMode: registry.ReasoningMode(source.ReasoningMode), ContextTokens: source.ContextTokens, OutputTokens: source.ContextTokens}, Enabled: true,
+		}
+		models = append(models, model)
+		s.models = append(s.models, model)
+	}
+	s.providers = append(s.providers, provider)
+	return registry.ProviderPresetInstallation{PresetID: preset.ID, Provider: provider, Models: models}, nil
+}
+
 func (s *registryStub) CreateProvider(_ context.Context, _ identity.Principal, provider registry.Provider, _ registry.MutationRequest) (registry.Provider, error) {
 	provider.ID = uuid.New()
 	for _, current := range s.providers {
@@ -368,10 +397,10 @@ func (s *registryStub) SetCredentialEnabled(_ context.Context, _ identity.Princi
 	return registry.Credential{}, registry.ErrNotFound
 }
 
-func (s *registryStub) ProbeCredential(_ context.Context, _ identity.Principal, credentialID uuid.UUID, _ string) (registry.CredentialProbeExecution, registry.Credential, error) {
+func (s *registryStub) ProbeCredential(_ context.Context, _ identity.Principal, credentialID, modelID uuid.UUID, _ string) (registry.CredentialProbeExecution, registry.Credential, error) {
 	for _, item := range s.credentials {
 		if item.ID == credentialID {
-			return registry.CredentialProbeExecution{Kind: "models", Status: "succeeded"}, item, nil
+			return registry.CredentialProbeExecution{Kind: "generation", Status: "succeeded", ModelID: modelID, MayUseTokens: true}, item, nil
 		}
 	}
 	return registry.CredentialProbeExecution{}, registry.Credential{}, registry.ErrNotFound

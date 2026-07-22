@@ -12,9 +12,7 @@ import (
 )
 
 type bootstrapRequest struct {
-	Email       string `json:"email"`
-	DisplayName string `json:"displayName"`
-	Password    string `json:"password"`
+	Email string `json:"email"`
 }
 
 type registrationRequest struct {
@@ -48,6 +46,11 @@ type sessionView struct {
 	ExpiresAt    time.Time     `json:"expiresAt"`
 }
 
+type bootstrapView struct {
+	sessionView
+	InitialPassword string `json:"initialPassword"`
+}
+
 func (a *API) setupStatus(w http.ResponseWriter, r *http.Request) {
 	bootstrapped, err := a.identity.IsBootstrapped(r.Context())
 	if err != nil {
@@ -63,13 +66,39 @@ func (a *API) bootstrap(w http.ResponseWriter, r *http.Request) {
 		writeDecodeError(w, r, err)
 		return
 	}
-	credentials, err := a.identity.Bootstrap(r.Context(), input.Email, input.DisplayName, input.Password)
+	credentials, err := a.identity.Bootstrap(r.Context(), input.Email)
 	if err != nil {
 		a.writeIdentityError(w, r, err)
 		return
 	}
 	a.setSessionCookies(w, credentials.Token, credentials.CSRFToken, credentials.Principal.ExpiresAt)
-	writeData(w, http.StatusCreated, presentSession(credentials.Principal, credentials.CSRFToken))
+	w.Header().Set("Cache-Control", "no-store")
+	writeData(w, http.StatusCreated, bootstrapView{
+		sessionView:     presentSession(credentials.Principal, credentials.CSRFToken),
+		InitialPassword: credentials.InitialPassword,
+	})
+}
+
+func (a *API) changePassword(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		CurrentPassword     string `json:"currentPassword"`
+		ReplacementPassword string `json:"replacementPassword"`
+	}
+	if err := decodeJSON(w, r, &input); err != nil {
+		writeDecodeError(w, r, err)
+		return
+	}
+	result, err := a.identity.ChangePassword(
+		r.Context(), principalFromContext(r.Context()), input.CurrentPassword, input.ReplacementPassword,
+		httpserver.RequestIDFromContext(r.Context()),
+	)
+	input.CurrentPassword = ""
+	input.ReplacementPassword = ""
+	if err != nil {
+		a.writeIdentityError(w, r, err)
+		return
+	}
+	writeData(w, http.StatusOK, sessionRevocationView{RevokedSessions: result.RevokedSessions})
 }
 
 func (a *API) register(w http.ResponseWriter, r *http.Request) {
@@ -156,9 +185,9 @@ func presentSession(principal identity.Principal, csrfToken string) sessionView 
 func capabilitiesFor(role identity.Role) []string {
 	switch role {
 	case identity.RoleAdministrator:
-		return []string{"providers:read", "providers:write", "credentials:read", "credentials:write", "access:read", "access:write", "ledger:read", "ledger:write", "playground:use", "revisions:publish"}
+		return []string{"providers:read", "providers:write", "credentials:read", "credentials:write", "access:read", "access:write", "ledger:read", "ledger:write", "gateway-key:test", "revisions:publish"}
 	case identity.RoleMember:
-		return []string{"access:read", "ledger:read", "playground:use"}
+		return []string{"access:read", "ledger:read", "gateway-key:test"}
 	default:
 		return []string{}
 	}

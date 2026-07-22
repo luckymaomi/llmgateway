@@ -18,8 +18,9 @@ import (
 
 type quotaService interface {
 	CreateEntitlement(context.Context, identity.Principal, quota.NewEntitlement) (quota.Entitlement, error)
-	ListEntitlements(context.Context, identity.Principal, *uuid.UUID, quota.Page) ([]quota.Entitlement, error)
-	ListUsage(context.Context, identity.Principal, *uuid.UUID, quota.Page) ([]quota.UsageRecord, error)
+	ListEntitlements(context.Context, identity.Principal, quota.EntitlementQuery) (quota.PageResult[quota.Entitlement], error)
+	ListLedger(context.Context, identity.Principal, quota.LedgerFilter) (quota.PageResult[quota.LedgerEvent], error)
+	ListUsage(context.Context, identity.Principal, quota.UsageQuery) (quota.PageResult[quota.UsageRecord], error)
 }
 
 type quotaIdentityResolver interface {
@@ -48,33 +49,31 @@ func (a *QuotaAPI) RegisterRoutes(router chi.Router, authorizationMiddleware, mu
 	}
 	router.With(authorizationMiddleware).Get("/entitlements", a.listEntitlements)
 	router.With(authorizationMiddleware, mutationMiddleware).Post("/entitlements", a.createEntitlement)
+	router.With(authorizationMiddleware).Get("/ledger/entries", a.listLedgerEntries)
 	router.Get("/usage", a.listUsage)
 }
 
 func (a *QuotaAPI) listUsage(w http.ResponseWriter, r *http.Request) {
 	principal := principalFromContext(r.Context())
-	items, err := a.collectUsage(r.Context(), principal)
-	if err != nil {
-		a.writeError(w, r, err)
-		return
-	}
-	views, err := a.presentUsage(r.Context(), principal, items)
-	if err != nil {
-		a.writeError(w, r, err)
-		return
-	}
 	query := parseListQuery(r)
-	filtered := make([]usageView, 0, len(views))
-	for _, view := range views {
-		if query.ResourceDomain != "" && string(view.ResourceDomain) != query.ResourceDomain {
-			continue
-		}
-		if !containsFold(view.UserName+" "+view.KeyPrefix+" "+view.ModelAlias+" "+view.RequestID, query.Search) {
-			continue
-		}
-		filtered = append(filtered, view)
+	page, ok := quotaPage(query)
+	if !ok {
+		a.writeError(w, r, quota.ErrInvalidInput)
+		return
 	}
-	writeData(w, http.StatusOK, paginate(filtered, query))
+	result, err := a.service.ListUsage(r.Context(), principal, quota.UsageQuery{
+		Search: query.Search, ResourceDomain: quota.ResourceDomain(query.ResourceDomain), Page: page,
+	})
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	views, err := a.presentUsage(r.Context(), principal, result.Items)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	writeData(w, http.StatusOK, pageView[usageView]{Items: views, Page: query.Page, PageSize: query.PageSize, Total: int(result.Total)})
 }
 
 func (a *QuotaAPI) Routes(authorizationMiddleware, mutationMiddleware func(http.Handler) http.Handler) http.Handler {
@@ -129,35 +128,33 @@ func (a *QuotaAPI) createEntitlement(w http.ResponseWriter, r *http.Request) {
 
 func (a *QuotaAPI) listEntitlements(w http.ResponseWriter, r *http.Request) {
 	principal := principalFromContext(r.Context())
-	items, err := a.collectEntitlements(r.Context(), principal)
-	if err != nil {
-		a.writeError(w, r, err)
-		return
-	}
-	views, err := a.presentEntitlements(r.Context(), principal, items)
-	if err != nil {
-		a.writeError(w, r, err)
-		return
-	}
 	query := parseListQuery(r)
-	filtered := make([]entitlementView, 0, len(views))
-	for _, view := range views {
-		if query.Status != "" && view.Status != query.Status {
-			continue
-		}
-		if query.ResourceDomain != "" && string(view.ResourceDomain) != query.ResourceDomain {
-			continue
-		}
-		modelAlias := ""
-		if view.ModelAlias != nil {
-			modelAlias = *view.ModelAlias
-		}
-		if !containsFold(view.OwnerName+" "+modelAlias+" "+string(view.PlanKind)+" "+string(view.ResourceDomain), query.Search) {
-			continue
-		}
-		filtered = append(filtered, view)
+	page, ok := quotaPage(query)
+	if !ok {
+		a.writeError(w, r, quota.ErrInvalidInput)
+		return
 	}
-	writeData(w, http.StatusOK, paginate(filtered, query))
+	result, err := a.service.ListEntitlements(r.Context(), principal, quota.EntitlementQuery{
+		Search: query.Search, Status: query.Status, ResourceDomain: quota.ResourceDomain(query.ResourceDomain), Page: page,
+	})
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	views, err := a.presentEntitlements(r.Context(), principal, result.Items)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	writeData(w, http.StatusOK, pageView[entitlementView]{Items: views, Page: query.Page, PageSize: query.PageSize, Total: int(result.Total)})
+}
+
+func quotaPage(query listQuery) (quota.Page, bool) {
+	offset := int64(query.Page-1) * int64(query.PageSize)
+	if offset > int64(^uint32(0)>>1) {
+		return quota.Page{}, false
+	}
+	return quota.Page{Offset: int32(offset), Size: int32(query.PageSize)}, true
 }
 
 func (a *QuotaAPI) writeError(w http.ResponseWriter, r *http.Request, err error) {

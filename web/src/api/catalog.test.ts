@@ -10,18 +10,21 @@ describe('Provider control API idempotency', () => {
   it('sends the caller-owned Idempotency-Key for create, update, and status writes', async () => {
     const received: Array<{ path: string; key: string; body: unknown }> = []
     server.use(
-      http.post('/api/control/providers', async ({ request }) => {
+      http.post('http://llmgateway.test/api/control/providers', async ({ request }) => {
         received.push(await requestFacts(request))
         return HttpResponse.json({ data: provider }, { status: 201 })
       }),
-      http.put('/api/control/providers/:providerID', async ({ request }) => {
+      http.put('http://llmgateway.test/api/control/providers/:providerID', async ({ request }) => {
         received.push(await requestFacts(request))
         return HttpResponse.json({ data: provider })
       }),
-      http.put('/api/control/providers/:providerID/status', async ({ request }) => {
-        received.push(await requestFacts(request))
-        return HttpResponse.json({ data: { ...provider, status: 'enabled' } })
-      }),
+      http.put(
+        'http://llmgateway.test/api/control/providers/:providerID/status',
+        async ({ request }) => {
+          received.push(await requestFacts(request))
+          return HttpResponse.json({ data: { ...provider, status: 'enabled' } })
+        },
+      ),
     )
 
     await catalogApi.createProvider(

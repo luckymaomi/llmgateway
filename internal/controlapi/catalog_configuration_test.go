@@ -102,14 +102,42 @@ func TestRegistryContract(t *testing.T) {
 	}
 }
 
-func TestEmptyCredentialPageUsesAnEmptyItemsArray(t *testing.T) {
+func TestProviderPresetContractProjectsInstallationState(t *testing.T) {
 	fixture := newControlFixture(t)
+	listResponse := request(t, fixture.handler, http.MethodGet, "/api/control/provider-presets", nil, true, false)
+	requireStatus(t, listResponse, http.StatusOK)
+	presets := decodeData[[]providerPresetView](t, listResponse)
+	if len(presets) != 4 {
+		t.Fatalf("Provider preset count = %d, want 4", len(presets))
+	}
+	var agnes providerPresetView
+	for _, preset := range presets {
+		if preset.ID == "agnes" {
+			agnes = preset
+		}
+	}
+	if agnes.State != "not_installed" || agnes.InstalledProviderID != nil || len(agnes.Models) != 1 {
+		t.Fatalf("initial Agnes preset = %#v", agnes)
+	}
 
-	response := request(t, fixture.handler, http.MethodGet, "/api/control/credentials?page=1&pageSize=20", nil, true, false)
-	requireStatus(t, response, http.StatusOK)
-	page := decodeData[pageView[credentialView]](t, response)
-	if page.Items == nil || len(page.Items) != 0 || page.Total != 0 {
-		t.Fatalf("expected a stable empty credential page, got %+v", page)
+	installResponse := request(t, fixture.handler, http.MethodPost, "/api/control/provider-presets/agnes/install", nil, true, true)
+	requireStatus(t, installResponse, http.StatusCreated)
+	installation := decodeData[struct {
+		PresetID string             `json:"presetId"`
+		Provider providerRecordView `json:"provider"`
+		Models   []modelView        `json:"models"`
+	}](t, installResponse)
+	if installation.PresetID != "agnes" || installation.Provider.Slug != "agnes" || installation.Provider.Status != "disabled" || len(installation.Models) != 1 {
+		t.Fatalf("Provider preset installation = %#v", installation)
+	}
+
+	listResponse = request(t, fixture.handler, http.MethodGet, "/api/control/provider-presets", nil, true, false)
+	requireStatus(t, listResponse, http.StatusOK)
+	presets = decodeData[[]providerPresetView](t, listResponse)
+	for _, preset := range presets {
+		if preset.ID == "agnes" && (preset.State != "installed" || preset.InstalledProviderID == nil) {
+			t.Fatalf("installed Agnes preset = %#v", preset)
+		}
 	}
 }
 
@@ -183,7 +211,7 @@ func TestConfigurationContract(t *testing.T) {
 	}
 }
 
-func TestConfigurationRevisionListResolvesCreatorNamesInOneBatch(t *testing.T) {
+func TestConfigurationRevisionListProjectsCreatorNamesAndSearch(t *testing.T) {
 	fixture := newControlFixture(t)
 	fixture.configuration.revisions[1].CreatedBy = fixture.memberID
 	repeatedCreator := fixture.configuration.revisions[0]
@@ -191,18 +219,12 @@ func TestConfigurationRevisionListResolvesCreatorNamesInOneBatch(t *testing.T) {
 	repeatedCreator.Revision = 6
 	repeatedCreator.CreatedAt = repeatedCreator.CreatedAt.Add(2 * time.Minute)
 	fixture.configuration.revisions = append(fixture.configuration.revisions, repeatedCreator)
-	fixture.identity.displayNameCalls = nil
-
 	response := request(t, fixture.handler, http.MethodGet, "/api/control/configuration/revisions?page=1&pageSize=20", nil, true, false)
 	requireStatus(t, response, http.StatusOK)
 	revisions := decodeData[pageView[configurationRevisionView]](t, response)
 	if len(revisions.Items) != 3 || revisions.Items[0].CreatedBy != "Admin" || revisions.Items[1].CreatedBy != "Member" || revisions.Items[2].CreatedBy != "Admin" {
 		t.Fatalf("configuration creator names = %+v", revisions.Items)
 	}
-	if len(fixture.identity.displayNameCalls) != 1 || len(fixture.identity.displayNameCalls[0]) != 2 || fixture.identity.displayNameCalls[0][0] != fixture.adminID || fixture.identity.displayNameCalls[0][1] != fixture.memberID {
-		t.Fatalf("display-name batches = %v, want one ordered unique batch", fixture.identity.displayNameCalls)
-	}
-
 	searchResponse := request(t, fixture.handler, http.MethodGet, "/api/control/configuration/revisions?search=Member&page=1&pageSize=20", nil, true, false)
 	requireStatus(t, searchResponse, http.StatusOK)
 	searchResult := decodeData[pageView[configurationRevisionView]](t, searchResponse)

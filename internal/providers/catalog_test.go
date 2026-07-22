@@ -39,6 +39,23 @@ func TestDefaultCatalogBuildsEveryPublishedProviderKind(t *testing.T) {
 	}
 }
 
+func TestDefaultCatalogPublishesIndependentInstallableProviderPresets(t *testing.T) {
+	presets := DefaultCatalog().Presets()
+	if len(presets) != 4 {
+		t.Fatalf("Provider presets = %#v, want four verified entry points", presets)
+	}
+	for _, preset := range presets {
+		if preset.ID == "" || preset.Kind == "" || preset.BaseURL == "" || len(preset.Models) == 0 {
+			t.Fatalf("Provider preset is incomplete: %#v", preset)
+		}
+	}
+	presets[0].Models[0].Capabilities[0] = "mutated"
+	reloaded, found := DefaultCatalog().Preset(presets[0].ID)
+	if !found || reloaded.Models[0].Capabilities[0] == "mutated" {
+		t.Fatal("Provider preset catalog exposed mutable capability facts")
+	}
+}
+
 func TestCatalogRejectsUntraceableContract(t *testing.T) {
 	_, err := NewCatalog([]Definition{{
 		Kind: "missing-contract", DisplayName: "Missing", Build: func(AdapterOptions) (Adapter, error) { return NewAgnes(), nil },

@@ -109,20 +109,21 @@ type NewEntitlement struct {
 }
 
 type LedgerEvent struct {
-	ID             uuid.UUID   `json:"id"`
-	UserID         uuid.UUID   `json:"user_id"`
-	EntitlementID  uuid.UUID   `json:"entitlement_id"`
-	RequestID      *uuid.UUID  `json:"request_id,omitempty"`
-	ReservationID  *uuid.UUID  `json:"reservation_id,omitempty"`
-	Kind           LedgerKind  `json:"kind"`
-	TokenDelta     int64       `json:"token_delta"`
-	ReservedTokens int64       `json:"reserved_tokens"`
-	InputTokens    int64       `json:"input_tokens"`
-	OutputTokens   int64       `json:"output_tokens"`
-	UsageSource    UsageSource `json:"usage_source"`
-	Note           *string     `json:"note,omitempty"`
-	CreatedBy      *uuid.UUID  `json:"created_by,omitempty"`
-	CreatedAt      time.Time   `json:"created_at"`
+	ID             uuid.UUID      `json:"id"`
+	UserID         uuid.UUID      `json:"user_id"`
+	EntitlementID  uuid.UUID      `json:"entitlement_id"`
+	RequestID      *uuid.UUID     `json:"request_id,omitempty"`
+	ReservationID  *uuid.UUID     `json:"reservation_id,omitempty"`
+	Kind           LedgerKind     `json:"kind"`
+	TokenDelta     int64          `json:"token_delta"`
+	ReservedTokens int64          `json:"reserved_tokens"`
+	InputTokens    int64          `json:"input_tokens"`
+	OutputTokens   int64          `json:"output_tokens"`
+	UsageSource    UsageSource    `json:"usage_source"`
+	ResourceDomain ResourceDomain `json:"resource_domain"`
+	Note           *string        `json:"note,omitempty"`
+	CreatedBy      *uuid.UUID     `json:"created_by,omitempty"`
+	CreatedAt      time.Time      `json:"created_at"`
 }
 
 type Page struct {
@@ -130,10 +131,32 @@ type Page struct {
 	Size   int32
 }
 
+type PageResult[T any] struct {
+	Items []T
+	Total int64
+}
+
+type EntitlementQuery struct {
+	UserID         *uuid.UUID
+	Search         string
+	Status         string
+	ResourceDomain ResourceDomain
+	Page           Page
+}
+
 type LedgerFilter struct {
-	UserID        *uuid.UUID
-	EntitlementID *uuid.UUID
-	Page          Page
+	UserID         *uuid.UUID
+	EntitlementID  *uuid.UUID
+	Search         string
+	ResourceDomain ResourceDomain
+	Page           Page
+}
+
+type UsageQuery struct {
+	UserID         *uuid.UUID
+	Search         string
+	ResourceDomain ResourceDomain
+	Page           Page
 }
 
 type UsageRecord struct {
@@ -224,9 +247,9 @@ type Resolution struct {
 
 type Repository interface {
 	CreateEntitlement(context.Context, NewEntitlement, uuid.UUID) (Entitlement, error)
-	ListEntitlements(context.Context, *uuid.UUID, Page) ([]Entitlement, error)
-	ListLedger(context.Context, LedgerFilter) ([]LedgerEvent, error)
-	ListUsage(context.Context, *uuid.UUID, Page) ([]UsageRecord, error)
+	ListEntitlements(context.Context, EntitlementQuery) (PageResult[Entitlement], error)
+	ListLedger(context.Context, LedgerFilter) (PageResult[LedgerEvent], error)
+	ListUsage(context.Context, UsageQuery) (PageResult[UsageRecord], error)
 	AcceptRequest(context.Context, AcceptInput) (AcceptedRequest, error)
 	Settle(context.Context, uuid.UUID, execution.Claim, int64, int64, UsageSource) (Resolution, error)
 	Release(context.Context, uuid.UUID, execution.Claim, string, string) (Resolution, error)

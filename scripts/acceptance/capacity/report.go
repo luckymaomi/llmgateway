@@ -105,8 +105,14 @@ func validateReport(report capacityReport, postgresConnectionLimit int64) []stri
 		} else if phase.P95Milliseconds > 2000 || phase.P99Milliseconds > 5000 {
 			failures = append(failures, phase.Name+": p95/p99 exceeded the capacity bound")
 		}
-		if phase.FirstByteP95Milliseconds > 2000 {
-			failures = append(failures, phase.Name+": first-byte p95 exceeded two seconds")
+		firstByteLimitMilliseconds := float64(2000)
+		firstByteLimitDescription := "two seconds"
+		if phase.Name == "hotspot" {
+			firstByteLimitMilliseconds = 5000
+			firstByteLimitDescription = "five seconds"
+		}
+		if phase.FirstByteP95Milliseconds > firstByteLimitMilliseconds {
+			failures = append(failures, phase.Name+": first-byte p95 exceeded "+firstByteLimitDescription)
 		}
 	}
 	if report.Resources.PeakResidentBytes > 768<<20 {

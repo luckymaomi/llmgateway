@@ -1,12 +1,14 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
 import { Dialog, Tooltip } from 'radix-ui'
-import { LogOut, Menu, Network, PanelLeftClose, X } from 'lucide-react'
+import { KeyRound, LogOut, Menu, Network, PanelLeftClose, X } from 'lucide-react'
 import { Suspense, useEffect, useState } from 'react'
 
 import { authApi, type Session } from '@/api'
 import { navigationFor } from '@/app/navigation'
 import { clearAuthenticatedSession, useSession } from '@/app/session'
+import { siteProfileQuery } from '@/app/site-profile'
+import { PasswordChangeDialog } from '@/features/auth/password-change-dialog'
 import { cn } from '@/lib/cn'
 
 import { IconButton } from '../ui/icon-button'
@@ -19,9 +21,12 @@ const roleLabel = {
 
 export function AppShell() {
   const session = useSession()
+  const siteProfile = useQuery(siteProfileQuery)
+  const siteName = siteProfile.data?.name ?? 'LLMGateway'
   const navigation = navigationFor(session)
   const [collapsed, setCollapsed] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
+  const [passwordOpen, setPasswordOpen] = useState(false)
   const pathname = useRouterState({ select: (state) => state.location.pathname })
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -56,12 +61,13 @@ export function AppShell() {
         <aside className="sidebar" aria-label="主导航">
           <div className="sidebar__brand">
             <Network size={22} aria-hidden="true" />
-            <span>LLMGateway</span>
+            <span>{siteName}</span>
           </div>
           {nav}
           <SessionControls
             session={session}
             logoutPending={logout.isPending}
+            onChangePassword={() => setPasswordOpen(true)}
             onLogout={() => logout.mutate()}
           />
         </aside>
@@ -79,7 +85,7 @@ export function AppShell() {
                   <Dialog.Overlay className="dialog-overlay" />
                   <Dialog.Content className="mobile-navigation">
                     <div className="mobile-navigation__header">
-                      <Dialog.Title>LLMGateway</Dialog.Title>
+                      <Dialog.Title>{siteName}</Dialog.Title>
                       <Dialog.Close asChild>
                         <IconButton label="关闭导航" showTooltip={false}>
                           <X size={19} />
@@ -90,6 +96,10 @@ export function AppShell() {
                     <SessionControls
                       session={session}
                       logoutPending={logout.isPending}
+                      onChangePassword={() => {
+                        setMobileOpen(false)
+                        setPasswordOpen(true)
+                      }}
                       onLogout={() => logout.mutate()}
                     />
                   </Dialog.Content>
@@ -113,6 +123,7 @@ export function AppShell() {
             <Outlet />
           </Suspense>
         </div>
+        <PasswordChangeDialog open={passwordOpen} onOpenChange={setPasswordOpen} />
       </div>
     </Tooltip.Provider>
   )
@@ -121,10 +132,12 @@ export function AppShell() {
 function SessionControls({
   session,
   logoutPending,
+  onChangePassword,
   onLogout,
 }: {
   session: Session
   logoutPending: boolean
+  onChangePassword: () => void
   onLogout: () => void
 }) {
   return (
@@ -136,6 +149,9 @@ function SessionControls({
           <small>{roleLabel[session.role]}</small>
         </span>
       </div>
+      <IconButton label="更换密码" onClick={onChangePassword}>
+        <KeyRound size={17} />
+      </IconButton>
       <IconButton label="退出登录" disabled={logoutPending} onClick={onLogout}>
         <LogOut size={17} />
       </IconButton>

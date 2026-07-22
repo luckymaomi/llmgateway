@@ -9,7 +9,7 @@ export type Capability =
   | 'access:write'
   | 'ledger:read'
   | 'ledger:write'
-  | 'playground:use'
+  | 'gateway-key:test'
   | 'revisions:publish'
 
 export type ResourceDomain = 'free' | 'professional'
@@ -23,6 +23,81 @@ export interface Session {
   csrfToken: string
   expiresAt: string
 }
+
+export interface SiteProfile {
+  name: string
+  description: string
+  contact: string
+  version: number
+  updatedAt: string
+}
+
+export interface SiteProfileInput {
+  name: string
+  description: string
+  contact: string
+  expectedVersion: number
+}
+
+export interface RequestWindowSummary {
+  requestCount: number
+  completedCount: number
+  failedCount: number
+  uncertainCount: number
+  inputTokens: number
+  outputTokens: number
+  firstByteP95Ms: number
+  totalLatencyP95Ms: number
+}
+
+export interface OverviewTrendPoint {
+  bucket: string
+  requestCount: number
+  inputTokens: number
+  outputTokens: number
+}
+
+export interface OverviewStep {
+  id: string
+  complete: boolean
+}
+
+interface OverviewBase {
+  requests: RequestWindowSummary
+  trend: OverviewTrendPoint[]
+  errors: Array<{ kind: string; count: number }>
+  steps: OverviewStep[]
+}
+
+export interface AdministratorOverview extends OverviewBase {
+  scope: 'administrator'
+  resources: {
+    providerCount: number
+    enabledProviderCount: number
+    modelCount: number
+    credentialCount: number
+    activeCredentialCount: number
+    coolingCredentialCount: number
+    activeMemberCount: number
+    pendingMemberCount: number
+    activeGatewayKeyCount: number
+    activeEntitlementCount: number
+    hasActiveConfiguration: boolean
+    hasModelPrice: boolean
+  }
+}
+
+export interface MemberOverview extends OverviewBase {
+  scope: 'member'
+  access: {
+    activeGatewayKeyCount: number
+    activeEntitlementCount: number
+    remainingTokens: number
+    nearestEntitlementExpiry?: string
+  }
+}
+
+export type OperationsOverview = AdministratorOverview | MemberOverview
 
 export interface Page<T> {
   items: T[]
@@ -65,6 +140,30 @@ export interface ProviderKind {
     liveCapabilities: string[]
     status: 'verified' | 'degraded'
   }
+}
+
+export interface ProviderPreset {
+  id: string
+  name: string
+  kind: string
+  baseUrl: string
+  verifiedAt: string
+  models: Array<{
+    alias: string
+    upstreamModelId: string
+    capabilities: ModelCapability[]
+    reasoningMode?: ReasoningMode
+    contextTokens: number
+  }>
+  state: 'not_installed' | 'installed' | 'conflict'
+  installedProviderId?: string
+  installedCredentials: number
+}
+
+export interface ProviderPresetInstallation {
+  presetId: string
+  provider: ProviderRecord
+  models: Model[]
 }
 
 export interface Provider extends ProviderRecord {
@@ -160,6 +259,8 @@ export interface Credential {
   cooldownUntil?: string
   lastCheckedAt?: string
   recentSuccessRate?: number
+  firstByteP95Ms?: number
+  totalLatencyP95Ms?: number
   lastProbeAt?: string
   lastProbeLatencyMs?: number
   lastProbeKind?: string
@@ -194,11 +295,16 @@ export interface CredentialUpdateInput extends Omit<CredentialInput, 'providerId
 export interface CredentialProbeResult {
   credential: Credential
   kind: string
-  status: 'succeeded' | 'failed' | 'unavailable'
+  status: 'succeeded' | 'failed' | 'unavailable' | 'uncertain'
   errorKind?: string
   retryable: boolean
   mayUseTokens: boolean
   latencyMillis: number
+  modelId: string
+  modelName: string
+  responseText?: string
+  inputTokens?: number
+  outputTokens?: number
   requestId: string
 }
 
@@ -302,7 +408,7 @@ export interface LedgerEntry {
   id: string
   occurredAt: string
   ownerName: string
-  kind: 'grant' | 'reserve' | 'settle' | 'release' | 'adjust' | 'expire' | 'compensate'
+  kind: 'grant' | 'reservation' | 'settlement' | 'release' | 'compensation'
   tokenDelta: number
   resourceDomain: ResourceDomain
   reason: string
@@ -326,14 +432,6 @@ export interface Entitlement {
   startsAt: string
   expiresAt: string
   status: 'scheduled' | 'active' | 'expired'
-}
-
-export interface LedgerAdjustmentInput {
-  ownerId: string
-  resourceDomain: ResourceDomain
-  tokenDelta: number
-  reason: string
-  idempotencyKey: string
 }
 
 export interface EntitlementInput {
@@ -386,40 +484,20 @@ export interface ApiProblemShape {
   fieldErrors?: Record<string, string>
 }
 
-export interface PlaygroundModel {
+export interface GatewayKeyTestModel {
   id: string
   alias: string
-  providerName: string
-  capabilities: ModelCapability[]
-  reasoningMode?: ReasoningMode
 }
 
-export interface PlaygroundMessage {
-  id: string
-  role: 'system' | 'user' | 'assistant' | 'tool'
-  content: string
-  reasoning?: string
-  toolCall?: {
-    name: string
-    arguments: string
-  }
-}
-
-export interface PlaygroundRunInput {
+export interface GatewayKeyTestInput {
   gatewayKeyId: string
   model: string
-  stream: boolean
-  messages: Array<Pick<PlaygroundMessage, 'role' | 'content'>>
-  tools?: Array<{ name: string; description: string; parameters: unknown }>
-  reasoningEnabled?: boolean
-  reasoningEffort?: 'low' | 'medium' | 'high'
+  message: string
 }
 
-export type PlaygroundEvent =
+export type GatewayKeyTestEvent =
   | { type: 'phase'; phase: OperationPhase; step: string; requestId: string }
-  | { type: 'reasoning'; delta: string }
   | { type: 'content'; delta: string }
-  | { type: 'tool_call'; name: string; argumentsDelta: string }
   | {
       type: 'usage'
       inputTokens: number

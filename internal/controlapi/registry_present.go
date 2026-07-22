@@ -54,6 +54,8 @@ type credentialView struct {
 	CooldownUntil      *time.Time                   `json:"cooldownUntil,omitempty"`
 	LastCheckedAt      *time.Time                   `json:"lastCheckedAt,omitempty"`
 	RecentSuccessRate  *float64                     `json:"recentSuccessRate,omitempty"`
+	FirstByteP95Ms     *int64                       `json:"firstByteP95Ms,omitempty"`
+	TotalLatencyP95Ms  *int64                       `json:"totalLatencyP95Ms,omitempty"`
 	LastProbeAt        *time.Time                   `json:"lastProbeAt,omitempty"`
 	LastProbeLatencyMs *int64                       `json:"lastProbeLatencyMs,omitempty"`
 	LastProbeKind      *string                      `json:"lastProbeKind,omitempty"`
@@ -77,6 +79,11 @@ type credentialProbeView struct {
 	Retryable     bool           `json:"retryable"`
 	MayUseTokens  bool           `json:"mayUseTokens"`
 	LatencyMillis int64          `json:"latencyMillis"`
+	ModelID       string         `json:"modelId"`
+	ModelName     string         `json:"modelName"`
+	ResponseText  string         `json:"responseText,omitempty"`
+	InputTokens   *int64         `json:"inputTokens,omitempty"`
+	OutputTokens  *int64         `json:"outputTokens,omitempty"`
 	RequestID     string         `json:"requestId"`
 }
 
@@ -205,6 +212,10 @@ func (s registrySnapshot) presentCredential(credential registry.Credential) cred
 		TPMLimit:           credential.TPMLimit,
 		ConcurrencyLimit:   credential.ConcurrencyLimit,
 		CooldownUntil:      utcTimePointer(credential.CooldownUntil),
+		LastCheckedAt:      utcTimePointer(credential.LastCheckedAt),
+		RecentSuccessRate:  credential.RecentSuccessRate,
+		FirstByteP95Ms:     credential.FirstByteP95Ms,
+		TotalLatencyP95Ms:  credential.TotalLatencyP95Ms,
 		LastProbeAt:        utcTimePointer(credential.LastProbeAt),
 		LastProbeLatencyMs: credential.LastProbeLatencyMs,
 		LastProbeKind:      credential.LastProbeKind,

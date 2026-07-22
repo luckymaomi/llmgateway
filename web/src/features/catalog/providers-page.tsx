@@ -1,14 +1,16 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Edit3, Plus, Power } from 'lucide-react'
+import { Link } from '@tanstack/react-router'
+import { Check, Edit3, KeyRound, Plus, Power, ServerCog } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
-import { catalogApi, type Provider } from '@/api'
+import { catalogApi, type Provider, type ProviderPreset } from '@/api'
 import { DataTable, type ColumnDef } from '@/components/data-table/data-table'
 import { TableToolbar } from '@/components/data-table/table-toolbar'
 import { Page, PageHeader, PageSection } from '@/components/layout'
-import { StatusBadge } from '@/components/ui/badge'
+import { Badge, StatusBadge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { IconButton } from '@/components/ui/icon-button'
+import { ErrorState, LoadingState } from '@/components/ui/state'
 import { FormProblem } from '@/features/auth/form-problem'
 import { useSession, hasCapability } from '@/app/session'
 import { useListSearch } from '@/hooks/use-list-search'
@@ -30,6 +32,7 @@ type ProviderStatusVariables = {
   expectedUpdatedAt: string
 }
 type ProviderStatusOperation = ProviderOperation<ProviderStatusVariables>
+type PresetInstallOperation = ProviderOperation<{ presetID: string }>
 
 export function ProvidersPage() {
   const session = useSession()
@@ -40,6 +43,13 @@ export function ProvidersPage() {
   const [uncertainStatusOperation, setUncertainStatusOperation] = useState<
     ProviderStatusOperation | undefined
   >()
+  const [uncertainPresetOperation, setUncertainPresetOperation] = useState<
+    PresetInstallOperation | undefined
+  >()
+  const presets = useQuery({
+    queryKey: ['provider-presets'],
+    queryFn: ({ signal }) => catalogApi.providerPresets(signal),
+  })
   const query = useQuery({
     queryKey: ['providers', state],
     queryFn: ({ signal }) => catalogApi.providers(state, signal),
@@ -62,6 +72,22 @@ export function ProvidersPage() {
       return queryClient.invalidateQueries({ queryKey: ['providers'] })
     },
   })
+  const installPreset = useMutation({
+    mutationFn: ({ variables, idempotencyKey }: PresetInstallOperation) =>
+      catalogApi.installProviderPreset(variables.presetID, idempotencyKey),
+    async onSuccess() {
+      setUncertainPresetOperation(undefined)
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['provider-presets'] }),
+        queryClient.invalidateQueries({ queryKey: ['providers'] }),
+        queryClient.invalidateQueries({ queryKey: ['models'] }),
+      ])
+    },
+    onError(error, operation) {
+      setUncertainPresetOperation(hasUnknownProviderOutcome(error) ? operation : undefined)
+      void queryClient.invalidateQueries({ queryKey: ['provider-presets'] })
+    },
+  })
   const editingProvider = editing?.kind === 'existing' ? editing.provider : undefined
 
   const columns = useMemo<ColumnDef<Provider, unknown>[]>(
@@ -78,7 +104,7 @@ export function ProvidersPage() {
       },
       { accessorKey: 'kind', header: '类型' },
       { accessorKey: 'modelCount', header: '模型' },
-      { accessorKey: 'credentialCount', header: '凭据' },
+      { accessorKey: 'credentialCount', header: 'API Key' },
       {
         accessorKey: 'status',
         header: '状态',
@@ -126,18 +152,47 @@ export function ProvidersPage() {
   return (
     <Page>
       <PageHeader
-        title="Provider 与模型"
-        description="上游端点、模型能力与可发布配置"
+        title="Provider 接入"
         actions={
           canWrite ? (
             <Button icon={<Plus size={16} />} onClick={() => setEditing({ kind: 'create' })}>
-              添加 Provider
+              自定义 Provider
             </Button>
           ) : null
         }
       />
       <CatalogTabs />
       <PageSection>
+        {presets.isLoading ? <LoadingState label="正在读取 Provider" /> : null}
+        {presets.error ? (
+          <ErrorState error={presets.error} onRetry={() => void presets.refetch()} />
+        ) : null}
+        {uncertainPresetOperation ? (
+          <ProviderOperationRecovery
+            error={installPreset.error}
+            pending={installPreset.isPending}
+            onRetry={() => installPreset.mutate(uncertainPresetOperation)}
+          />
+        ) : installPreset.error ? (
+          <FormProblem error={installPreset.error} />
+        ) : null}
+        {presets.data ? (
+          <div className="provider-presets" role="list" aria-label="Provider 接入">
+            {presets.data.map((preset) => (
+              <ProviderPresetCard
+                key={preset.id}
+                preset={preset}
+                canWrite={canWrite}
+                installing={installPreset.isPending}
+                onInstall={() =>
+                  installPreset.mutate(createProviderOperation({ presetID: preset.id }))
+                }
+              />
+            ))}
+          </div>
+        ) : null}
+      </PageSection>
+      <PageSection title="已接入 Provider">
         <TableToolbar
           search={state.search}
           onSearchChange={setSearch}
@@ -185,7 +240,7 @@ export function ProvidersPage() {
                 {provider.slug} · {provider.kind}
               </span>
               <span>
-                {provider.modelCount} 个模型 · {provider.credentialCount} 个凭据
+                {provider.modelCount} 个模型 · {provider.credentialCount} 个 API Key
               </span>
             </div>
           )}
@@ -206,4 +261,70 @@ export function ProvidersPage() {
       />
     </Page>
   )
+}
+
+function ProviderPresetCard({
+  preset,
+  canWrite,
+  installing,
+  onInstall,
+}: {
+  preset: ProviderPreset
+  canWrite: boolean
+  installing: boolean
+  onInstall: () => void
+}) {
+  const installed = preset.state === 'installed'
+  const conflict = preset.state === 'conflict'
+  const model = preset.models[0]
+  return (
+    <article className="provider-preset" role="listitem" data-state={preset.state}>
+      <div className="provider-preset__heading">
+        <div className="provider-preset__identity">
+          <span className="provider-preset__icon" aria-hidden="true">
+            <ServerCog size={19} />
+          </span>
+          <div>
+            <strong>{preset.name}</strong>
+            <span>{model?.alias ?? preset.kind}</span>
+          </div>
+        </div>
+        <Badge tone={conflict ? 'danger' : installed ? 'positive' : 'neutral'}>
+          {conflict ? '需要处理' : installed ? '已接入' : '未接入'}
+        </Badge>
+      </div>
+      <div className="capability-strip" aria-label="模型能力">
+        {model?.capabilities.map((capability) => (
+          <Badge key={capability}>{capabilityLabel[capability] ?? capability}</Badge>
+        ))}
+      </div>
+      <div className="provider-preset__action">
+        {!installed && !conflict && canWrite ? (
+          <Button size="sm" disabled={installing} icon={<Check size={15} />} onClick={onInstall}>
+            接入
+          </Button>
+        ) : installed ? (
+          <Button
+            asChild
+            size="sm"
+            variant={preset.installedCredentials > 0 ? 'secondary' : 'primary'}
+            icon={<KeyRound size={15} />}
+          >
+            <Link to="/credentials">
+              {preset.installedCredentials > 0
+                ? `查看 API Key (${preset.installedCredentials})`
+                : '添加 Provider API Key'}
+            </Link>
+          </Button>
+        ) : null}
+      </div>
+    </article>
+  )
+}
+
+const capabilityLabel: Record<string, string> = {
+  streaming: '流式',
+  tools: '工具',
+  reasoning: '推理',
+  structured_output: '结构化输出',
 }

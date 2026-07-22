@@ -210,7 +210,8 @@ func (a workflowAdmitter) Acquire(context.Context, AdmissionRequest) (AdmissionP
 
 type workflowAdmissionPermit struct{}
 
-func (workflowAdmissionPermit) Release() {}
+func (workflowAdmissionPermit) CapacityWaitDeadline() time.Time { return time.Time{} }
+func (workflowAdmissionPermit) Release()                        {}
 
 type workflowFactory struct {
 	adapter providers.Adapter

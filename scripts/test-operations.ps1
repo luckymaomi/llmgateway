@@ -1,6 +1,10 @@
 $ErrorActionPreference = "Stop"
+$runningOnWindows = $env:OS -eq "Windows_NT"
+$pnpmCommand = if ($runningOnWindows) { "pnpm.cmd" } else { "pnpm" }
+$powerShellCommand = if ($runningOnWindows) { "powershell" } else { "pwsh" }
+$runtimeName = if ($runningOnWindows) { "Windows amd64" } else { "Linux amd64" }
 
-. "$PSScriptRoot\isolated-services.ps1"
+. (Join-Path $PSScriptRoot "isolated-services.ps1")
 
 function Get-FreeLoopbackPort {
   $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
@@ -13,7 +17,7 @@ $runID = "operations-$([guid]::NewGuid().ToString('N'))"
 $databaseName = "llmgateway_operations"
 $restoredDatabaseName = "llmgateway_operations_restore"
 $password = "operations-$runID"
-$buildDirectory = Join-Path $root ".build\operations-$runID"
+$buildDirectory = Join-Path (Join-Path $root ".build") "operations-$runID"
 $backupPath = Join-Path $buildDirectory "llmgateway.dump"
 $environmentSnapshot = Save-LLMGatewayEnvironment
 $postgres = $null
@@ -77,10 +81,10 @@ try {
     throw "Offline administrator recovery did not persist activation, session revocation, and system audit facts: $recoveryFact"
   }
 
-  & powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\backup-postgres.ps1 `
+  & $powerShellCommand -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "backup-postgres.ps1") `
     -OutputPath $backupPath -Container $postgres.Container -DatabaseName $databaseName -DatabaseUser llmgateway -AllowIsolatedTestContainer
   if ($LASTEXITCODE -ne 0) { throw "PostgreSQL backup command failed." }
-  & powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\restore-postgres.ps1 `
+  & $powerShellCommand -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "restore-postgres.ps1") `
     -InputPath $backupPath -Container $postgres.Container -TargetDatabase $restoredDatabaseName -DatabaseUser llmgateway -ConfirmRestore -AllowIsolatedTestContainer
   if ($LASTEXITCODE -ne 0) { throw "PostgreSQL restore command failed." }
 
@@ -92,13 +96,14 @@ try {
 
   $valkey = Start-LLMGatewayTestValkey -RunID $runID -Password $password
   $gatewayPort = Get-FreeLoopbackPort
-  $binaryPath = Join-Path $buildDirectory "llmgateway-windows-amd64.exe"
+  $binaryName = if ($runningOnWindows) { "llmgateway.exe" } else { "llmgateway" }
+  $binaryPath = Join-Path $buildDirectory $binaryName
   $stdoutPath = Join-Path $buildDirectory "gateway.stdout.log"
   $stderrPath = Join-Path $buildDirectory "gateway.stderr.log"
-  pnpm.cmd --dir web run build
+  & $pnpmCommand --dir web run build
   if ($LASTEXITCODE -ne 0) { throw "Production frontend build failed." }
   go build -tags webembed -trimpath -o $binaryPath .\cmd\gateway
-  if ($LASTEXITCODE -ne 0) { throw "Windows amd64 production binary build failed." }
+  if ($LASTEXITCODE -ne 0) { throw "$runtimeName production binary build failed." }
 
   $env:LLMGATEWAY_PROFILE = "production"
   $env:LLMGATEWAY_DATABASE_URL = $postgres.DatabaseURL -replace "/$databaseName\?", "/$restoredDatabaseName`?"
@@ -111,7 +116,14 @@ try {
   $env:LLMGATEWAY_SESSION_PEPPER = "operations-session-pepper-$runID"
   $env:LLMGATEWAY_API_KEY_PEPPER = "operations-api-key-pepper-$runID"
   $env:LLMGATEWAY_COORDINATION_KEY_HASH_SECRET = "operations-coordination-secret-$runID"
-  $gateway = Start-Process -FilePath $binaryPath -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+  $gatewayStartArguments = @{
+    FilePath               = $binaryPath
+    PassThru               = $true
+    RedirectStandardOutput = $stdoutPath
+    RedirectStandardError  = $stderrPath
+  }
+  if ($runningOnWindows) { $gatewayStartArguments.WindowStyle = "Hidden" }
+  $gateway = Start-Process @gatewayStartArguments
   $deadline = (Get-Date).AddSeconds(20)
   do {
     if ($gateway.HasExited) { throw "Production gateway exited before readiness." }
@@ -124,7 +136,7 @@ try {
   if ($null -eq $ready -or [int]$ready.StatusCode -ne 200) { throw "Production gateway did not become ready." }
   $web = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$gatewayPort/" -TimeoutSec 5
   if ([int]$web.StatusCode -ne 200 -or $web.Content -notmatch '<div id="root"></div>') {
-    throw "Embedded production frontend was not served by the Windows amd64 gateway."
+    throw "Embedded production frontend was not served by the $runtimeName gateway."
   }
 } catch {
   $failure = $_
@@ -155,4 +167,4 @@ try {
   if ($cleanupFailures.Count -gt 0) { throw "Operations cleanup failed: $($cleanupFailures -join '; ')" }
 }
 
-Write-Host "Credential rotation, offline administrator recovery, PostgreSQL backup/restore, and the Windows amd64 production runtime passed in an isolated environment."
+Write-Host "Credential rotation, offline administrator recovery, PostgreSQL backup/restore, and the $runtimeName production runtime passed in an isolated environment."

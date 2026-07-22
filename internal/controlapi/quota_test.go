@@ -32,26 +32,30 @@ func (s *quotaControlServiceStub) CreateEntitlement(_ context.Context, _ identit
 	return s.items[0], nil
 }
 
-func (s *quotaControlServiceStub) ListEntitlements(_ context.Context, _ identity.Principal, _ *uuid.UUID, page quota.Page) ([]quota.Entitlement, error) {
-	if page.Offset >= int32(len(s.items)) {
-		return []quota.Entitlement{}, nil
+func (s *quotaControlServiceStub) ListEntitlements(_ context.Context, _ identity.Principal, query quota.EntitlementQuery) (quota.PageResult[quota.Entitlement], error) {
+	if query.Page.Offset >= int32(len(s.items)) {
+		return quota.PageResult[quota.Entitlement]{Items: []quota.Entitlement{}, Total: int64(len(s.items))}, nil
 	}
-	end := int(page.Offset + page.Size)
+	end := int(query.Page.Offset + query.Page.Size)
 	if end > len(s.items) {
 		end = len(s.items)
 	}
-	return append([]quota.Entitlement(nil), s.items[page.Offset:end]...), nil
+	return quota.PageResult[quota.Entitlement]{Items: append([]quota.Entitlement(nil), s.items[query.Page.Offset:end]...), Total: int64(len(s.items))}, nil
 }
 
-func (s *quotaControlServiceStub) ListUsage(_ context.Context, _ identity.Principal, _ *uuid.UUID, page quota.Page) ([]quota.UsageRecord, error) {
-	if page.Offset >= int32(len(s.usageItems)) {
-		return []quota.UsageRecord{}, nil
+func (s *quotaControlServiceStub) ListUsage(_ context.Context, _ identity.Principal, query quota.UsageQuery) (quota.PageResult[quota.UsageRecord], error) {
+	if query.Page.Offset >= int32(len(s.usageItems)) {
+		return quota.PageResult[quota.UsageRecord]{Items: []quota.UsageRecord{}, Total: int64(len(s.usageItems))}, nil
 	}
-	end := int(page.Offset + page.Size)
+	end := int(query.Page.Offset + query.Page.Size)
 	if end > len(s.usageItems) {
 		end = len(s.usageItems)
 	}
-	return append([]quota.UsageRecord(nil), s.usageItems[page.Offset:end]...), nil
+	return quota.PageResult[quota.UsageRecord]{Items: append([]quota.UsageRecord(nil), s.usageItems[query.Page.Offset:end]...), Total: int64(len(s.usageItems))}, nil
+}
+
+func (s *quotaControlServiceStub) ListLedger(_ context.Context, _ identity.Principal, _ quota.LedgerFilter) (quota.PageResult[quota.LedgerEvent], error) {
+	return quota.PageResult[quota.LedgerEvent]{Items: []quota.LedgerEvent{}}, nil
 }
 
 type quotaIdentityResolverStub struct {

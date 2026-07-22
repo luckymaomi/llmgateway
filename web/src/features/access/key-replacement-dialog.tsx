@@ -26,6 +26,7 @@ export function KeyReplacementDialog({ gatewayKey, onOpenChange }: KeyReplacemen
       await queryClient.invalidateQueries({ queryKey: ['gateway-keys'] })
     },
   })
+  const gatewayBaseURL = `${window.location.origin}/v1`
 
   function close(): void {
     if (mutation.isPending) return
@@ -54,7 +55,7 @@ export function KeyReplacementDialog({ gatewayKey, onOpenChange }: KeyReplacemen
       onOpenChange={(open) => {
         if (!open) close()
       }}
-      title={created ? '替换 Key 已创建' : '更换网关 Key'}
+      title={created ? '替换 Key 已创建' : '更换 API Key'}
       description={gatewayKey?.name ?? ''}
       dismissible={!mutation.isPending}
       footer={
@@ -81,7 +82,9 @@ export function KeyReplacementDialog({ gatewayKey, onOpenChange }: KeyReplacemen
               icon={copied ? <Check size={16} /> : <Copy size={16} />}
               onClick={async () => {
                 try {
-                  await navigator.clipboard.writeText(created.secret)
+                  await navigator.clipboard.writeText(
+                    `OPENAI_BASE_URL=${gatewayBaseURL}\nOPENAI_API_KEY=${created.secret}`,
+                  )
                   setCopied(true)
                   setCopyFailed(false)
                 } catch {
@@ -89,7 +92,7 @@ export function KeyReplacementDialog({ gatewayKey, onOpenChange }: KeyReplacemen
                 }
               }}
             >
-              {copied ? '已复制' : '复制 Key'}
+              {copied ? '已复制' : '复制调用配置'}
             </Button>
           </div>
           {copyFailed ? (
@@ -98,6 +101,12 @@ export function KeyReplacementDialog({ gatewayKey, onOpenChange }: KeyReplacemen
             </div>
           ) : null}
           <dl className="fact-list">
+            <div>
+              <dt>Base URL</dt>
+              <dd>
+                <code>{gatewayBaseURL}</code>
+              </dd>
+            </div>
             <div>
               <dt>新前缀</dt>
               <dd>{created.key.prefix}</dd>

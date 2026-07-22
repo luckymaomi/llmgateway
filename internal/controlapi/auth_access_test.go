@@ -22,17 +22,19 @@ func TestAuthenticationContract(t *testing.T) {
 	}
 
 	bootstrapResponse := request(t, fixture.handler, http.MethodPost, "/api/control/setup", map[string]any{
-		"displayName": "Primary Admin",
-		"email":       "owner@example.test",
-		"password":    "correct horse battery staple",
+		"email": "owner@example.test",
 	}, false, false)
 	requireStatus(t, bootstrapResponse, http.StatusCreated)
-	session := decodeData[sessionView](t, bootstrapResponse)
+	bootstrap := decodeData[bootstrapView](t, bootstrapResponse)
+	session := bootstrap.sessionView
 	if session.UserID != fixture.adminID.String() || session.Role != identity.RoleAdministrator || session.CSRFToken != "csrf-test-token" {
 		t.Fatalf("unexpected bootstrap session: %+v", session)
 	}
-	if fixture.identity.bootstrapEmail != "owner@example.test" || fixture.identity.bootstrapName != "Primary Admin" {
-		t.Fatalf("bootstrap input was not preserved: email=%q name=%q", fixture.identity.bootstrapEmail, fixture.identity.bootstrapName)
+	if fixture.identity.bootstrapEmail != "owner@example.test" || bootstrap.InitialPassword != "generated-initial-password" {
+		t.Fatalf("bootstrap result was not preserved: email=%q password=%q", fixture.identity.bootstrapEmail, bootstrap.InitialPassword)
+	}
+	if bootstrapResponse.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("bootstrap cache control = %q", bootstrapResponse.Header().Get("Cache-Control"))
 	}
 	cookies := bootstrapResponse.Result().Cookies()
 	if len(cookies) != 2 || cookies[0].Name != sessionCookieName || cookies[1].Name != csrfCookieName {
@@ -53,6 +55,14 @@ func TestAuthenticationContract(t *testing.T) {
 	current := decodeData[sessionView](t, sessionResponse)
 	if current.UserID != fixture.adminID.String() || current.CSRFToken != "csrf-test-token" {
 		t.Fatalf("unexpected current session: %+v", current)
+	}
+
+	passwordResponse := request(t, fixture.handler, http.MethodPost, "/api/control/password", map[string]string{
+		"currentPassword": "current password", "replacementPassword": "replacement password",
+	}, true, true)
+	requireStatus(t, passwordResponse, http.StatusOK)
+	if changed := decodeData[sessionRevocationView](t, passwordResponse); changed.RevokedSessions != 2 || !fixture.identity.changedPassword {
+		t.Fatalf("password change result = %+v, reached=%t", changed, fixture.identity.changedPassword)
 	}
 
 	registrationResponse := request(t, fixture.handler, http.MethodPost, "/api/control/registrations", map[string]string{
@@ -244,8 +254,8 @@ func TestSessionCapabilityContract(t *testing.T) {
 		role         identity.Role
 		capabilities []string
 	}{
-		{name: "administrator", role: identity.RoleAdministrator, capabilities: []string{"providers:read", "providers:write", "credentials:read", "credentials:write", "access:read", "access:write", "ledger:read", "ledger:write", "playground:use", "revisions:publish"}},
-		{name: "member", role: identity.RoleMember, capabilities: []string{"access:read", "ledger:read", "playground:use"}},
+		{name: "administrator", role: identity.RoleAdministrator, capabilities: []string{"providers:read", "providers:write", "credentials:read", "credentials:write", "access:read", "access:write", "ledger:read", "ledger:write", "gateway-key:test", "revisions:publish"}},
+		{name: "member", role: identity.RoleMember, capabilities: []string{"access:read", "ledger:read", "gateway-key:test"}},
 	}
 
 	for _, test := range tests {

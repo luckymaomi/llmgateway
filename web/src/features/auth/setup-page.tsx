@@ -1,116 +1,100 @@
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, useNavigate } from '@tanstack/react-router'
-import { ArrowRight, ShieldCheck } from 'lucide-react'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useNavigate } from '@tanstack/react-router'
+import { Check, Copy, ShieldCheck } from 'lucide-react'
+import { useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { z } from 'zod'
 
-import { authApi } from '@/api'
+import { authApi, type BootstrapResult } from '@/api'
 import { establishAuthenticatedSession } from '@/app/session'
 import { AuthPanel } from '@/components/layout'
 import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/field'
-import { LoadingState } from '@/components/ui/state'
 
 import { FormProblem } from './form-problem'
 
-const schema = z
-  .object({
-    displayName: z.string().trim().min(2, '请输入至少 2 个字符'),
-    email: z.email('请输入有效邮箱'),
-    password: z.string().min(12, '密码至少 12 位'),
-    confirmation: z.string(),
-  })
-  .refine((values) => values.password === values.confirmation, {
-    path: ['confirmation'],
-    message: '两次密码不一致',
-  })
-
+const schema = z.object({ email: z.email('请输入有效邮箱') })
 type FormValues = z.infer<typeof schema>
+type CopyState = 'idle' | 'copied' | 'failed'
 
 export function SetupPage() {
-  const status = useQuery({
-    queryKey: ['setup-status'],
-    queryFn: authApi.setupStatus,
-    retry: false,
-  })
   const queryClient = useQueryClient()
   const navigate = useNavigate()
+  const [created, setCreated] = useState<BootstrapResult | null>(null)
+  const [copyState, setCopyState] = useState<CopyState>('idle')
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
-    defaultValues: { displayName: '', email: '', password: '', confirmation: '' },
+    defaultValues: { email: '' },
   })
   const bootstrap = useMutation({
     mutationFn: authApi.bootstrap,
-    async onSuccess(session) {
-      establishAuthenticatedSession(queryClient, session)
-      await navigate({ to: '/providers/providers', replace: true })
+    onSuccess(result) {
+      establishAuthenticatedSession(queryClient, result)
+      setCreated(result)
+      form.reset({ email: '' })
     },
   })
 
-  if (status.isLoading) return <LoadingState label="正在检查初始化状态" />
+  async function copyPassword(): Promise<void> {
+    if (!created) return
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable')
+      await navigator.clipboard.writeText(created.initialPassword)
+      setCopyState('copied')
+    } catch {
+      setCopyState('failed')
+    }
+  }
 
-  if (status.data && !status.data.required) {
+  if (created) {
     return (
-      <AuthPanel title="系统已经初始化">
-        <Button asChild icon={<ArrowRight size={16} />}>
-          <Link to="/login">进入登录</Link>
+      <AuthPanel title="管理员已创建">
+        <div className="auth-marker">
+          <ShieldCheck size={18} />
+          立即保存到密码管理器，刷新或离开后无法再次查看
+        </div>
+        <div className="secret-reveal">
+          <code data-testid="initial-administrator-password">{created.initialPassword}</code>
+          <Button
+            type="button"
+            variant="secondary"
+            icon={copyState === 'copied' ? <Check size={16} /> : <Copy size={16} />}
+            onClick={() => void copyPassword()}
+          >
+            {copyState === 'copied' ? '已复制' : copyState === 'failed' ? '复制失败' : '复制'}
+          </Button>
+        </div>
+        {copyState === 'failed' ? (
+          <span className="field__error" role="alert">
+            浏览器无法访问剪贴板，请手动保存密码。
+          </span>
+        ) : null}
+        <Button type="button" onClick={() => void navigate({ to: '/', replace: true })}>
+          我已保存，进入控制面
         </Button>
       </AuthPanel>
     )
   }
 
   return (
-    <AuthPanel title="初始化 LLMGateway" subtitle="创建首位管理员">
+    <AuthPanel title="初始化 LLMGateway">
       <div className="auth-marker">
         <ShieldCheck size={18} />
-        本次提交完成后初始化入口关闭
+        系统将生成高熵初始密码并只显示一次
       </div>
       <form
         className="form-stack"
-        onSubmit={form.handleSubmit((values) =>
-          bootstrap.mutate({
-            displayName: values.displayName,
-            email: values.email,
-            password: values.password,
-          }),
-        )}
+        onSubmit={form.handleSubmit((values) => bootstrap.mutate({ email: values.email }))}
       >
         <Field
-          label="管理员名称"
-          htmlFor="setup-name"
-          error={form.formState.errors.displayName?.message}
+          label="管理员邮箱"
+          htmlFor="setup-email"
+          error={form.formState.errors.email?.message}
         >
-          <Input id="setup-name" autoComplete="name" {...form.register('displayName')} />
-        </Field>
-        <Field label="邮箱" htmlFor="setup-email" error={form.formState.errors.email?.message}>
           <Input id="setup-email" type="email" autoComplete="email" {...form.register('email')} />
         </Field>
-        <Field
-          label="密码"
-          htmlFor="setup-password"
-          error={form.formState.errors.password?.message}
-        >
-          <Input
-            id="setup-password"
-            type="password"
-            autoComplete="new-password"
-            {...form.register('password')}
-          />
-        </Field>
-        <Field
-          label="确认密码"
-          htmlFor="setup-confirmation"
-          error={form.formState.errors.confirmation?.message}
-        >
-          <Input
-            id="setup-confirmation"
-            type="password"
-            autoComplete="new-password"
-            {...form.register('confirmation')}
-          />
-        </Field>
-        <FormProblem error={bootstrap.error ?? status.error} />
+        <FormProblem error={bootstrap.error} />
         <Button type="submit" disabled={bootstrap.isPending}>
           {bootstrap.isPending ? '正在创建' : '创建管理员'}
         </Button>

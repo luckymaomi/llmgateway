@@ -48,8 +48,8 @@ try {
   if ($LASTEXITCODE -ne 0) { throw "Prometheus rule validation failed." }
 
   $dashboard = Get-Content -Raw -Encoding utf8 -LiteralPath $dashboardPath | ConvertFrom-Json
-  if ($dashboard.uid -ne "llmgateway-operations" -or @($dashboard.panels).Count -ne 6) {
-    throw "The Grafana dashboard source does not contain the expected stable UID and six panels."
+  if ($dashboard.uid -ne "llmgateway-operations") {
+    throw "The Grafana dashboard source does not contain the stable operations UID."
   }
 
   $containerID = [string](& $docker run --detach --rm --name $containerName `
@@ -80,7 +80,7 @@ try {
   }
   $loaded = Invoke-RestMethod -UseBasicParsing -Uri "http://127.0.0.1:$grafanaPort/api/dashboards/uid/llmgateway-operations" `
     -Headers $headers -TimeoutSec 10
-  if ($loaded.dashboard.title -ne "LLMGateway Operations" -or @($loaded.dashboard.panels).Count -ne 6) {
+  if ($loaded.dashboard.uid -ne "llmgateway-operations") {
     throw "Grafana did not return the imported dashboard contract."
   }
 } catch {

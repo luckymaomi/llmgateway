@@ -81,16 +81,16 @@ $valkeyPassword = "browser-valkey-fixture"
 $databaseName = "llmgateway_browser"
 $buildDirectory = Join-Path $root ".build\browser-real-$runID"
 $evidenceDirectory = Join-Path $root ".build\acceptance-evidence"
-$isWindows = $env:OS -eq "Windows_NT"
-$binaryName = if ($isWindows) { "gateway.exe" } else { "gateway" }
+$runningOnWindows = $env:OS -eq "Windows_NT"
+$binaryName = if ($runningOnWindows) { "gateway.exe" } else { "gateway" }
 $binaryPath = Join-Path $buildDirectory $binaryName
-$providerBinaryName = if ($isWindows) { "fixture-provider.exe" } else { "fixture-provider" }
+$providerBinaryName = if ($runningOnWindows) { "fixture-provider.exe" } else { "fixture-provider" }
 $providerBinaryPath = Join-Path $buildDirectory $providerBinaryName
 $providerCertificatePath = Join-Path $buildDirectory "provider-ca.pem"
 $providerStdoutPath = Join-Path $buildDirectory "provider.stdout.log"
 $providerStderrPath = Join-Path $buildDirectory "provider.stderr.log"
 $gatewayPIDFile = Join-Path $buildDirectory "gateway.pid"
-$pnpmCommand = if ($isWindows) { "pnpm.cmd" } else { "pnpm" }
+$pnpmCommand = if ($runningOnWindows) { "pnpm.cmd" } else { "pnpm" }
 $environmentNames = @(
   "LLMGATEWAY_PROFILE",
   "LLMGATEWAY_HTTP_ADDRESS",
@@ -178,7 +178,7 @@ try {
     RedirectStandardOutput = $providerStdoutPath
     RedirectStandardError  = $providerStderrPath
   }
-  if ($isWindows) { $providerStartArguments.WindowStyle = "Hidden" }
+  if ($runningOnWindows) { $providerStartArguments.WindowStyle = "Hidden" }
   $providerProcess = Start-Process @providerStartArguments
   $providerReady = $false
   $providerDeadline = (Get-Date).AddSeconds(30)
@@ -207,7 +207,7 @@ try {
 
   $providerFact = & $docker exec $postgresContainer psql -v ON_ERROR_STOP=1 -U llmgateway -d $databaseName -Atc `
     "SELECT name || '|' || base_url || '|' || enabled FROM providers WHERE slug = 'browser-fixture'"
-  if ($LASTEXITCODE -ne 0 -or $providerFact -ne "Browser Provider Mobile|$providerBaseURL|true") {
+  if ($LASTEXITCODE -ne 0 -or $providerFact -ne "Browser Provider Ready|$providerBaseURL|true") {
     throw "The final Provider fact was not persisted in isolated PostgreSQL."
   }
   $auditJSON = & $docker exec $postgresContainer psql -v ON_ERROR_STOP=1 -U llmgateway -d $databaseName -Atc `
@@ -255,8 +255,8 @@ try {
   }
   $invitationFacts = & $docker exec $postgresContainer psql -v ON_ERROR_STOP=1 -U llmgateway -d $databaseName -Atc `
     "SELECT (SELECT count(*) FROM invitations) || '|' || (SELECT count(*) FROM invitation_mutations) || '|' || (SELECT count(*) FROM audit_events WHERE action = 'invitation.created') || '|' || (SELECT count(*) FROM invitations invitation WHERE (SELECT count(*) FROM invitation_mutations mutation WHERE mutation.invitation_id = invitation.id) <> 1 OR (SELECT count(*) FROM audit_events audit WHERE audit.action = 'invitation.created' AND audit.target_id = invitation.id::text) <> 1) || '|' || (SELECT count(*) FROM invitation_mutations mutation JOIN invitations invitation ON invitation.id = mutation.invitation_id WHERE mutation.result::text ~ 'invite_[A-Za-z0-9_-]{20,}' OR position('digest' IN lower(mutation.result::text)) > 0 OR position(encode(invitation.code_digest, 'hex') IN mutation.result::text) > 0 OR position(encode(invitation.code_digest, 'base64') IN mutation.result::text) > 0) || '|' || (SELECT count(*) FROM audit_events audit JOIN invitations invitation ON audit.target_id = invitation.id::text WHERE audit.action = 'invitation.created' AND (audit.detail::text ~ 'invite_[A-Za-z0-9_-]{20,}' OR position('digest' IN lower(audit.detail::text)) > 0 OR position(encode(invitation.code_digest, 'hex') IN audit.detail::text) > 0 OR position(encode(invitation.code_digest, 'base64') IN audit.detail::text) > 0))"
-  if ($LASTEXITCODE -ne 0 -or $invitationFacts -ne "2|2|2|0|0|0") {
-    throw "The browser invitation lifecycle did not preserve two singular, secret-free mutation and audit facts: $invitationFacts"
+  if ($LASTEXITCODE -ne 0 -or $invitationFacts -ne "1|1|1|0|0|0") {
+    throw "The browser invitation lifecycle did not preserve one singular, secret-free mutation and audit fact: $invitationFacts"
   }
   $catalogFact = & $docker exec $postgresContainer psql -v ON_ERROR_STOP=1 -U llmgateway -d $databaseName -Atc `
     "SELECT (SELECT count(*) FROM models WHERE provider_id = (SELECT id FROM providers WHERE slug = 'browser-fixture')) || '|' || (SELECT count(*) FROM config_revision_models WHERE revision_id = (SELECT revision_id FROM active_config WHERE singleton = true)) || '|' || (SELECT count(*) FROM config_revision_credentials WHERE revision_id = (SELECT revision_id FROM active_config WHERE singleton = true)) || '|' || (SELECT count(*) FROM config_revision_routes WHERE revision_id = (SELECT revision_id FROM active_config WHERE singleton = true)) || '|' || (SELECT version FROM active_config WHERE singleton = true)"
@@ -270,7 +270,7 @@ try {
   }
   $credentialFact = & $docker exec $postgresContainer psql -v ON_ERROR_STOP=1 -U llmgateway -d $databaseName -Atc `
     "SELECT (SELECT count(*) FROM provider_credentials WHERE name = 'Browser credential') || '|' || (SELECT count(*) FROM credential_mutations mutation JOIN provider_credentials credential ON credential.id = mutation.credential_id WHERE credential.name = 'Browser credential') || '|' || (SELECT count(*) FROM credential_models binding JOIN provider_credentials credential ON credential.id = binding.credential_id WHERE credential.name = 'Browser credential') || '|' || (SELECT count(*) FROM audit_events audit JOIN provider_credentials credential ON credential.id::text = audit.target_id WHERE credential.name = 'Browser credential' AND audit.action = 'credential.created') || '|' || (SELECT count(*) FROM audit_events audit JOIN provider_credentials credential ON credential.id::text = audit.target_id WHERE credential.name = 'Browser credential' AND audit.action = 'credential.updated') || '|' || (SELECT count(*) FROM audit_events audit JOIN provider_credentials credential ON credential.id::text = audit.target_id WHERE credential.name = 'Browser credential' AND audit.action = 'credential.status_changed') || '|' || (SELECT count(*) FROM audit_events audit JOIN provider_credentials credential ON credential.id::text = audit.target_id WHERE credential.name = 'Browser credential' AND audit.action = 'credential.probed') || '|' || (SELECT last_probe_status || '|' || rpm_limit || '|' || status::text FROM provider_credentials WHERE name = 'Browser credential') || '|' || (SELECT count(*) FROM credential_mutations mutation JOIN provider_credentials credential ON credential.id = mutation.credential_id WHERE credential.name = 'Browser credential' AND (mutation.result::text LIKE '%core-upstream-secret%' OR mutation.result::text LIKE '%encrypted_secret%')) || '|' || (SELECT count(*) FROM audit_events audit JOIN provider_credentials credential ON credential.id::text = audit.target_id WHERE credential.name = 'Browser credential' AND audit.detail::text LIKE '%core-upstream-secret%') || '|' || (SELECT string_agg(binding.priority::text || ':' || binding.weight::text, ',' ORDER BY binding.priority) FROM credential_models binding JOIN provider_credentials credential ON credential.id = binding.credential_id WHERE credential.name = 'Browser credential') || '|' || (SELECT string_agg(route.priority::text || ':' || route.weight::text, ',' ORDER BY route.priority) FROM config_revision_routes route JOIN config_revision_credentials credential ON credential.revision_id = route.revision_id AND credential.credential_id = route.credential_id JOIN provider_credentials live ON live.id = credential.credential_id WHERE live.name = 'Browser credential' AND route.revision_id = (SELECT revision_id FROM active_config WHERE singleton = true))"
-  if ($LASTEXITCODE -ne 0 -or $credentialFact -ne "1|4|2|1|1|2|2|succeeded|75|active|0|0|10:80,20:30|10:80,20:30") {
+  if ($LASTEXITCODE -ne 0 -or $credentialFact -ne "1|4|2|1|1|2|1|succeeded|75|active|0|0|10:80,20:30|10:80,20:30") {
     throw "The browser credential lifecycle did not preserve atomic mutations, audits, probe facts, and secret boundaries: $credentialFact"
   }
   $entitlementFact = & $docker exec $postgresContainer psql -v ON_ERROR_STOP=1 -U llmgateway -d $databaseName -Atc `
@@ -292,11 +292,11 @@ try {
   if ($LASTEXITCODE -ne 0 -or $recoveryFact -ne "1|1|1|0") {
     throw "The browser account recovery did not preserve idempotent reset, session revocation, audit, and logout facts: $recoveryFact"
   }
-  $playgroundFacts = & $docker exec $postgresContainer psql -v ON_ERROR_STOP=1 -U llmgateway -d $databaseName -Atc `
+  $gatewayKeyTestFacts = & $docker exec $postgresContainer psql -v ON_ERROR_STOP=1 -U llmgateway -d $databaseName -Atc `
     "SELECT count(*) || '|' || count(*) FILTER (WHERE request.status = 'completed') || '|' || count(*) FILTER (WHERE reservation.state = 'settled') || '|' || coalesce(sum(reservation.charged_tokens), 0) || '|' || count(*) FILTER (WHERE request.status = 'uncertain') || '|' || count(*) FILTER (WHERE request.status = 'uncertain' AND reservation.state = 'reserved' AND reservation.charged_tokens = 0 AND reservation.usage_source = 'unknown') || '|' || (SELECT count(*) FROM request_attempts attempt JOIN requests inner_request ON inner_request.id = attempt.request_id JOIN gateway_keys inner_key ON inner_key.id = inner_request.gateway_key_id WHERE inner_key.name = 'Browser member Key' AND attempt.status = 'uncertain') FROM requests request JOIN ledger_reservations reservation ON reservation.request_id = request.id JOIN gateway_keys key ON key.id = request.gateway_key_id WHERE key.name = 'Browser member Key' AND request.stream = true"
   $providerCanceled = (Invoke-RestMethod -Uri "$providerAdminURL/stats").canceled
-  if ($LASTEXITCODE -ne 0 -or $playgroundFacts -ne "3|2|2|12|1|1|1" -or $providerCanceled -lt 1) {
-    throw "The real browser Playground did not preserve two settlements and one upstream-canceled uncertain hold: requests=$playgroundFacts providerCanceled=$providerCanceled"
+  if ($LASTEXITCODE -ne 0 -or $gatewayKeyTestFacts -ne "2|1|1|6|1|1|1" -or $providerCanceled -lt 1) {
+    throw "The real browser Gateway Key test did not preserve one settlement and one upstream-canceled uncertain hold: requests=$gatewayKeyTestFacts providerCanceled=$providerCanceled"
   }
   $activeSessionCount = & $docker exec $postgresContainer psql -v ON_ERROR_STOP=1 -U llmgateway -d $databaseName -Atc `
     "SELECT count(*) FROM sessions WHERE revoked_at IS NULL AND expires_at > now()"
@@ -312,10 +312,7 @@ try {
 
   New-Item -ItemType Directory -Force $evidenceDirectory | Out-Null
   Copy-Item -LiteralPath (Join-Path $buildDirectory "provider-desktop.png") -Destination (Join-Path $evidenceDirectory "provider-desktop.png") -Force
-  Copy-Item -LiteralPath (Join-Path $buildDirectory "provider-mobile.png") -Destination (Join-Path $evidenceDirectory "provider-mobile.png") -Force
   Copy-Item -LiteralPath (Join-Path $buildDirectory "catalog-desktop.png") -Destination (Join-Path $evidenceDirectory "catalog-desktop.png") -Force
-  Copy-Item -LiteralPath (Join-Path $buildDirectory "catalog-mobile.png") -Destination (Join-Path $evidenceDirectory "catalog-mobile.png") -Force
-  Copy-Item -LiteralPath (Join-Path $buildDirectory "invitation-mobile.png") -Destination (Join-Path $evidenceDirectory "invitation-mobile.png") -Force
   Copy-Item -LiteralPath (Join-Path $buildDirectory "member-usage-mobile.png") -Destination (Join-Path $evidenceDirectory "member-usage-mobile.png") -Force
   $acceptancePassed = $true
 } catch {

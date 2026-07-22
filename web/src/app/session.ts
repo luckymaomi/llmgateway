@@ -23,7 +23,14 @@ export function establishAuthenticatedSession(queryClient: QueryClient, session:
   clearPendingBrowserOperations()
   queryClient.clear()
   apiClient.setCsrfToken(session.csrfToken)
-  queryClient.setQueryData(sessionQuery.queryKey, session)
+  queryClient.setQueryData(sessionQuery.queryKey, {
+    userId: session.userId,
+    displayName: session.displayName,
+    role: session.role,
+    capabilities: [...session.capabilities],
+    csrfToken: session.csrfToken,
+    expiresAt: session.expiresAt,
+  })
 }
 
 export function clearAuthenticatedSession(queryClient: QueryClient): void {
