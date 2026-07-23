@@ -158,7 +158,7 @@ export function CredentialForm({
       onOpenChange={(nextOpen) => {
         if (!nextOpen) requestClose()
       }}
-      title="添加 Provider API Key"
+      title="添加上游 API Key"
       width="lg"
       dismissible={!controlsLocked}
       footer={
@@ -213,7 +213,7 @@ export function CredentialForm({
           <Input id="credential-label" readOnly={controlsLocked} {...form.register('label')} />
         </Field>
         <Field
-          label="Provider API Key"
+          label="上游 API Key"
           htmlFor="credential-secret"
           error={form.formState.errors.secret?.message}
         >

@@ -47,39 +47,22 @@ func (a *QuotaAPI) presentEntitlements(ctx context.Context, principal identity.P
 	if len(items) == 0 {
 		return []entitlementView{}, nil
 	}
-	userIDs := make([]uuid.UUID, 0, len(items))
-	seenUsers := make(map[uuid.UUID]struct{}, len(items))
-	for _, item := range items {
-		if _, seen := seenUsers[item.UserID]; !seen {
-			seenUsers[item.UserID] = struct{}{}
-			userIDs = append(userIDs, item.UserID)
-		}
-	}
-	names, err := a.identity.UserDisplayNames(ctx, principal, userIDs)
-	if err != nil {
-		return nil, err
-	}
-	models, err := a.registry.ListModels(ctx, principal)
-	if err != nil {
-		return nil, err
-	}
-	modelAliases := make(map[uuid.UUID]string, len(models))
-	for _, model := range models {
-		modelAliases[model.ID] = model.PublicName
-	}
 	now := a.now().UTC()
 	views := make([]entitlementView, 0, len(items))
 	for _, item := range items {
-		ownerName := strings.TrimSpace(names[item.UserID])
+		if principal.Role == identity.RoleMember && item.UserID != principal.UserID {
+			return nil, fmt.Errorf("quota presentation: member entitlement escaped the authenticated owner scope")
+		}
+		ownerName := strings.TrimSpace(item.OwnerName)
 		if ownerName == "" {
 			return nil, fmt.Errorf("quota presentation: owner %s has no display name", item.UserID)
 		}
-		var alias *string
+		alias := item.ModelAlias
 		if item.ModelID != nil {
-			value := strings.TrimSpace(modelAliases[*item.ModelID])
-			if value == "" {
+			if alias == nil || strings.TrimSpace(*alias) == "" {
 				return nil, fmt.Errorf("quota presentation: model %s has no public name", *item.ModelID)
 			}
+			value := strings.TrimSpace(*alias)
 			alias = &value
 		}
 		views = append(views, presentEntitlement(item, ownerName, alias, now))

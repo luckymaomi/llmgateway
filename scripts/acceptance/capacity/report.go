@@ -18,6 +18,8 @@ type phaseReport struct {
 	P95Milliseconds          float64             `json:"p95Milliseconds"`
 	P99Milliseconds          float64             `json:"p99Milliseconds"`
 	FirstByteP95Milliseconds float64             `json:"firstByteP95Milliseconds"`
+	DialRetries              int                 `json:"dialRetries"`
+	Failures                 map[string]int      `json:"failureKinds,omitempty"`
 }
 
 type capacityReport struct {
@@ -46,13 +48,17 @@ func summarizeResults(results []requestResult) []phaseReport {
 		if len(items) == 0 {
 			continue
 		}
-		report := phaseReport{Name: phase, Requests: len(items), Statuses: map[int]int{}, Kinds: map[requestKind]int{}}
+		report := phaseReport{Name: phase, Requests: len(items), Statuses: map[int]int{}, Kinds: map[requestKind]int{}, Failures: map[string]int{}}
 		latencies := make([]time.Duration, 0, len(items))
 		firstBytes := make([]time.Duration, 0, len(items))
 		terminalUsers := map[string]struct{}{}
 		for _, item := range items {
 			report.Statuses[item.Status]++
 			report.Kinds[item.Kind]++
+			report.DialRetries += item.DialRetries
+			if item.Failure != "" {
+				report.Failures[item.Failure]++
+			}
 			controlled := (phase == "burst" || phase == "hotspot") && item.Status == 429 && item.RetryAfter
 			success := item.Status >= 200 && item.Status < 300 && item.Completed && item.Failure == ""
 			if success {

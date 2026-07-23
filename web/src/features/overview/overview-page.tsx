@@ -1,17 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Activity, Check, Circle, KeyRound, Network, UsersRound, Zap } from 'lucide-react'
-import {
-  Bar,
-  CartesianGrid,
-  ComposedChart,
-  Line,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from 'recharts'
-
 import { operationsApi, type OperationsOverview, type OverviewStep } from '@/api'
 import { Page, PageHeader, PageSection } from '@/components/layout'
 import { Button } from '@/components/ui/button'
@@ -23,6 +12,8 @@ import {
   formatPercent,
   formatTokens,
 } from '@/lib/format'
+
+import { RequestErrorChart, RequestTrendChart } from './operations-charts'
 
 export function OverviewPage() {
   const query = useQuery({
@@ -60,7 +51,7 @@ function AdministratorOverviewView({
       : undefined
   return (
     <Page>
-      <PageHeader title="总览" />
+      <PageHeader title="仪表盘" />
       <div className="summary-grid">
         <SummaryMetric
           icon={<Activity size={16} />}
@@ -70,7 +61,7 @@ function AdministratorOverviewView({
         <SummaryMetric icon={<Zap size={16} />} label="成功率" value={formatPercent(successRate)} />
         <SummaryMetric
           icon={<Network size={16} />}
-          label="Provider API Key"
+          label="上游 API Key"
           value={`${overview.resources.activeCredentialCount} / ${overview.resources.credentialCount}`}
         />
         <SummaryMetric
@@ -86,7 +77,7 @@ function AdministratorOverviewView({
       </div>
       <NextActions scope="administrator" steps={overview.steps} />
       <PageSection title="24 小时趋势">
-        <OverviewChart overview={overview} />
+        <RequestTrendChart overview={overview} />
       </PageSection>
       <div className="overview-grid">
         <PageSection title="运行状态">
@@ -113,7 +104,7 @@ function MemberOverviewView({
 }) {
   return (
     <Page>
-      <PageHeader title="总览" />
+      <PageHeader title="仪表盘" />
       <div className="summary-grid">
         <SummaryMetric
           icon={<Zap size={16} />}
@@ -132,7 +123,7 @@ function MemberOverviewView({
         />
         <SummaryMetric
           icon={<KeyRound size={16} />}
-          label="API Key"
+          label="Gateway Key"
           value={formatNumber(overview.access.activeGatewayKeyCount)}
           marker={
             overview.access.nearestEntitlementExpiry
@@ -143,7 +134,7 @@ function MemberOverviewView({
       </div>
       <NextActions scope="member" steps={overview.steps} />
       <PageSection title="24 小时趋势">
-        <OverviewChart overview={overview} />
+        <RequestTrendChart overview={overview} />
       </PageSection>
       <div className="overview-grid">
         <PageSection title="请求状态">
@@ -228,85 +219,10 @@ function NextActions({
   )
 }
 
-function OverviewChart({ overview }: { overview: OperationsOverview }) {
-  const data = overview.trend.map((point) => ({
-    ...point,
-    tokens: point.inputTokens + point.outputTokens,
-  }))
-  return (
-    <div className="overview-chart" role="img" aria-label="请求与 Token 趋势">
-      <ResponsiveContainer width="100%" height="100%">
-        <ComposedChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
-          <CartesianGrid vertical={false} stroke="var(--border)" />
-          <XAxis
-            dataKey="bucket"
-            tickFormatter={(value: string) =>
-              new Date(value).toLocaleTimeString('zh-CN', { hour: '2-digit' })
-            }
-            stroke="var(--muted)"
-            fontSize={11}
-          />
-          <YAxis
-            yAxisId="requests"
-            width={36}
-            stroke="var(--muted)"
-            fontSize={11}
-            allowDecimals={false}
-          />
-          <YAxis
-            yAxisId="tokens"
-            orientation="right"
-            width={46}
-            tickFormatter={(value: number) => formatTokens(value)}
-            stroke="var(--muted)"
-            fontSize={11}
-          />
-          <Tooltip
-            labelFormatter={(value) => formatDateTime(String(value))}
-            formatter={(value, name) => [
-              name === 'tokens' ? formatTokens(Number(value)) : formatNumber(Number(value)),
-              name === 'tokens' ? 'Token' : '请求',
-            ]}
-          />
-          <Bar
-            yAxisId="requests"
-            dataKey="requestCount"
-            fill="var(--accent)"
-            radius={[3, 3, 0, 0]}
-            maxBarSize={18}
-          />
-          <Line
-            yAxisId="tokens"
-            type="monotone"
-            dataKey="tokens"
-            stroke="var(--blue)"
-            strokeWidth={2}
-            dot={false}
-          />
-        </ComposedChart>
-      </ResponsiveContainer>
-    </div>
-  )
-}
-
 function ErrorDistribution({ overview }: { overview: OperationsOverview }) {
   return (
     <PageSection title="错误分布">
-      {overview.errors.length === 0 ? (
-        <div className="quiet-result">
-          <Check size={18} />
-          <span>24 小时内无失败请求</span>
-        </div>
-      ) : (
-        <div className="error-distribution">
-          {overview.errors.map((item) => (
-            <div key={item.kind}>
-              <span>{item.kind}</span>
-              <strong>{formatNumber(item.count)}</strong>
-            </div>
-          ))}
-        </div>
-      )}
+      <RequestErrorChart overview={overview} />
     </PageSection>
   )
 }
@@ -324,42 +240,42 @@ type StepAction = {
   label: string
   command?: string
   to?:
-    | '/providers/providers'
-    | '/credentials'
-    | '/ledger/costs'
-    | '/providers/revisions'
-    | '/access/users'
-    | '/ledger/entitlements'
-    | '/access/keys'
+    | '/providers'
+    | '/provider-keys'
+    | '/costs'
+    | '/configuration'
+    | '/members'
+    | '/entitlements'
+    | '/gateway-keys'
 }
 
 const stepActions: Record<OperationsOverview['scope'], Record<string, StepAction>> = {
   administrator: {
-    provider: { label: '接入 Provider', command: '接入', to: '/providers/providers' },
-    credential: { label: '添加 Provider API Key', command: '添加', to: '/credentials' },
-    price: { label: '设置模型价格', command: '设置', to: '/ledger/costs' },
-    publication: { label: '发布模型配置', command: '发布', to: '/providers/revisions' },
-    member: { label: '激活成员', command: '管理', to: '/access/users' },
-    entitlement: { label: '分配成员额度', command: '分配', to: '/ledger/entitlements' },
-    gateway_key: { label: '创建 Gateway API Key', command: '创建', to: '/access/keys' },
-    request: { label: '测试 Gateway Key', command: '测试', to: '/access/keys' },
+    provider: { label: '接入 Provider', command: '接入', to: '/providers' },
+    credential: { label: '添加上游 API Key', command: '添加', to: '/provider-keys' },
+    price: { label: '设置模型价格', command: '设置', to: '/costs' },
+    publication: { label: '发布模型配置', command: '发布', to: '/configuration' },
+    member: { label: '激活成员', command: '管理', to: '/members' },
+    entitlement: { label: '分配成员额度', command: '分配', to: '/entitlements' },
+    gateway_key: { label: '创建 Gateway Key', command: '创建', to: '/gateway-keys' },
+    request: { label: '测试 Gateway Key', command: '测试', to: '/gateway-keys' },
   },
   member: {
     entitlement: { label: '额度待管理员分配' },
-    gateway_key: { label: '等待管理员分配 API Key' },
-    request: { label: '测试 Gateway Key', command: '测试', to: '/access/keys' },
+    gateway_key: { label: '等待管理员分配 Gateway Key' },
+    request: { label: '测试 Gateway Key', command: '测试', to: '/gateway-keys' },
   },
 }
 
 const administratorQuickActions = [
-  { label: 'Provider API Key', to: '/credentials' },
-  { label: '成员', to: '/access/users' },
-  { label: '用量', to: '/ledger/usage' },
-  { label: 'API Key', to: '/access/keys' },
+  { label: '上游 API Key', to: '/provider-keys' },
+  { label: '成员', to: '/members' },
+  { label: 'API 日志', to: '/api-logs' },
+  { label: 'Gateway Key', to: '/gateway-keys' },
 ] as const
 
 const memberQuickActions = [
-  { label: 'API Key', to: '/access/keys' },
-  { label: '用量', to: '/ledger/usage' },
-  { label: 'API Key', to: '/access/keys' },
+  { label: 'Key 管理', to: '/gateway-keys' },
+  { label: '订阅管理', to: '/entitlements' },
+  { label: 'API 日志', to: '/api-logs' },
 ] as const

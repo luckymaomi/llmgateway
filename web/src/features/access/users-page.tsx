@@ -13,7 +13,6 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { useListSearch } from '@/hooks/use-list-search'
 import { formatDateTime, formatTokens } from '@/lib/format'
 
-import { AccessTabs } from './access-tabs'
 import { MemberPasswordDialog } from './member-password-dialog'
 
 export function UsersPage() {
@@ -141,8 +140,7 @@ export function UsersPage() {
 
   return (
     <Page>
-      <PageHeader title="成员与 API Key" />
-      <AccessTabs />
+      <PageHeader title="成员" />
       <PageSection>
         <TableToolbar
           search={state.search}

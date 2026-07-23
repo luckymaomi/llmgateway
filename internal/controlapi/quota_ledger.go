@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/luckymaomi/llmgateway/internal/identity"
 	"github.com/luckymaomi/llmgateway/internal/quota"
 )
@@ -32,8 +31,14 @@ func (a *QuotaAPI) listLedgerEntries(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, r, quota.ErrInvalidInput)
 		return
 	}
+	userID, err := optionalUUID(query.UserID)
+	if err != nil {
+		a.writeError(w, r, quota.ErrInvalidInput)
+		return
+	}
 	result, err := a.service.ListLedger(r.Context(), principal, quota.LedgerFilter{
-		Search: query.Search, ResourceDomain: quota.ResourceDomain(query.ResourceDomain), Page: page,
+		UserID: userID, Search: query.Search,
+		ResourceDomain: quota.ResourceDomain(query.ResourceDomain), Page: page,
 	})
 	if err != nil {
 		a.writeError(w, r, err)
@@ -47,33 +52,23 @@ func (a *QuotaAPI) listLedgerEntries(w http.ResponseWriter, r *http.Request) {
 	writeData(w, http.StatusOK, pageView[ledgerEntryView]{Items: views, Page: query.Page, PageSize: query.PageSize, Total: int(result.Total)})
 }
 
-func (a *QuotaAPI) presentLedgerEntries(ctx context.Context, principal identity.Principal, items []quota.LedgerEvent) ([]ledgerEntryView, error) {
-	userIDs := make([]uuid.UUID, 0, len(items)*2)
-	seen := make(map[uuid.UUID]struct{}, len(items)*2)
-	for _, item := range items {
-		for _, userID := range []*uuid.UUID{&item.UserID, item.CreatedBy} {
-			if userID == nil {
-				continue
-			}
-			if _, exists := seen[*userID]; !exists {
-				seen[*userID] = struct{}{}
-				userIDs = append(userIDs, *userID)
-			}
-		}
-	}
-	names, err := a.identity.UserDisplayNames(ctx, principal, userIDs)
-	if err != nil {
-		return nil, err
-	}
+func (a *QuotaAPI) presentLedgerEntries(_ context.Context, principal identity.Principal, items []quota.LedgerEvent) ([]ledgerEntryView, error) {
 	views := make([]ledgerEntryView, 0, len(items))
 	for _, item := range items {
-		ownerName := strings.TrimSpace(names[item.UserID])
+		if principal.Role == identity.RoleMember && item.UserID != principal.UserID {
+			return nil, fmt.Errorf("quota presentation: member ledger entry escaped the authenticated owner scope")
+		}
+		ownerName := strings.TrimSpace(item.OwnerName)
 		if ownerName == "" {
 			return nil, fmt.Errorf("quota presentation: ledger owner %s has no display name", item.UserID)
 		}
 		actorName := "系统"
 		if item.CreatedBy != nil {
-			actorName = strings.TrimSpace(names[*item.CreatedBy])
+			if principal.Role == identity.RoleMember && *item.CreatedBy != principal.UserID {
+				actorName = "管理员"
+			} else if item.ActorName != nil {
+				actorName = strings.TrimSpace(*item.ActorName)
+			}
 			if actorName == "" {
 				return nil, fmt.Errorf("quota presentation: ledger actor %s has no display name", *item.CreatedBy)
 			}

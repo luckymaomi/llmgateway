@@ -50,11 +50,13 @@ const (
 type RequestStatus string
 
 const (
-	RequestQueued    RequestStatus = "queued"
-	RequestCompleted RequestStatus = "completed"
-	RequestFailed    RequestStatus = "failed"
-	RequestCanceled  RequestStatus = "canceled"
-	RequestUncertain RequestStatus = "uncertain"
+	RequestQueued      RequestStatus = "queued"
+	RequestDispatching RequestStatus = "dispatching"
+	RequestStreaming   RequestStatus = "streaming"
+	RequestCompleted   RequestStatus = "completed"
+	RequestFailed      RequestStatus = "failed"
+	RequestCanceled    RequestStatus = "canceled"
+	RequestUncertain   RequestStatus = "uncertain"
 )
 
 type ReservationState string
@@ -90,6 +92,8 @@ type Entitlement struct {
 	RPMLimit         *int32         `json:"rpm_limit,omitempty"`
 	TPMLimit         *int64         `json:"tpm_limit,omitempty"`
 	CreatedAt        time.Time      `json:"created_at"`
+	OwnerName        string         `json:"-"`
+	ModelAlias       *string        `json:"-"`
 }
 
 type NewEntitlement struct {
@@ -124,6 +128,8 @@ type LedgerEvent struct {
 	Note           *string        `json:"note,omitempty"`
 	CreatedBy      *uuid.UUID     `json:"created_by,omitempty"`
 	CreatedAt      time.Time      `json:"created_at"`
+	OwnerName      string         `json:"-"`
+	ActorName      *string        `json:"-"`
 }
 
 type Page struct {
@@ -152,23 +158,62 @@ type LedgerFilter struct {
 	Page           Page
 }
 
-type UsageQuery struct {
+type RequestLogQuery struct {
 	UserID         *uuid.UUID
+	GatewayKeyID   *uuid.UUID
+	ModelID        *uuid.UUID
 	Search         string
+	Status         RequestStatus
 	ResourceDomain ResourceDomain
+	From           time.Time
+	To             time.Time
 	Page           Page
 }
 
-type UsageRecord struct {
-	RequestID      uuid.UUID
-	UserID         uuid.UUID
-	KeyPrefix      string
-	ModelAlias     string
-	ResourceDomain ResourceDomain
-	InputTokens    int64
-	OutputTokens   int64
-	UsageSource    UsageSource
-	OccurredAt     time.Time
+type RequestLog struct {
+	RequestID         uuid.UUID
+	UserID            uuid.UUID
+	UserName          string
+	GatewayKeyID      uuid.UUID
+	KeyPrefix         string
+	ModelID           uuid.UUID
+	ModelAlias        string
+	ResourceDomain    ResourceDomain
+	Status            RequestStatus
+	Stream            bool
+	InputTokens       *int64
+	OutputTokens      *int64
+	UsageSource       UsageSource
+	ErrorKind         *string
+	AcceptedAt        time.Time
+	CompletedAt       *time.Time
+	UpdatedAt         time.Time
+	AttemptCount      int64
+	LastAttemptStatus *string
+}
+
+type RequestAttempt struct {
+	ID                uuid.UUID
+	Sequence          int32
+	Status            string
+	ProviderName      string
+	CredentialName    string
+	UpstreamRequestID *string
+	HTTPStatus        *int32
+	ErrorKind         *string
+	RetryAfterAt      *time.Time
+	SentAt            *time.Time
+	FirstByteAt       *time.Time
+	CompletedAt       *time.Time
+	InputTokens       *int64
+	OutputTokens      *int64
+	UsageSource       UsageSource
+	CreatedAt         time.Time
+}
+
+type RequestLogDetail struct {
+	RequestLog
+	Attempts []RequestAttempt
 }
 
 type AcceptInput struct {
@@ -249,7 +294,8 @@ type Repository interface {
 	CreateEntitlement(context.Context, NewEntitlement, uuid.UUID) (Entitlement, error)
 	ListEntitlements(context.Context, EntitlementQuery) (PageResult[Entitlement], error)
 	ListLedger(context.Context, LedgerFilter) (PageResult[LedgerEvent], error)
-	ListUsage(context.Context, UsageQuery) (PageResult[UsageRecord], error)
+	ListRequestLogs(context.Context, RequestLogQuery) (PageResult[RequestLog], error)
+	GetRequestLog(context.Context, uuid.UUID, *uuid.UUID) (RequestLogDetail, error)
 	AcceptRequest(context.Context, AcceptInput) (AcceptedRequest, error)
 	Settle(context.Context, uuid.UUID, execution.Claim, int64, int64, UsageSource) (Resolution, error)
 	Release(context.Context, uuid.UUID, execution.Claim, string, string) (Resolution, error)

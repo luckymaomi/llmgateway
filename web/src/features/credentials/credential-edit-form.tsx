@@ -115,7 +115,7 @@ export function CredentialEditForm({
       onOpenChange={(nextOpen) => {
         if (!nextOpen && !locked) onOpenChange(false)
       }}
-      title="编辑 Provider API Key"
+      title="编辑上游 API Key"
       width="lg"
       dismissible={!locked}
       footer={

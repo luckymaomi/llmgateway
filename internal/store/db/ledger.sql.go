@@ -247,30 +247,44 @@ func (q *Queries) CountLedgerEvents(ctx context.Context, arg CountLedgerEventsPa
 	return count, err
 }
 
-const countRequestUsage = `-- name: CountRequestUsage :one
+const countRequestLogs = `-- name: CountRequestLogs :one
 SELECT count(*)
 FROM requests AS request
 JOIN users AS owner ON owner.id = request.user_id
 JOIN gateway_keys AS key ON key.id = request.gateway_key_id
-JOIN config_revision_models AS model
-  ON model.revision_id = request.config_revision_id AND model.model_id = request.model_id
+JOIN models AS model ON model.id = request.model_id
 WHERE ($1::uuid IS NULL OR request.user_id = $1)
-  AND request.input_tokens IS NOT NULL
-  AND request.output_tokens IS NOT NULL
-  AND request.usage_source IN ('authoritative', 'estimated')
-  AND request.completed_at IS NOT NULL
-  AND ($2::text = '' OR concat_ws(' ', owner.display_name, owner.email, key.prefix, model.public_name, request.id::text) ILIKE '%' || $2::text || '%')
-  AND ($3::text = '' OR request.resource_domain::text = $3::text)
+  AND ($2::uuid IS NULL OR request.gateway_key_id = $2)
+  AND ($3::uuid IS NULL OR request.model_id = $3)
+  AND ($4::text = '' OR request.status::text = $4::text)
+  AND request.accepted_at >= $5
+  AND request.accepted_at < $6
+  AND ($7::text = '' OR concat_ws(' ', owner.display_name, owner.email, key.prefix, model.public_name, request.id::text) ILIKE '%' || $7::text || '%')
+  AND ($8::text = '' OR request.resource_domain::text = $8::text)
 `
 
-type CountRequestUsageParams struct {
-	UserID         *uuid.UUID `json:"user_id"`
-	Search         string     `json:"search"`
-	ResourceDomain string     `json:"resource_domain"`
+type CountRequestLogsParams struct {
+	UserID         *uuid.UUID         `json:"user_id"`
+	GatewayKeyID   *uuid.UUID         `json:"gateway_key_id"`
+	ModelID        *uuid.UUID         `json:"model_id"`
+	Status         string             `json:"status"`
+	FromTime       pgtype.Timestamptz `json:"from_time"`
+	ToTime         pgtype.Timestamptz `json:"to_time"`
+	Search         string             `json:"search"`
+	ResourceDomain string             `json:"resource_domain"`
 }
 
-func (q *Queries) CountRequestUsage(ctx context.Context, arg CountRequestUsageParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countRequestUsage, arg.UserID, arg.Search, arg.ResourceDomain)
+func (q *Queries) CountRequestLogs(ctx context.Context, arg CountRequestLogsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countRequestLogs,
+		arg.UserID,
+		arg.GatewayKeyID,
+		arg.ModelID,
+		arg.Status,
+		arg.FromTime,
+		arg.ToTime,
+		arg.Search,
+		arg.ResourceDomain,
+	)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -1043,6 +1057,77 @@ func (q *Queries) GetRequestForUpdate(ctx context.Context, id uuid.UUID) (Reques
 	return i, err
 }
 
+const getRequestLog = `-- name: GetRequestLog :one
+SELECT request.id, request.user_id, owner.display_name AS user_name,
+       request.gateway_key_id, key.prefix AS key_prefix,
+       request.model_id, model.public_name AS model_alias, request.resource_domain,
+       request.status, request.stream, request.input_tokens, request.output_tokens,
+       request.usage_source, request.error_kind, request.accepted_at, request.completed_at,
+       request.updated_at,
+       (SELECT count(*) FROM request_attempts attempt WHERE attempt.request_id = request.id)::bigint AS attempt_count,
+       coalesce((SELECT attempt.status::text FROM request_attempts attempt WHERE attempt.request_id = request.id ORDER BY attempt.sequence DESC, attempt.id DESC LIMIT 1), ''::text)::text AS last_attempt_status
+FROM requests AS request
+JOIN users AS owner ON owner.id = request.user_id
+JOIN gateway_keys AS key ON key.id = request.gateway_key_id
+JOIN models AS model ON model.id = request.model_id
+WHERE request.id = $1
+  AND ($2::uuid IS NULL OR request.user_id = $2)
+`
+
+type GetRequestLogParams struct {
+	RequestID uuid.UUID  `json:"request_id"`
+	UserID    *uuid.UUID `json:"user_id"`
+}
+
+type GetRequestLogRow struct {
+	ID                uuid.UUID          `json:"id"`
+	UserID            uuid.UUID          `json:"user_id"`
+	UserName          string             `json:"user_name"`
+	GatewayKeyID      uuid.UUID          `json:"gateway_key_id"`
+	KeyPrefix         string             `json:"key_prefix"`
+	ModelID           uuid.UUID          `json:"model_id"`
+	ModelAlias        string             `json:"model_alias"`
+	ResourceDomain    ResourceDomain     `json:"resource_domain"`
+	Status            RequestStatus      `json:"status"`
+	Stream            bool               `json:"stream"`
+	InputTokens       *int64             `json:"input_tokens"`
+	OutputTokens      *int64             `json:"output_tokens"`
+	UsageSource       UsageSource        `json:"usage_source"`
+	ErrorKind         *string            `json:"error_kind"`
+	AcceptedAt        pgtype.Timestamptz `json:"accepted_at"`
+	CompletedAt       pgtype.Timestamptz `json:"completed_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	AttemptCount      int64              `json:"attempt_count"`
+	LastAttemptStatus string             `json:"last_attempt_status"`
+}
+
+func (q *Queries) GetRequestLog(ctx context.Context, arg GetRequestLogParams) (GetRequestLogRow, error) {
+	row := q.db.QueryRow(ctx, getRequestLog, arg.RequestID, arg.UserID)
+	var i GetRequestLogRow
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.UserName,
+		&i.GatewayKeyID,
+		&i.KeyPrefix,
+		&i.ModelID,
+		&i.ModelAlias,
+		&i.ResourceDomain,
+		&i.Status,
+		&i.Stream,
+		&i.InputTokens,
+		&i.OutputTokens,
+		&i.UsageSource,
+		&i.ErrorKind,
+		&i.AcceptedAt,
+		&i.CompletedAt,
+		&i.UpdatedAt,
+		&i.AttemptCount,
+		&i.LastAttemptStatus,
+	)
+	return i, err
+}
+
 const heartbeatRequestExecution = `-- name: HeartbeatRequestExecution :one
 UPDATE requests
 SET execution_heartbeat_at = now(), updated_at = now()
@@ -1184,7 +1269,8 @@ func (q *Queries) ListApplicableEntitlementsForUpdate(ctx context.Context, arg L
 }
 
 const listEntitlementsWithBalance = `-- name: ListEntitlementsWithBalance :many
-SELECT e.id, e.user_id, e.plan, e.resource_domain, e.model_id, e.granted_tokens, e.starts_at, e.expires_at, e.concurrency_limit, e.rpm_limit, e.tpm_limit, e.created_at, coalesce(sum(le.token_delta), 0)::bigint AS balance_tokens
+SELECT e.id, e.user_id, e.plan, e.resource_domain, e.model_id, e.granted_tokens, e.starts_at, e.expires_at, e.concurrency_limit, e.rpm_limit, e.tpm_limit, e.created_at, owner.display_name AS owner_name, model.public_name AS model_alias,
+       coalesce(sum(le.token_delta), 0)::bigint AS balance_tokens
 FROM entitlements e
 JOIN users owner ON owner.id = e.user_id
 LEFT JOIN models model ON model.id = e.model_id
@@ -1196,7 +1282,7 @@ WHERE ($1::uuid IS NULL OR e.user_id = $1)
     OR $3::text = 'active' AND e.starts_at <= now() AND e.expires_at > now()
     OR $3::text = 'expired' AND e.expires_at <= now())
   AND ($4::text = '' OR e.resource_domain::text = $4::text)
-GROUP BY e.id
+GROUP BY e.id, owner.display_name, model.public_name
 ORDER BY e.created_at DESC, e.id
 LIMIT $6 OFFSET $5
 `
@@ -1223,6 +1309,8 @@ type ListEntitlementsWithBalanceRow struct {
 	RpmLimit         *int32             `json:"rpm_limit"`
 	TpmLimit         *int64             `json:"tpm_limit"`
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	OwnerName        string             `json:"owner_name"`
+	ModelAlias       *string            `json:"model_alias"`
 	BalanceTokens    int64              `json:"balance_tokens"`
 }
 
@@ -1255,6 +1343,8 @@ func (q *Queries) ListEntitlementsWithBalance(ctx context.Context, arg ListEntit
 			&i.RpmLimit,
 			&i.TpmLimit,
 			&i.CreatedAt,
+			&i.OwnerName,
+			&i.ModelAlias,
 			&i.BalanceTokens,
 		); err != nil {
 			return nil, err
@@ -1268,7 +1358,8 @@ func (q *Queries) ListEntitlementsWithBalance(ctx context.Context, arg ListEntit
 }
 
 const listLedgerEvents = `-- name: ListLedgerEvents :many
-SELECT event.id, event.user_id, event.entitlement_id, event.request_id, event.reservation_id, event.kind, event.token_delta, event.reserved_tokens, event.input_tokens, event.output_tokens, event.usage_source, event.source_event_id, event.note, event.created_by, event.created_at, entitlement.resource_domain
+SELECT event.id, event.user_id, event.entitlement_id, event.request_id, event.reservation_id, event.kind, event.token_delta, event.reserved_tokens, event.input_tokens, event.output_tokens, event.usage_source, event.source_event_id, event.note, event.created_by, event.created_at, entitlement.resource_domain, owner.display_name AS owner_name,
+       actor.display_name AS actor_name
 FROM ledger_events event
 JOIN users owner ON owner.id = event.user_id
 JOIN entitlements entitlement ON entitlement.id = event.entitlement_id
@@ -1306,6 +1397,8 @@ type ListLedgerEventsRow struct {
 	CreatedBy      *uuid.UUID         `json:"created_by"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 	ResourceDomain ResourceDomain     `json:"resource_domain"`
+	OwnerName      string             `json:"owner_name"`
+	ActorName      *string            `json:"actor_name"`
 }
 
 func (q *Queries) ListLedgerEvents(ctx context.Context, arg ListLedgerEventsParams) ([]ListLedgerEventsRow, error) {
@@ -1341,6 +1434,8 @@ func (q *Queries) ListLedgerEvents(ctx context.Context, arg ListLedgerEventsPara
 			&i.CreatedBy,
 			&i.CreatedAt,
 			&i.ResourceDomain,
+			&i.OwnerName,
+			&i.ActorName,
 		); err != nil {
 			return nil, err
 		}
@@ -1506,49 +1601,143 @@ func (q *Queries) ListRequestAttempts(ctx context.Context, requestID uuid.UUID) 
 	return items, nil
 }
 
-const listRequestUsage = `-- name: ListRequestUsage :many
-SELECT request.id, request.user_id, key.prefix AS key_prefix,
-       model.public_name AS model_alias, request.resource_domain,
-       request.input_tokens, request.output_tokens, request.usage_source, request.completed_at
+const listRequestLogAttempts = `-- name: ListRequestLogAttempts :many
+SELECT attempt.id, attempt.sequence, attempt.status, provider.name AS provider_name,
+       credential.name AS credential_name, attempt.upstream_request_id, attempt.http_status,
+       attempt.error_kind, attempt.retry_after_at, attempt.sent_at, attempt.first_byte_at,
+       attempt.completed_at, attempt.input_tokens, attempt.output_tokens,
+       attempt.usage_source, attempt.created_at
+FROM request_attempts AS attempt
+JOIN provider_credentials AS credential ON credential.id = attempt.credential_id
+JOIN providers AS provider ON provider.id = credential.provider_id
+WHERE attempt.request_id = $1
+ORDER BY attempt.sequence, attempt.id
+`
+
+type ListRequestLogAttemptsRow struct {
+	ID                uuid.UUID          `json:"id"`
+	Sequence          int32              `json:"sequence"`
+	Status            AttemptStatus      `json:"status"`
+	ProviderName      string             `json:"provider_name"`
+	CredentialName    string             `json:"credential_name"`
+	UpstreamRequestID *string            `json:"upstream_request_id"`
+	HttpStatus        *int32             `json:"http_status"`
+	ErrorKind         *string            `json:"error_kind"`
+	RetryAfterAt      pgtype.Timestamptz `json:"retry_after_at"`
+	SentAt            pgtype.Timestamptz `json:"sent_at"`
+	FirstByteAt       pgtype.Timestamptz `json:"first_byte_at"`
+	CompletedAt       pgtype.Timestamptz `json:"completed_at"`
+	InputTokens       *int64             `json:"input_tokens"`
+	OutputTokens      *int64             `json:"output_tokens"`
+	UsageSource       UsageSource        `json:"usage_source"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+}
+
+func (q *Queries) ListRequestLogAttempts(ctx context.Context, requestID uuid.UUID) ([]ListRequestLogAttemptsRow, error) {
+	rows, err := q.db.Query(ctx, listRequestLogAttempts, requestID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRequestLogAttemptsRow{}
+	for rows.Next() {
+		var i ListRequestLogAttemptsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Sequence,
+			&i.Status,
+			&i.ProviderName,
+			&i.CredentialName,
+			&i.UpstreamRequestID,
+			&i.HttpStatus,
+			&i.ErrorKind,
+			&i.RetryAfterAt,
+			&i.SentAt,
+			&i.FirstByteAt,
+			&i.CompletedAt,
+			&i.InputTokens,
+			&i.OutputTokens,
+			&i.UsageSource,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRequestLogs = `-- name: ListRequestLogs :many
+SELECT request.id, request.user_id, owner.display_name AS user_name,
+       request.gateway_key_id, key.prefix AS key_prefix,
+       request.model_id, model.public_name AS model_alias, request.resource_domain,
+       request.status, request.stream, request.input_tokens, request.output_tokens,
+       request.usage_source, request.error_kind, request.accepted_at, request.completed_at,
+       request.updated_at,
+       (SELECT count(*) FROM request_attempts attempt WHERE attempt.request_id = request.id)::bigint AS attempt_count,
+       coalesce((SELECT attempt.status::text FROM request_attempts attempt WHERE attempt.request_id = request.id ORDER BY attempt.sequence DESC, attempt.id DESC LIMIT 1), ''::text)::text AS last_attempt_status
 FROM requests AS request
 JOIN users AS owner ON owner.id = request.user_id
 JOIN gateway_keys AS key ON key.id = request.gateway_key_id
-JOIN config_revision_models AS model
-  ON model.revision_id = request.config_revision_id AND model.model_id = request.model_id
+JOIN models AS model ON model.id = request.model_id
 WHERE ($1::uuid IS NULL OR request.user_id = $1)
-  AND request.input_tokens IS NOT NULL
-  AND request.output_tokens IS NOT NULL
-  AND request.usage_source IN ('authoritative', 'estimated')
-  AND request.completed_at IS NOT NULL
-  AND ($2::text = '' OR concat_ws(' ', owner.display_name, owner.email, key.prefix, model.public_name, request.id::text) ILIKE '%' || $2::text || '%')
-  AND ($3::text = '' OR request.resource_domain::text = $3::text)
-ORDER BY request.completed_at DESC, request.id
-LIMIT $5 OFFSET $4
+  AND ($2::uuid IS NULL OR request.gateway_key_id = $2)
+  AND ($3::uuid IS NULL OR request.model_id = $3)
+  AND ($4::text = '' OR request.status::text = $4::text)
+  AND request.accepted_at >= $5
+  AND request.accepted_at < $6
+  AND ($7::text = '' OR concat_ws(' ', owner.display_name, owner.email, key.prefix, model.public_name, request.id::text) ILIKE '%' || $7::text || '%')
+  AND ($8::text = '' OR request.resource_domain::text = $8::text)
+ORDER BY request.accepted_at DESC, request.id DESC
+LIMIT $10 OFFSET $9
 `
 
-type ListRequestUsageParams struct {
-	UserID         *uuid.UUID `json:"user_id"`
-	Search         string     `json:"search"`
-	ResourceDomain string     `json:"resource_domain"`
-	PageOffset     int32      `json:"page_offset"`
-	PageSize       int32      `json:"page_size"`
+type ListRequestLogsParams struct {
+	UserID         *uuid.UUID         `json:"user_id"`
+	GatewayKeyID   *uuid.UUID         `json:"gateway_key_id"`
+	ModelID        *uuid.UUID         `json:"model_id"`
+	Status         string             `json:"status"`
+	FromTime       pgtype.Timestamptz `json:"from_time"`
+	ToTime         pgtype.Timestamptz `json:"to_time"`
+	Search         string             `json:"search"`
+	ResourceDomain string             `json:"resource_domain"`
+	PageOffset     int32              `json:"page_offset"`
+	PageSize       int32              `json:"page_size"`
 }
 
-type ListRequestUsageRow struct {
-	ID             uuid.UUID          `json:"id"`
-	UserID         uuid.UUID          `json:"user_id"`
-	KeyPrefix      string             `json:"key_prefix"`
-	ModelAlias     string             `json:"model_alias"`
-	ResourceDomain ResourceDomain     `json:"resource_domain"`
-	InputTokens    *int64             `json:"input_tokens"`
-	OutputTokens   *int64             `json:"output_tokens"`
-	UsageSource    UsageSource        `json:"usage_source"`
-	CompletedAt    pgtype.Timestamptz `json:"completed_at"`
+type ListRequestLogsRow struct {
+	ID                uuid.UUID          `json:"id"`
+	UserID            uuid.UUID          `json:"user_id"`
+	UserName          string             `json:"user_name"`
+	GatewayKeyID      uuid.UUID          `json:"gateway_key_id"`
+	KeyPrefix         string             `json:"key_prefix"`
+	ModelID           uuid.UUID          `json:"model_id"`
+	ModelAlias        string             `json:"model_alias"`
+	ResourceDomain    ResourceDomain     `json:"resource_domain"`
+	Status            RequestStatus      `json:"status"`
+	Stream            bool               `json:"stream"`
+	InputTokens       *int64             `json:"input_tokens"`
+	OutputTokens      *int64             `json:"output_tokens"`
+	UsageSource       UsageSource        `json:"usage_source"`
+	ErrorKind         *string            `json:"error_kind"`
+	AcceptedAt        pgtype.Timestamptz `json:"accepted_at"`
+	CompletedAt       pgtype.Timestamptz `json:"completed_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	AttemptCount      int64              `json:"attempt_count"`
+	LastAttemptStatus string             `json:"last_attempt_status"`
 }
 
-func (q *Queries) ListRequestUsage(ctx context.Context, arg ListRequestUsageParams) ([]ListRequestUsageRow, error) {
-	rows, err := q.db.Query(ctx, listRequestUsage,
+func (q *Queries) ListRequestLogs(ctx context.Context, arg ListRequestLogsParams) ([]ListRequestLogsRow, error) {
+	rows, err := q.db.Query(ctx, listRequestLogs,
 		arg.UserID,
+		arg.GatewayKeyID,
+		arg.ModelID,
+		arg.Status,
+		arg.FromTime,
+		arg.ToTime,
 		arg.Search,
 		arg.ResourceDomain,
 		arg.PageOffset,
@@ -1558,19 +1747,29 @@ func (q *Queries) ListRequestUsage(ctx context.Context, arg ListRequestUsagePara
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListRequestUsageRow{}
+	items := []ListRequestLogsRow{}
 	for rows.Next() {
-		var i ListRequestUsageRow
+		var i ListRequestLogsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.UserID,
+			&i.UserName,
+			&i.GatewayKeyID,
 			&i.KeyPrefix,
+			&i.ModelID,
 			&i.ModelAlias,
 			&i.ResourceDomain,
+			&i.Status,
+			&i.Stream,
 			&i.InputTokens,
 			&i.OutputTokens,
 			&i.UsageSource,
+			&i.ErrorKind,
+			&i.AcceptedAt,
 			&i.CompletedAt,
+			&i.UpdatedAt,
+			&i.AttemptCount,
+			&i.LastAttemptStatus,
 		); err != nil {
 			return nil, err
 		}

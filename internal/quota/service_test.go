@@ -14,7 +14,8 @@ import (
 type repositoryStub struct {
 	created         *NewEntitlement
 	listedUserID    *uuid.UUID
-	usageUserID     *uuid.UUID
+	requestUserID   *uuid.UUID
+	detailUserID    *uuid.UUID
 	accepted        *AcceptInput
 	settleCalls     int
 	releaseKind     string
@@ -35,9 +36,14 @@ func (r *repositoryStub) ListLedger(context.Context, LedgerFilter) (PageResult[L
 	return PageResult[LedgerEvent]{Items: []LedgerEvent{}}, nil
 }
 
-func (r *repositoryStub) ListUsage(_ context.Context, query UsageQuery) (PageResult[UsageRecord], error) {
-	r.usageUserID = query.UserID
-	return PageResult[UsageRecord]{Items: []UsageRecord{}}, nil
+func (r *repositoryStub) ListRequestLogs(_ context.Context, query RequestLogQuery) (PageResult[RequestLog], error) {
+	r.requestUserID = query.UserID
+	return PageResult[RequestLog]{Items: []RequestLog{}}, nil
+}
+
+func (r *repositoryStub) GetRequestLog(_ context.Context, _ uuid.UUID, userID *uuid.UUID) (RequestLogDetail, error) {
+	r.detailUserID = userID
+	return RequestLogDetail{}, nil
 }
 
 func (r *repositoryStub) AcceptRequest(_ context.Context, input AcceptInput) (AcceptedRequest, error) {
@@ -96,17 +102,24 @@ func TestMemberQuotaReadsAreScopedToTheAuthenticatedOwner(t *testing.T) {
 	repository := &repositoryStub{}
 	service, _ := NewService(repository)
 	memberID := uuid.New()
+	now := time.Now().UTC()
 	if _, err := service.ListEntitlements(context.Background(), activePrincipal(identity.RoleMember, memberID), EntitlementQuery{}); err != nil {
 		t.Fatalf("ListEntitlements() error = %v", err)
 	}
 	if repository.listedUserID == nil || *repository.listedUserID != memberID {
 		t.Fatalf("repository user filter = %v, want %s", repository.listedUserID, memberID)
 	}
-	if _, err := service.ListUsage(context.Background(), activePrincipal(identity.RoleMember, memberID), UsageQuery{}); err != nil {
-		t.Fatalf("ListUsage() error = %v", err)
+	if _, err := service.ListRequestLogs(context.Background(), activePrincipal(identity.RoleMember, memberID), RequestLogQuery{From: now.Add(-time.Hour), To: now}); err != nil {
+		t.Fatalf("ListRequestLogs() error = %v", err)
 	}
-	if repository.usageUserID == nil || *repository.usageUserID != memberID {
-		t.Fatalf("usage repository user filter = %v, want %s", repository.usageUserID, memberID)
+	if repository.requestUserID == nil || *repository.requestUserID != memberID {
+		t.Fatalf("request repository user filter = %v, want %s", repository.requestUserID, memberID)
+	}
+	if _, err := service.GetRequestLog(context.Background(), activePrincipal(identity.RoleMember, memberID), uuid.New()); err != nil {
+		t.Fatalf("GetRequestLog() error = %v", err)
+	}
+	if repository.detailUserID == nil || *repository.detailUserID != memberID {
+		t.Fatalf("request detail repository user filter = %v, want %s", repository.detailUserID, memberID)
 	}
 }
 

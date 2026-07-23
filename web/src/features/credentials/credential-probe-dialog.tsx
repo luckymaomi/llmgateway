@@ -54,7 +54,7 @@ export function CredentialProbeDialog({
       onOpenChange={(open) => {
         if (!probe.isPending || open) onOpenChange(open)
       }}
-      title="测试 Provider API Key"
+      title="测试上游 API Key"
       dismissible={!probe.isPending}
       width="sm"
       footer={

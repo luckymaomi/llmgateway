@@ -64,6 +64,10 @@ const OverviewPage = lazyRouteComponent(
   () => import('@/features/overview/overview-page'),
   'OverviewPage',
 )
+const OperationsPage = lazyRouteComponent(
+  () => import('@/features/operations/operations-page'),
+  'OperationsPage',
+)
 
 interface RouterContext {
   queryClient: QueryClient
@@ -192,38 +196,32 @@ function protectedRoute<const TPath extends string>(
   })
 }
 
-const providersRoute = protectedRoute('/providers/providers', 'providers:read', ProvidersPage, true)
-const modelsRoute = protectedRoute('/providers/models', 'providers:read', ModelsPage, true)
-const revisionsRoute = protectedRoute('/providers/revisions', 'providers:read', RevisionsPage, true)
-const credentialsRoute = protectedRoute('/credentials', 'credentials:read', CredentialsPage, true)
-const usersRoute = protectedRoute('/access/users', 'access:read', UsersPage, true, [
+const providersRoute = protectedRoute('/providers', 'providers:read', ProvidersPage, true)
+const modelsRoute = protectedRoute('/models', 'providers:read', ModelsPage, true)
+const revisionsRoute = protectedRoute('/configuration', 'providers:read', RevisionsPage, true)
+const credentialsRoute = protectedRoute('/provider-keys', 'credentials:read', CredentialsPage, true)
+const usersRoute = protectedRoute('/members', 'access:read', UsersPage, true, ['administrator'])
+const invitationsRoute = protectedRoute('/invitations', 'access:read', InvitationsPage, true, [
   'administrator',
 ])
-const invitationsRoute = protectedRoute(
-  '/access/invitations',
-  'access:read',
-  InvitationsPage,
-  true,
-  ['administrator'],
-)
-const keysRoute = protectedRoute('/access/keys', 'access:read', KeysPage, true, [
+const keysRoute = protectedRoute('/gateway-keys', 'access:read', KeysPage, true, [
   'administrator',
   'member',
 ])
-const usageRoute = protectedRoute('/ledger/usage', 'ledger:read', UsagePage, true)
-const entriesRoute = protectedRoute('/ledger/entries', 'ledger:read', EntriesPage, true)
-const entitlementsRoute = protectedRoute(
-  '/ledger/entitlements',
-  'ledger:read',
-  EntitlementsPage,
-  true,
-  ['administrator'],
-)
-const costsRoute = protectedRoute('/ledger/costs', 'ledger:write', CostsPage, true, [
+const usageRoute = protectedRoute('/api-logs', 'ledger:read', UsagePage, true)
+const entriesRoute = protectedRoute('/quota-records', 'ledger:read', EntriesPage, true)
+const entitlementsRoute = protectedRoute('/entitlements', 'ledger:read', EntitlementsPage, true, [
+  'administrator',
+  'member',
+])
+const costsRoute = protectedRoute('/costs', 'ledger:write', CostsPage, true, ['administrator'])
+const settingsRoute = protectedRoute('/site-settings', 'access:read', SettingsPage, false, [
   'administrator',
 ])
-const settingsRoute = protectedRoute('/settings', 'access:read', SettingsPage)
-const overviewRoute = protectedRoute('/overview', 'access:read', OverviewPage)
+const overviewRoute = protectedRoute('/dashboard', 'access:read', OverviewPage)
+const operationsRoute = protectedRoute('/operations', 'access:read', OperationsPage, false, [
+  'administrator',
+])
 const forbiddenRoute = createRoute({
   getParentRoute: () => authenticatedLayout,
   path: '/forbidden',
@@ -259,6 +257,7 @@ const routeTree = rootRoute.addChildren([
     costsRoute,
     settingsRoute,
     overviewRoute,
+    operationsRoute,
     forbiddenRoute,
   ]),
 ])

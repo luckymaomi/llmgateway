@@ -13,7 +13,6 @@ import { IconButton } from '@/components/ui/icon-button'
 import { useListSearch } from '@/hooks/use-list-search'
 import { formatNumber } from '@/lib/format'
 
-import { CatalogTabs } from './catalog-tabs'
 import { ModelForm } from './model-form'
 
 export function ModelsPage() {
@@ -76,7 +75,7 @@ export function ModelsPage() {
   return (
     <Page>
       <PageHeader
-        title="Provider 接入"
+        title="模型"
         actions={
           canWrite ? (
             <Button icon={<Plus size={16} />} onClick={() => setEditing('create')}>
@@ -85,7 +84,6 @@ export function ModelsPage() {
           ) : null
         }
       />
-      <CatalogTabs />
       <PageSection>
         <TableToolbar
           search={state.search}

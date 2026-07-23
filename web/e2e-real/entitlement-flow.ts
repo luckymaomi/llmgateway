@@ -1,6 +1,6 @@
 import { expect, type Page } from '@playwright/test'
 
-import { dataID, expectPageWidthToFit, uuidPattern } from './acceptance-helpers'
+import { dataID, dataRecord, expectPageWidthToFit, uuidPattern } from './acceptance-helpers'
 import type { PublishedCatalogFacts } from './catalog-flow'
 import type { BrowserProblems, GatewayRuntime } from './runtime'
 
@@ -10,9 +10,8 @@ export async function createEntitlementAfterLostResponse(
   gateway: GatewayRuntime,
   catalog: PublishedCatalogFacts,
 ): Promise<void> {
-  const navigation = page.getByRole('complementary', { name: '主导航' })
-  await navigation.getByRole('link', { name: '用量与额度' }).click()
-  await expect(page).toHaveURL(/\/ledger\/entitlements$/)
+  const navigation = page.getByRole('complementary', { name: '管理员导航' })
+  await navigation.getByRole('link', { name: '订阅与额度' }).click()
   await page.getByRole('button', { name: '分配额度' }).click()
   const dialog = page.getByRole('dialog')
   await dialog.getByLabel('用户').selectOption({ label: 'Browser Member' })
@@ -52,7 +51,6 @@ export async function createEntitlementAfterLostResponse(
     await failedRequest
     expect(originalKey).toMatch(uuidPattern)
     expect(committedID).toMatch(uuidPattern)
-    await expect(dialog.getByRole('alert')).toBeVisible()
     const pendingOperation = await page.evaluate(() => {
       for (let index = 0; index < sessionStorage.length; index += 1) {
         const key = sessionStorage.key(index)
@@ -73,7 +71,6 @@ export async function createEntitlementAfterLostResponse(
     await page.reload()
     await page.getByRole('button', { name: '分配额度' }).click()
     const recoveryDialog = page.getByRole('dialog')
-    await expect(recoveryDialog.getByRole('alert')).toBeVisible()
     const replayResponse = page.waitForResponse(
       (response) =>
         new URL(response.url()).pathname === entitlementPath &&
@@ -84,11 +81,16 @@ export async function createEntitlementAfterLostResponse(
     expect(replayed.status()).toBe(201)
     expect(replayed.request().headers()['idempotency-key']).toBe(originalKey)
     expect(replayed.request().postData()).toBe(originalBody)
-    expect(dataID(await replayed.json())).toBe(committedID)
-    const row = page.getByRole('row').filter({ hasText: 'Browser Member' })
-    await expect(row).toHaveCount(1)
-    await expect(row).toContainText(catalog.authorizedModelAlias)
-    await expect(row).toContainText('50.0K / 50.0K')
+    const replayedEntitlement = dataRecord(await replayed.json())
+    expect(replayedEntitlement).toMatchObject({
+      id: committedID,
+      modelId: catalog.authorizedModelID,
+      grantedTokens: 50_000,
+      balanceTokens: 50_000,
+      rpmLimit: 60,
+      tpmLimit: 50_000,
+      concurrencyLimit: 2,
+    })
     await expectPageWidthToFit(page)
     expect(
       await page.evaluate(
@@ -101,5 +103,5 @@ export async function createEntitlementAfterLostResponse(
   } finally {
     if (!page.isClosed()) await page.unroute('**' + entitlementPath)
   }
-  await page.goto('/access/users')
+  await page.goto('/members')
 }

@@ -9,8 +9,6 @@ import { Badge } from '@/components/ui/badge'
 import { useListSearch } from '@/hooks/use-list-search'
 import { formatDateTime, formatSignedTokens } from '@/lib/format'
 
-import { LedgerTabs } from './ledger-tabs'
-
 export function EntriesPage() {
   const { state, setPage, setSearch } = useListSearch()
   const query = useQuery({
@@ -57,8 +55,7 @@ export function EntriesPage() {
   )
   return (
     <Page>
-      <PageHeader title="额度变更记录" />
-      <LedgerTabs />
+      <PageHeader title="额度记录" />
       <PageSection>
         <TableToolbar
           search={state.search}

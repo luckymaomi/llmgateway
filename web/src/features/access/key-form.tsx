@@ -166,7 +166,7 @@ export function KeyForm({
         onOpenChange={(next) => {
           if (!next) requestClose()
         }}
-        title="API Key 已创建"
+        title="Gateway Key 已创建"
         footer={<Button onClick={requestClose}>完成</Button>}
       >
         <div className="secret-reveal">
@@ -227,7 +227,7 @@ export function KeyForm({
       onOpenChange={(nextOpen) => {
         if (!nextOpen) requestClose()
       }}
-      title="创建 API Key"
+      title="创建 Gateway Key"
       dismissible={!controlsLocked}
       footer={
         <>

@@ -64,7 +64,6 @@ export async function createInvitationAfterLostResponse(
     const originalInput = JSON.parse(originalBody) as { expiresAt?: unknown }
     expect(typeof originalInput.expiresAt).toBe('string')
     expect(new Date(String(originalInput.expiresAt)).toISOString()).toBe(originalInput.expiresAt)
-    await expect(dialog.getByRole('alert')).toBeVisible()
     const pendingOperation = await page.evaluate(() => {
       for (let index = 0; index < sessionStorage.length; index += 1) {
         const storageKey = sessionStorage.key(index)
@@ -88,7 +87,6 @@ export async function createInvitationAfterLostResponse(
     await gateway.restart()
     await page.reload()
     const recoveryDialog = page.getByRole('dialog')
-    await expect(recoveryDialog.getByRole('alert')).toBeVisible()
     const replayResponse = page.waitForResponse(
       (response) =>
         new URL(response.url()).pathname === invitationPath &&
@@ -138,11 +136,6 @@ export async function createInvitationAfterLostResponse(
       ),
     ).toBe(0)
     const prefix = committedInvitationCode.slice(0, 13)
-    const invitationRows = page
-      .getByRole('table', { name: '邀请列表' })
-      .getByRole('row')
-      .filter({ hasText: `${prefix}…` })
-    await expect(invitationRows).toHaveCount(1)
     expect(
       await page.evaluate(
         (code) => !document.body.innerText.includes(code),

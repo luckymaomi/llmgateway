@@ -16,7 +16,6 @@ import { DialogFrame } from '@/components/ui/dialog'
 import { FormProblem } from '@/features/auth/form-problem'
 import { useListSearch } from '@/hooks/use-list-search'
 
-import { CatalogTabs } from './catalog-tabs'
 import { completedRevisionTitle, type CompletedRevisionResult } from './revision-operation'
 import { ActiveRevisionSummary, CompletedRevisionOperation } from './revision-presentation'
 import { RevisionTable, type RevisionAction } from './revision-table'
@@ -150,7 +149,7 @@ export function RevisionsPage() {
   return (
     <Page>
       <PageHeader
-        title="Provider 接入"
+        title="配置发布"
         actions={
           canPublish ? (
             <Button
@@ -163,7 +162,6 @@ export function RevisionsPage() {
           ) : null
         }
       />
-      <CatalogTabs />
       <ActiveRevisionSummary
         configuration={active.data}
         loading={active.isLoading}

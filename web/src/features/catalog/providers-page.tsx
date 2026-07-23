@@ -16,7 +16,6 @@ import { useSession, hasCapability } from '@/app/session'
 import { useListSearch } from '@/hooks/use-list-search'
 import { formatDateTime } from '@/lib/format'
 
-import { CatalogTabs } from './catalog-tabs'
 import { ProviderForm } from './provider-form'
 import {
   createProviderOperation,
@@ -104,7 +103,7 @@ export function ProvidersPage() {
       },
       { accessorKey: 'kind', header: '类型' },
       { accessorKey: 'modelCount', header: '模型' },
-      { accessorKey: 'credentialCount', header: 'API Key' },
+      { accessorKey: 'credentialCount', header: '上游 API Key' },
       {
         accessorKey: 'status',
         header: '状态',
@@ -152,7 +151,7 @@ export function ProvidersPage() {
   return (
     <Page>
       <PageHeader
-        title="Provider 接入"
+        title="Provider"
         actions={
           canWrite ? (
             <Button icon={<Plus size={16} />} onClick={() => setEditing({ kind: 'create' })}>
@@ -161,7 +160,6 @@ export function ProvidersPage() {
           ) : null
         }
       />
-      <CatalogTabs />
       <PageSection>
         {presets.isLoading ? <LoadingState label="正在读取 Provider" /> : null}
         {presets.error ? (
@@ -240,7 +238,7 @@ export function ProvidersPage() {
                 {provider.slug} · {provider.kind}
               </span>
               <span>
-                {provider.modelCount} 个模型 · {provider.credentialCount} 个 API Key
+                {provider.modelCount} 个模型 · {provider.credentialCount} 个上游 API Key
               </span>
             </div>
           )}
@@ -310,10 +308,10 @@ function ProviderPresetCard({
             variant={preset.installedCredentials > 0 ? 'secondary' : 'primary'}
             icon={<KeyRound size={15} />}
           >
-            <Link to="/credentials">
+            <Link to="/provider-keys">
               {preset.installedCredentials > 0
-                ? `查看 API Key (${preset.installedCredentials})`
-                : '添加 Provider API Key'}
+                ? `查看上游 API Key (${preset.installedCredentials})`
+                : '添加上游 API Key'}
             </Link>
           </Button>
         ) : null}

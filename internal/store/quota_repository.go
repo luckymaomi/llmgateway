@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/luckymaomi/llmgateway/internal/quota"
 	db "github.com/luckymaomi/llmgateway/internal/store/db"
 )
@@ -144,11 +145,13 @@ func (r *QuotaRepository) ListEntitlements(ctx context.Context, query quota.Enti
 	}
 	items := make([]quota.Entitlement, 0, len(rows))
 	for _, row := range rows {
-		items = append(items, entitlementFromDB(db.Entitlement{
+		item := entitlementFromDB(db.Entitlement{
 			ID: row.ID, UserID: row.UserID, Plan: row.Plan, ResourceDomain: row.ResourceDomain, ModelID: row.ModelID,
 			GrantedTokens: row.GrantedTokens, StartsAt: row.StartsAt, ExpiresAt: row.ExpiresAt,
 			ConcurrencyLimit: row.ConcurrencyLimit, RpmLimit: row.RpmLimit, TpmLimit: row.TpmLimit, CreatedAt: row.CreatedAt,
-		}, row.BalanceTokens))
+		}, row.BalanceTokens)
+		item.OwnerName, item.ModelAlias = row.OwnerName, row.ModelAlias
+		items = append(items, item)
 	}
 	return quota.PageResult[quota.Entitlement]{Items: items, Total: total}, nil
 }
@@ -176,36 +179,83 @@ func (r *QuotaRepository) ListLedger(ctx context.Context, filter quota.LedgerFil
 			ReservedTokens: row.ReservedTokens, InputTokens: row.InputTokens, OutputTokens: row.OutputTokens,
 			UsageSource: quota.UsageSource(row.UsageSource), ResourceDomain: quota.ResourceDomain(row.ResourceDomain),
 			Note: row.Note, CreatedBy: row.CreatedBy, CreatedAt: row.CreatedAt.Time.UTC(),
+			OwnerName: row.OwnerName, ActorName: row.ActorName,
 		})
 	}
 	return quota.PageResult[quota.LedgerEvent]{Items: items, Total: total}, nil
 }
 
-func (r *QuotaRepository) ListUsage(ctx context.Context, query quota.UsageQuery) (quota.PageResult[quota.UsageRecord], error) {
-	parameters := db.CountRequestUsageParams{UserID: query.UserID, Search: query.Search, ResourceDomain: string(query.ResourceDomain)}
-	total, err := r.queries.CountRequestUsage(ctx, parameters)
-	if err != nil {
-		return quota.PageResult[quota.UsageRecord]{}, translateQuotaError(err)
+func (r *QuotaRepository) ListRequestLogs(ctx context.Context, query quota.RequestLogQuery) (quota.PageResult[quota.RequestLog], error) {
+	parameters := db.CountRequestLogsParams{
+		UserID: query.UserID, GatewayKeyID: query.GatewayKeyID, ModelID: query.ModelID,
+		Status: string(query.Status), FromTime: requiredTimestamp(query.From), ToTime: requiredTimestamp(query.To),
+		Search: query.Search, ResourceDomain: string(query.ResourceDomain),
 	}
-	rows, err := r.queries.ListRequestUsage(ctx, db.ListRequestUsageParams{
-		UserID: parameters.UserID, Search: parameters.Search, ResourceDomain: parameters.ResourceDomain,
+	total, err := r.queries.CountRequestLogs(ctx, parameters)
+	if err != nil {
+		return quota.PageResult[quota.RequestLog]{}, translateQuotaError(err)
+	}
+	rows, err := r.queries.ListRequestLogs(ctx, db.ListRequestLogsParams{
+		UserID: parameters.UserID, GatewayKeyID: parameters.GatewayKeyID, ModelID: parameters.ModelID,
+		Status: parameters.Status, FromTime: parameters.FromTime, ToTime: parameters.ToTime,
+		Search: parameters.Search, ResourceDomain: parameters.ResourceDomain,
 		PageOffset: query.Page.Offset, PageSize: query.Page.Size,
 	})
 	if err != nil {
-		return quota.PageResult[quota.UsageRecord]{}, translateQuotaError(err)
+		return quota.PageResult[quota.RequestLog]{}, translateQuotaError(err)
 	}
-	items := make([]quota.UsageRecord, 0, len(rows))
+	items := make([]quota.RequestLog, 0, len(rows))
 	for _, row := range rows {
-		if row.InputTokens == nil || row.OutputTokens == nil || !row.CompletedAt.Valid {
-			return quota.PageResult[quota.UsageRecord]{}, fmt.Errorf("quota store: request usage row is incomplete")
+		if !row.AcceptedAt.Valid || !row.UpdatedAt.Valid {
+			return quota.PageResult[quota.RequestLog]{}, fmt.Errorf("quota store: request log row is incomplete")
 		}
-		items = append(items, quota.UsageRecord{
-			RequestID: row.ID, UserID: row.UserID, KeyPrefix: row.KeyPrefix, ModelAlias: row.ModelAlias,
-			ResourceDomain: quota.ResourceDomain(row.ResourceDomain), InputTokens: *row.InputTokens, OutputTokens: *row.OutputTokens,
-			UsageSource: quota.UsageSource(row.UsageSource), OccurredAt: row.CompletedAt.Time.UTC(),
+		items = append(items, quota.RequestLog{
+			RequestID: row.ID, UserID: row.UserID, UserName: row.UserName,
+			GatewayKeyID: row.GatewayKeyID, KeyPrefix: row.KeyPrefix, ModelID: row.ModelID, ModelAlias: row.ModelAlias,
+			ResourceDomain: quota.ResourceDomain(row.ResourceDomain), Status: quota.RequestStatus(row.Status), Stream: row.Stream,
+			InputTokens: row.InputTokens, OutputTokens: row.OutputTokens, UsageSource: quota.UsageSource(row.UsageSource),
+			ErrorKind: row.ErrorKind, AcceptedAt: row.AcceptedAt.Time.UTC(), CompletedAt: timePointer(row.CompletedAt),
+			UpdatedAt: row.UpdatedAt.Time.UTC(), AttemptCount: row.AttemptCount, LastAttemptStatus: optionalString(row.LastAttemptStatus),
 		})
 	}
-	return quota.PageResult[quota.UsageRecord]{Items: items, Total: total}, nil
+	return quota.PageResult[quota.RequestLog]{Items: items, Total: total}, nil
+}
+
+func (r *QuotaRepository) GetRequestLog(ctx context.Context, requestID uuid.UUID, userID *uuid.UUID) (quota.RequestLogDetail, error) {
+	row, err := r.queries.GetRequestLog(ctx, db.GetRequestLogParams{RequestID: requestID, UserID: userID})
+	if err != nil {
+		return quota.RequestLogDetail{}, translateQuotaError(err)
+	}
+	if !row.AcceptedAt.Valid || !row.UpdatedAt.Valid {
+		return quota.RequestLogDetail{}, fmt.Errorf("quota store: request log row is incomplete")
+	}
+	result := quota.RequestLogDetail{RequestLog: quota.RequestLog{
+		RequestID: row.ID, UserID: row.UserID, UserName: row.UserName,
+		GatewayKeyID: row.GatewayKeyID, KeyPrefix: row.KeyPrefix, ModelID: row.ModelID, ModelAlias: row.ModelAlias,
+		ResourceDomain: quota.ResourceDomain(row.ResourceDomain), Status: quota.RequestStatus(row.Status), Stream: row.Stream,
+		InputTokens: row.InputTokens, OutputTokens: row.OutputTokens, UsageSource: quota.UsageSource(row.UsageSource),
+		ErrorKind: row.ErrorKind, AcceptedAt: row.AcceptedAt.Time.UTC(), CompletedAt: timePointer(row.CompletedAt),
+		UpdatedAt: row.UpdatedAt.Time.UTC(), AttemptCount: row.AttemptCount, LastAttemptStatus: optionalString(row.LastAttemptStatus),
+	}}
+	attempts, err := r.queries.ListRequestLogAttempts(ctx, requestID)
+	if err != nil {
+		return quota.RequestLogDetail{}, translateQuotaError(err)
+	}
+	result.Attempts = make([]quota.RequestAttempt, 0, len(attempts))
+	for _, attempt := range attempts {
+		if !attempt.CreatedAt.Valid {
+			return quota.RequestLogDetail{}, fmt.Errorf("quota store: request attempt row is incomplete")
+		}
+		result.Attempts = append(result.Attempts, quota.RequestAttempt{
+			ID: attempt.ID, Sequence: attempt.Sequence, Status: string(attempt.Status), ProviderName: attempt.ProviderName,
+			CredentialName: attempt.CredentialName, UpstreamRequestID: attempt.UpstreamRequestID, HTTPStatus: attempt.HttpStatus,
+			ErrorKind: attempt.ErrorKind, RetryAfterAt: timePointer(attempt.RetryAfterAt), SentAt: timePointer(attempt.SentAt),
+			FirstByteAt: timePointer(attempt.FirstByteAt), CompletedAt: timePointer(attempt.CompletedAt),
+			InputTokens: attempt.InputTokens, OutputTokens: attempt.OutputTokens, UsageSource: quota.UsageSource(attempt.UsageSource),
+			CreatedAt: attempt.CreatedAt.Time.UTC(),
+		})
+	}
+	return result, nil
 }
 
 func entitlementFromDB(value db.Entitlement, balance int64) quota.Entitlement {
@@ -215,6 +265,10 @@ func entitlementFromDB(value db.Entitlement, balance int64) quota.Entitlement {
 		StartsAt: value.StartsAt.Time.UTC(), ExpiresAt: value.ExpiresAt.Time.UTC(), ConcurrencyLimit: value.ConcurrencyLimit,
 		RPMLimit: value.RpmLimit, TPMLimit: value.TpmLimit, CreatedAt: value.CreatedAt.Time.UTC(),
 	}
+}
+
+func requiredTimestamp(value time.Time) pgtype.Timestamptz {
+	return pgtype.Timestamptz{Time: value.UTC(), Valid: true}
 }
 
 func entitlementFromGrant(value db.GetEntitlementByGrantIdempotencyRow, balance int64) quota.Entitlement {

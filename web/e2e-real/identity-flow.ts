@@ -1,12 +1,14 @@
-import { devices, expect, type Browser, type Page, type Request } from '@playwright/test'
+import { devices, expect, type Browser, type Page } from '@playwright/test'
 
 import {
   administratorEmail,
   administratorPassword,
   clearClipboard,
+  dataItems,
   dataRecord,
   expectPageWidthToFit,
   gatewayEndpoint,
+  isRecord,
   memberEmail,
   memberPassword,
   memberReplacementPassword,
@@ -28,17 +30,10 @@ export async function completeIdentityBoundary(
 ): Promise<void> {
   const origin = new URL(page.url()).origin
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin })
-  const navigation = page.getByRole('complementary', { name: '主导航' })
-  await navigation.getByRole('link', { name: '成员与 API Key' }).click()
-  await page.getByRole('link', { name: '邀请', exact: true }).click()
-  await expect(page).toHaveURL(/\/access\/invitations$/)
+  const navigation = page.getByRole('complementary', { name: '管理员导航' })
+  await navigation.getByRole('link', { name: '邀请', exact: true }).click()
 
   const invitation = await createInvitationAfterLostResponse(page, browserProblems, gateway)
-  const invitationRowsAfterRestart = page
-    .getByRole('table', { name: '邀请列表' })
-    .getByRole('row')
-    .filter({ hasText: `${invitation.prefix}…` })
-  await expect(invitationRowsAfterRestart).toHaveCount(1)
   expect(
     await page.evaluate((code) => !document.body.innerText.includes(code), invitation.code),
   ).toBe(true)
@@ -72,20 +67,25 @@ export async function completeIdentityBoundary(
     browserProblems.allow(pendingLogin)
     expect(pendingLogin.status()).toBe(403)
     expect(problemCode(await pendingLogin.json())).toBe('approval_required')
-    const pendingProblem = registrationPage.getByRole('alert')
-    await expect(pendingProblem).toBeVisible()
   } finally {
     await registrationContext.close()
   }
   invitation.code = ''
 
   await page.reload()
-  const claimedInvitationRow = page
-    .getByRole('table', { name: '邀请列表' })
-    .getByRole('row')
-    .filter({ hasText: `${invitation.prefix}…` })
-  await expect(claimedInvitationRow).toHaveCount(1)
-  await expect(claimedInvitationRow).toContainText('Browser Member')
+  const invitationsResponse = await page.request.get('/api/control/invitations?pageSize=100')
+  expect(invitationsResponse.status()).toBe(200)
+  const claimedInvitations = dataItems(await invitationsResponse.json()).filter(
+    (item) => item.id === invitation.id,
+  )
+  expect(claimedInvitations).toEqual([
+    expect.objectContaining({
+      id: invitation.id,
+      codePrefix: invitation.prefix,
+      status: 'claimed',
+      claimedBy: 'Browser Member',
+    }),
+  ])
   await expectPageWidthToFit(page)
 
   await page.getByRole('link', { name: '成员', exact: true }).click()
@@ -107,8 +107,12 @@ export async function completeIdentityBoundary(
     await secondaryAdministratorPage.goto('/login')
     await secondaryAdministratorPage.getByLabel('邮箱').fill(administratorEmail)
     await secondaryAdministratorPage.getByLabel('密码').fill(administratorPassword)
+    const secondaryLoginResponse = secondaryAdministratorPage.waitForResponse(
+      (response) =>
+        response.url().endsWith('/api/control/session') && response.request().method() === 'POST',
+    )
     await secondaryAdministratorPage.getByRole('button', { name: '登录' }).click()
-    await expect(secondaryAdministratorPage).toHaveURL(/\/overview$/)
+    expect((await secondaryLoginResponse).status()).toBe(200)
 
     const administratorRow = page.getByRole('row').filter({ hasText: administratorEmail })
     const revokeSessionsResponse = page.waitForResponse(
@@ -136,8 +140,12 @@ export async function completeIdentityBoundary(
     await memberRecoveryPage.goto('/login')
     await memberRecoveryPage.getByLabel('邮箱').fill(memberEmail)
     await memberRecoveryPage.getByLabel('密码').fill(memberPassword)
+    const memberLoginResponse = memberRecoveryPage.waitForResponse(
+      (response) =>
+        response.url().endsWith('/api/control/session') && response.request().method() === 'POST',
+    )
     await memberRecoveryPage.getByRole('button', { name: '登录' }).click()
-    await expect(memberRecoveryPage).toHaveURL(/\/overview$/)
+    expect((await memberLoginResponse).status()).toBe(200)
 
     const passwordResetResponse = page.waitForResponse(
       (response) => response.url().endsWith('/password') && response.request().method() === 'POST',
@@ -175,8 +183,7 @@ export async function completeIdentityBoundary(
     excluded: [catalog.ungrantedModelAlias, catalog.draftOnlyModelAlias],
   })
 
-  await navigation.getByRole('link', { name: 'Provider 接入' }).click()
-  await expect(page).toHaveURL(/\/providers\/providers$/)
+  await navigation.getByRole('link', { name: 'Provider', exact: true }).click()
   const logoutResponse = page.waitForResponse(
     (response) =>
       response.url().endsWith('/api/control/session') && response.request().method() === 'DELETE',
@@ -210,61 +217,140 @@ export async function completeIdentityBoundary(
   const memberCSRFToken =
     typeof memberSession?.csrfToken === 'string' ? memberSession.csrfToken : ''
   expect(memberCSRFToken).not.toBe('')
-  await expect(page).toHaveURL(/\/overview$/)
+  const memberUserID = typeof memberSession?.userId === 'string' ? memberSession.userId : ''
+  expect(memberUserID).toMatch(/^[0-9a-f-]{36}$/)
+
+  for (const path of [
+    '/api/control/providers',
+    '/api/control/credentials',
+    '/api/control/costs',
+    '/api/control/users',
+    '/api/control/invitations',
+  ]) {
+    const response = await page.request.get(path)
+    expect(response.status()).toBe(403)
+  }
+  const rejectedSiteProfileUpdate = await page.request.put('/api/control/site-profile', {
+    headers: { 'X-CSRF-Token': memberCSRFToken },
+    data: {
+      name: 'Member cannot change this',
+      description: '',
+      contact: '',
+      expectedVersion: 2,
+    },
+  })
+  expect(rejectedSiteProfileUpdate.status()).toBe(403)
+
   await page
-    .getByRole('complementary', { name: '主导航' })
-    .getByRole('link', { name: '我的 API Key' })
+    .getByRole('complementary', { name: '控制台导航' })
+    .getByRole('link', { name: 'Key 管理' })
     .click()
-  await expect(page.getByRole('table', { name: 'API Key 列表' })).toContainText(gatewayKey.name)
-  await verifyGatewayKeyRequest(page, browserProblems, gatewayKey.name)
+  await verifyGatewayKeyRequest(page, gatewayKey.name)
 
   const usageResponse = page.waitForResponse(
     (response) =>
-      new URL(response.url()).pathname === '/api/control/usage' &&
+      new URL(response.url()).pathname === '/api/control/requests' &&
       response.request().method() === 'GET',
   )
   await page
-    .getByRole('complementary', { name: '主导航' })
-    .getByRole('link', { name: '我的用量' })
+    .getByRole('complementary', { name: '控制台导航' })
+    .getByRole('link', { name: 'API 日志' })
     .click()
-  expect((await usageResponse).status()).toBe(200)
-  const usageTable = page.getByRole('table', { name: '请求用量列表' })
-  await expect(usageTable).toContainText('browser-chat')
-  await expect(usageTable).toContainText('4')
-  await expect(usageTable).toContainText('2')
+  const usage = await usageResponse
+  expect(usage.status()).toBe(200)
+  const requestLogs = dataItems(await usage.json())
+  expect(requestLogs.length).toBeGreaterThan(0)
+  expect(requestLogs.every((item) => item.userId === memberUserID)).toBe(true)
+  expect(requestLogs).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        modelAlias: 'browser-chat',
+        status: 'completed',
+        inputTokens: 4,
+        outputTokens: 2,
+      }),
+    ]),
+  )
+  const usageTable = page.getByRole('table', { name: 'API 日志列表' })
+  const requestDetailResponse = page.waitForResponse((response) => {
+    const pathname = new URL(response.url()).pathname
+    return pathname.startsWith('/api/control/requests/') && response.request().method() === 'GET'
+  })
+  await usageTable
+    .getByRole('row')
+    .filter({ hasText: 'browser-chat' })
+    .filter({ hasText: '已完成' })
+    .first()
+    .click()
+  const detailResponse = await requestDetailResponse
+  expect(detailResponse.status()).toBe(200)
+  const detail = dataRecord(await detailResponse.json())
+  expect(detail?.request).toEqual(
+    expect.objectContaining({
+      userId: memberUserID,
+      modelAlias: 'browser-chat',
+      status: 'completed',
+      inputTokens: 4,
+      outputTokens: 2,
+    }),
+  )
+  const memberAttempts = Array.isArray(detail?.attempts) ? detail.attempts.filter(isRecord) : []
+  expect(memberAttempts).toEqual([
+    expect.objectContaining({ sequence: 1, status: 'completed', httpStatus: 200 }),
+  ])
+  const memberAttempt = memberAttempts[0]
+  expect(memberAttempt).not.toHaveProperty('providerName')
+  expect(memberAttempt).not.toHaveProperty('credentialName')
+  await page.getByRole('dialog').getByRole('button', { name: '关闭详情' }).click()
   await expectPageWidthToFit(page)
 
-  const managementRequests: string[] = []
-  const observeManagementRequest = (request: Request) => {
-    const pathname = new URL(request.url()).pathname
-    if (
-      request.method() === 'GET' &&
-      (pathname === '/api/control/users' ||
-        pathname === '/api/control/invitations' ||
-        pathname === '/api/control/entitlements')
-    ) {
-      managementRequests.push(pathname)
-    }
-  }
-  page.on('request', observeManagementRequest)
-  try {
-    await page.goto('/access/users')
-    await expect(page.getByText(administratorEmail)).toHaveCount(0)
+  const ownEntitlements = await page.request.get('/api/control/entitlements')
+  expect(ownEntitlements.status()).toBe(200)
+  const memberEntitlements = dataItems(await ownEntitlements.json())
+  expect(memberEntitlements).toEqual([
+    expect.objectContaining({
+      ownerId: memberUserID,
+      modelId: catalog.authorizedModelID,
+      modelAlias: catalog.authorizedModelAlias,
+      grantedTokens: 50_000,
+    }),
+  ])
+  const balanceTokens = memberEntitlements[0]?.balanceTokens
+  expect(typeof balanceTokens).toBe('number')
+  expect(balanceTokens).toBeGreaterThanOrEqual(0)
+  expect(balanceTokens).toBeLessThan(50_000)
+  const ledgerResponse = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === '/api/control/ledger/entries' &&
+      response.request().method() === 'GET',
+  )
+  await page
+    .getByRole('complementary', { name: '控制台导航' })
+    .getByRole('link', { name: '额度记录' })
+    .click()
+  const ledger = await ledgerResponse
+  expect(ledger.status()).toBe(200)
+  const memberLedger = dataItems(await ledger.json())
+  expect(memberLedger).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        ownerName: 'Browser Member',
+        kind: 'grant',
+        tokenDelta: 50_000,
+        reason: 'Browser production acceptance allocation',
+        actorName: '管理员',
+      }),
+    ]),
+  )
+  expect(
+    memberLedger.reduce(
+      (balance, entry) => balance + (typeof entry.tokenDelta === 'number' ? entry.tokenDelta : 0),
+      0,
+    ),
+  ).toBe(balanceTokens)
+  expect(JSON.stringify(memberLedger)).not.toContain(administratorEmail)
 
-    await page.goto('/access/invitations')
-    await expect(page.getByText(administratorEmail)).toHaveCount(0)
-
-    await page.goto('/ledger/entitlements')
-    expect(managementRequests).toEqual([])
-  } finally {
-    page.off('request', observeManagementRequest)
-  }
-
-  const forbiddenEntitlements = await page.request.get('/api/control/entitlements')
-  expect(forbiddenEntitlements.status()).toBe(403)
-  expect(problemCode(await forbiddenEntitlements.json())).toBe('forbidden')
-
-  await page.goto('/access/keys')
+  await page.goto('/gateway-keys')
   const keyRow = page
     .getByRole('row')
     .filter({ has: page.getByText(gatewayKey.name, { exact: true }) })
@@ -296,7 +382,6 @@ export async function completeIdentityBoundary(
     await replacementDialog.getByRole('button', { name: '创建替换 Key' }).click()
     await failedReplacement
     expect(replacementIdempotencyKey).toMatch(/^[0-9a-f-]{36}$/)
-    await expect(replacementDialog.getByRole('alert')).toBeVisible()
     const replayResponse = page.waitForResponse(
       (response) =>
         new URL(response.url()).pathname === replacementPath &&
@@ -364,15 +449,19 @@ export async function completeIdentityBoundary(
   try {
     const mobilePage = await mobileContext.newPage()
     browserProblems.observe(mobilePage)
-    await mobilePage.goto('/access/keys')
-    await expect(mobilePage).toHaveURL(/\/access\/keys$/)
+    await mobilePage.goto('/gateway-keys')
     await expectPageWidthToFit(mobilePage)
+    await mobilePage.getByRole('button', { name: '打开导航' }).click()
+    const openedNavigation = mobilePage.getByRole('dialog', { name: 'Browser LLMGateway' })
+    await expect(openedNavigation).toBeVisible()
+    await openedNavigation.getByRole('button', { name: '关闭导航' }).click()
+    await expect(openedNavigation).toBeHidden()
     const mobileUsageResponse = mobilePage.waitForResponse(
       (response) =>
-        new URL(response.url()).pathname === '/api/control/usage' &&
+        new URL(response.url()).pathname === '/api/control/requests' &&
         response.request().method() === 'GET',
     )
-    await mobilePage.goto('/ledger/usage')
+    await mobilePage.goto('/api-logs')
     expect((await mobileUsageResponse).status()).toBe(200)
     await expectPageWidthToFit(mobilePage)
     await mobilePage.screenshot({
@@ -382,7 +471,7 @@ export async function completeIdentityBoundary(
     })
 
     await mobilePage.getByRole('button', { name: '打开导航' }).click()
-    const logoutNavigation = mobilePage.getByRole('dialog', { name: 'LLMGateway' })
+    const logoutNavigation = mobilePage.getByRole('dialog', { name: 'Browser LLMGateway' })
     const mobileLogoutResponse = mobilePage.waitForResponse(
       (response) =>
         response.url().endsWith('/api/control/session') && response.request().method() === 'DELETE',

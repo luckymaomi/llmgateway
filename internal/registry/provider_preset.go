@@ -28,12 +28,8 @@ func (s *Service) InstallProviderPreset(ctx context.Context, actor identity.Prin
 	if err != nil {
 		return ProviderPresetInstallation{}, err
 	}
-	if err := s.validateProviderDetails(ctx, installation.Provider); err != nil {
-		return ProviderPresetInstallation{}, err
-	}
-	if err := s.validateProviderSource(ctx, installation.Provider); err != nil {
-		return ProviderPresetInstallation{}, err
-	}
+	// DefaultCatalog validates these owned HTTPS URLs at process startup. Installing disabled
+	// records must work offline; credential probes and request transports reapply the SSRF policy.
 	for _, model := range installation.Models {
 		if err := validateModel(model); err != nil {
 			return ProviderPresetInstallation{}, err

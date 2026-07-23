@@ -10,8 +10,8 @@ import { Button } from '@/components/ui/button'
 import { useListSearch } from '@/hooks/use-list-search'
 import { formatDateTime, formatNumber } from '@/lib/format'
 
-import { LedgerTabs } from './ledger-tabs'
 import { PriceForm } from './price-form'
+import { CostBreakdownChart } from './cost-breakdown-chart'
 
 export function CostsPage() {
   const [formOpen, setFormOpen] = useState(false)
@@ -76,14 +76,13 @@ export function CostsPage() {
   return (
     <Page>
       <PageHeader
-        title="用量与额度"
+        title="上游成本"
         actions={
           <Button icon={<Plus size={16} />} onClick={() => setFormOpen(true)}>
             新增价格
           </Button>
         }
       />
-      <LedgerTabs />
       <PageSection title="价格版本">
         <DataTable
           ariaLabel="模型价格版本"
@@ -118,6 +117,7 @@ export function CostsPage() {
           onSearchChange={setSearch}
           searchLabel="搜索用户、模型、Provider 或币种"
         />
+        {summaries.data?.items.length ? <CostBreakdownChart items={summaries.data.items} /> : null}
         <DataTable
           ariaLabel="采购成本汇总"
           data={summaries.data?.items ?? []}

@@ -19,7 +19,6 @@ test('preserves administrator and member boundaries through the production TLS t
   expect(mode).toBe('setup')
 
   await page.goto('/')
-  await expect(page).toHaveURL(/\/setup$/)
   await page.getByLabel('管理员邮箱').fill(administratorEmail)
   const setupResponsePromise = page.waitForResponse(
     (response) =>
@@ -40,7 +39,7 @@ test('preserves administrator and member boundaries through the production TLS t
   await page.getByRole('button', { name: '我已保存，进入控制面' }).click()
 
   await page
-    .getByRole('complementary', { name: '主导航' })
+    .getByRole('complementary', { name: '管理员导航' })
     .getByRole('button', { name: '更换密码' })
     .click()
   const passwordDialog = page.getByRole('dialog', { name: '更换密码' })
@@ -104,7 +103,7 @@ test('preserves administrator and member boundaries through the production TLS t
   expect((await registrationResponsePromise).status()).toBe(202)
   await registrationContext.close()
 
-  await page.goto('/access/users')
+  await page.goto('/members')
   const memberRow = page.getByRole('row').filter({ hasText: memberEmail })
   const approvalResponsePromise = page.waitForResponse(
     (response) =>
@@ -116,17 +115,16 @@ test('preserves administrator and member boundaries through the production TLS t
   expect((await approvalResponsePromise).status()).toBe(200)
 
   await page
-    .getByRole('complementary', { name: '主导航' })
+    .getByRole('complementary', { name: '管理员导航' })
     .getByRole('button', { name: '退出登录' })
     .click()
   await login(page, memberEmail, memberPassword)
-  await expect(page).toHaveURL(/\/overview$/)
   const managementRequests: string[] = []
   page.on('request', (request) => {
     const path = new URL(request.url()).pathname
     if (request.method() === 'GET' && path === '/api/control/users') managementRequests.push(path)
   })
-  await page.goto('/access/users')
+  await page.goto('/members')
   expect(managementRequests).toEqual([])
   const forbidden = await page.request.get('/api/control/users')
   expect(forbidden.status()).toBe(403)
@@ -137,11 +135,10 @@ async function verifyRestoredIdentities(page: Page): Promise<void> {
   await page.goto('/login')
   await login(page, administratorEmail, administratorPassword)
   await page
-    .getByRole('complementary', { name: '主导航' })
+    .getByRole('complementary', { name: '管理员导航' })
     .getByRole('button', { name: '退出登录' })
     .click()
   await login(page, memberEmail, memberPassword)
-  await expect(page).toHaveURL(/\/overview$/)
   const forbidden = await page.request.get('/api/control/users')
   expect(forbidden.status()).toBe(403)
 }

@@ -115,6 +115,11 @@ export interface ListQuery {
   order?: 'asc' | 'desc'
   providerId?: string
   resourceDomain?: ResourceDomain
+  userId?: string
+  gatewayKeyId?: string
+  modelId?: string
+  from?: string
+  to?: string
 }
 
 export interface ProviderRecord {
@@ -353,17 +358,53 @@ export interface SessionRevocation {
   revokedSessions: number
 }
 
-export interface UsageRecord {
+export type RequestStatus =
+  'queued' | 'dispatching' | 'streaming' | 'completed' | 'failed' | 'canceled' | 'uncertain'
+
+export interface RequestLog {
   id: string
-  occurredAt: string
+  requestId: string
+  acceptedAt: string
+  completedAt?: string
+  updatedAt: string
+  userId: string
   userName: string
+  gatewayKeyId: string
   keyPrefix: string
+  modelId: string
   modelAlias: string
   resourceDomain: ResourceDomain
-  inputTokens: number
-  outputTokens: number
-  usageSource: 'authoritative' | 'estimated'
-  requestId: string
+  status: RequestStatus
+  stream: boolean
+  inputTokens?: number
+  outputTokens?: number
+  usageSource: 'authoritative' | 'estimated' | 'unknown'
+  errorKind?: string
+  attemptCount: number
+  lastAttemptStatus?: string
+}
+
+export interface RequestAttempt {
+  id: string
+  sequence: number
+  status: string
+  providerName?: string
+  credentialName?: string
+  httpStatus?: number
+  errorKind?: string
+  retryAfterAt?: string
+  sentAt?: string
+  firstByteAt?: string
+  completedAt?: string
+  inputTokens?: number
+  outputTokens?: number
+  usageSource: 'authoritative' | 'estimated' | 'unknown'
+  createdAt: string
+}
+
+export interface RequestLogDetail {
+  request: RequestLog
+  attempts: RequestAttempt[]
 }
 
 export interface ModelPriceVersion {

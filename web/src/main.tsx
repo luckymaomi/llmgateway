@@ -5,7 +5,6 @@ import { createRoot } from 'react-dom/client'
 
 import { createQueryClient } from '@/app/query-client'
 import { createAppRouter } from '@/app/router'
-import { applyThemePreference, readThemePreference } from '@/app/theme'
 
 import '@/styles/tokens.css'
 import '@/styles/base.css'
@@ -14,7 +13,6 @@ import '@/styles/components.css'
 import '@/styles/screens.css'
 
 const queryClient = createQueryClient()
-applyThemePreference(readThemePreference())
 const router = createAppRouter(queryClient)
 const root = document.getElementById('root')
 

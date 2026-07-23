@@ -55,7 +55,7 @@ export function KeyReplacementDialog({ gatewayKey, onOpenChange }: KeyReplacemen
       onOpenChange={(open) => {
         if (!open) close()
       }}
-      title={created ? '替换 Key 已创建' : '更换 API Key'}
+      title={created ? '替换 Key 已创建' : '更换 Gateway Key'}
       description={gatewayKey?.name ?? ''}
       dismissible={!mutation.isPending}
       footer={

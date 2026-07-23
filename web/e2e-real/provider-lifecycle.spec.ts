@@ -1,9 +1,11 @@
-import { expect } from '@playwright/test'
+import { expect, type Page } from '@playwright/test'
 
 import {
   administratorEmail,
   administratorPassword,
   dataID,
+  dataItems,
+  dataRecord,
   expectPageWidthToFit,
   problemCode,
   uuidPattern,
@@ -36,7 +38,6 @@ test('walks an administrator and member through a published Key catalog across f
   )
   await page.goto('/')
   browserProblems.allow(await initialAnonymousSessionResponse)
-  await expect(page).toHaveURL(/\/setup$/)
   await page.getByLabel('管理员邮箱').fill(administratorEmail)
 
   const setupResponse = page.waitForResponse(
@@ -59,12 +60,11 @@ test('walks an administrator and member through a published Key catalog across f
   )
   expect(browserStorage).not.toContain(initialAdministratorPassword)
   await page.getByRole('button', { name: '我已保存，进入控制面' }).click()
-  await expect(page).toHaveURL(/\/overview$/)
   await page.reload()
   expect(await page.locator('body').innerText()).not.toContain(initialAdministratorPassword)
 
   await page
-    .getByRole('complementary', { name: '主导航' })
+    .getByRole('complementary', { name: '管理员导航' })
     .getByRole('button', { name: '更换密码' })
     .click()
   const passwordDialog = page.getByRole('dialog', { name: '更换密码' })
@@ -105,11 +105,45 @@ test('walks an administrator and member through a published Key catalog across f
     )
     await passwordVerificationPage.getByRole('button', { name: '登录' }).click()
     expect((await acceptedLoginResponse).status()).toBe(200)
-    await expect(passwordVerificationPage).toHaveURL(/\/overview$/)
   } finally {
     await passwordVerificationContext.close()
   }
-  await page.goto('/providers/providers')
+
+  const operationsResponse = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === '/api/control/overview' &&
+      response.request().method() === 'GET',
+  )
+  await page.goto('/operations')
+  expect((await operationsResponse).status()).toBe(200)
+  await expectPageWidthToFit(page)
+
+  await page.goto('/site-settings')
+  await page.getByLabel('站点名称').fill('Browser LLMGateway')
+  await page.getByLabel('联系信息').fill('operations@example.test')
+  await page.getByLabel('简短说明').fill('Browser acceptance site profile')
+  const siteProfileResponse = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === '/api/control/site-profile' &&
+      response.request().method() === 'PUT',
+  )
+  await page.getByRole('button', { name: '保存', exact: true }).click()
+  const updatedSiteProfile = await siteProfileResponse
+  expect(updatedSiteProfile.status()).toBe(200)
+  expect(updatedSiteProfile.request().postDataJSON()).toMatchObject({
+    name: 'Browser LLMGateway',
+    contact: 'operations@example.test',
+    description: 'Browser acceptance site profile',
+  })
+  await page.reload()
+  const persistedSiteProfile = await page.request.get('/api/control/site-profile')
+  expect(persistedSiteProfile.status()).toBe(200)
+  expect(dataRecord(await persistedSiteProfile.json())).toMatchObject({
+    name: 'Browser LLMGateway',
+    contact: 'operations@example.test',
+    description: 'Browser acceptance site profile',
+  })
+  await page.goto('/providers')
 
   await page.getByRole('button', { name: '自定义 Provider' }).click()
   await fillProviderForm(page.getByRole('dialog'), {
@@ -130,7 +164,7 @@ test('walks an administrator and member through a published Key catalog across f
 
   const stalePage = await page.context().newPage()
   browserProblems.observe(stalePage)
-  await stalePage.goto('/providers/providers')
+  await stalePage.goto('/providers')
   await stalePage.getByRole('button', { name: '编辑 Provider' }).click()
   const staleDialog = stalePage.getByRole('dialog')
   await staleDialog.getByLabel('名称').fill('Browser Provider Reconciled')
@@ -147,14 +181,9 @@ test('walks an administrator and member through a published Key catalog across f
   browserProblems.allow(conflictResponse)
   expect(conflictResponse.status()).toBe(409)
   expect(problemCode(await conflictResponse.json())).toBe('conflict')
-  await expect(staleDialog.getByRole('alert')).toBeVisible()
-  await expect(staleDialog.getByLabel('名称')).toHaveValue('Browser Provider Reconciled')
-  await expect(staleDialog.getByLabel('类型')).toHaveValue('zhipu')
-  await expect(staleDialog.getByLabel('Base URL')).toHaveValue('https://198.18.0.3/v1')
   const nameConflict = staleDialog.getByRole('group', { name: '名称' })
   await nameConflict.getByRole('radio', { name: '采用最新' }).click()
 
-  await expect(staleDialog.getByLabel('名称')).toHaveValue('Browser Provider Winner')
   const reconciledResponse = stalePage.waitForResponse(
     (response) =>
       response.url().includes('/api/control/providers/') && response.request().method() === 'PUT',
@@ -170,20 +199,22 @@ test('walks an administrator and member through a published Key catalog across f
   await stalePage.close()
 
   await page.reload()
-  await expect(page).toHaveURL(/\/providers\/providers$/)
-  await expect(page.getByRole('table', { name: 'Provider 列表' })).toContainText(
-    'Browser Provider Winner',
-  )
+  expect(await readProvider(page, providerID)).toMatchObject({
+    id: providerID,
+    name: 'Browser Provider Winner',
+    kind: 'zhipu',
+    baseUrl: 'https://198.18.0.3/v1',
+  })
   await expectPageWidthToFit(page)
 
   await enableProviderAfterLostResponse(page, browserProblems, providerID)
 
   await gateway.restart()
   await page.reload()
-  await expect(page).toHaveURL(/\/providers\/providers$/)
-  await expect(page.getByRole('table', { name: 'Provider 列表' })).toContainText(
-    'Browser Provider Winner',
-  )
+  expect(await readProvider(page, providerID)).toMatchObject({
+    id: providerID,
+    name: 'Browser Provider Winner',
+  })
 
   await renameEnabledProvider(page, 'Browser Provider Restarted')
   await setProviderEnabled(page, false)
@@ -191,9 +222,13 @@ test('walks an administrator and member through a published Key catalog across f
   await setProviderEnabled(page, true)
 
   await page.reload()
-  await expect(page.getByRole('table', { name: 'Provider 列表' })).toContainText(
-    'Browser Provider Ready',
-  )
+  expect(await readProvider(page, providerID)).toMatchObject({
+    id: providerID,
+    name: 'Browser Provider Ready',
+    kind: 'openai-compatible',
+    baseUrl: providerBaseURL,
+    status: 'enabled',
+  })
   await page.screenshot({
     path: acceptanceArtifactPath('provider-desktop.png'),
     fullPage: true,
@@ -203,3 +238,11 @@ test('walks an administrator and member through a published Key catalog across f
   const catalog = await completePublishedCatalog(page, browserProblems, providerID)
   await completeIdentityBoundary(page, browser, browserProblems, gateway, catalog)
 })
+
+async function readProvider(page: Page, providerID: string): Promise<Record<string, unknown>> {
+  const response = await page.request.get('/api/control/providers?pageSize=100')
+  expect(response.status()).toBe(200)
+  const provider = dataItems(await response.json()).find((item) => item.id === providerID)
+  if (!provider) throw new Error(`Provider ${providerID} was not returned by the control API.`)
+  return provider
+}

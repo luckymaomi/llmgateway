@@ -244,6 +244,8 @@ try {
   } | Sort-Object -Unique)
   if ($deployPaths.Count -eq 0) { throw "Release contains no deployment files." }
 
+  $releaseDocuments = @("LICENSE", "README.md", "RELEASE.md", "spec.md", "dev.md", "CONTRIBUTING.md", "SECURITY.md")
+
   Remove-Item Env:GOOS -ErrorAction SilentlyContinue
   Remove-Item Env:GOARCH -ErrorAction SilentlyContinue
   $env:CGO_ENABLED = "0"
@@ -279,7 +281,7 @@ try {
 
     $packageDirectory = Join-Path $workDirectory "llmgateway-$Version-$platformName"
     New-Item -ItemType Directory -Force -Path $packageDirectory | Out-Null
-    foreach ($document in @("LICENSE", "README.md", "RELEASE.md", "spec.md", "dev.md", "CONTRIBUTING.md", "SECURITY.md")) {
+    foreach ($document in $releaseDocuments) {
       Copy-Item -LiteralPath (Join-Path $root $document) -Destination $packageDirectory
     }
     foreach ($relativePath in $deployPaths) {
@@ -302,7 +304,7 @@ try {
       Copy-Item -LiteralPath (Join-Path $first $binaryName) -Destination $packageDirectory
     }
 
-    $archiveEntries = @(@("LICENSE", "README.md", "RELEASE.md", "spec.md", "dev.md", "CONTRIBUTING.md", "SECURITY.md") + $deployPaths + $binaryNames | Sort-Object)
+    $archiveEntries = @($releaseDocuments + $deployPaths + $binaryNames | Sort-Object)
     $archiveName = "llmgateway-$Version-$platformName.zip"
     $archive = Join-Path $OutputDirectory $archiveName
     $archiveArguments = @(

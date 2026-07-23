@@ -13,7 +13,6 @@ import { Button } from '@/components/ui/button'
 import { useListSearch } from '@/hooks/use-list-search'
 import { formatDateTime } from '@/lib/format'
 
-import { AccessTabs } from './access-tabs'
 import { InvitationForm } from './invitation-form'
 
 export function InvitationsPage() {
@@ -79,7 +78,7 @@ export function InvitationsPage() {
   return (
     <Page>
       <PageHeader
-        title="成员与 API Key"
+        title="邀请"
         actions={
           canWrite ? (
             <Button
@@ -92,7 +91,6 @@ export function InvitationsPage() {
           ) : null
         }
       />
-      <AccessTabs />
       <PageSection>
         <TableToolbar
           search={state.search}

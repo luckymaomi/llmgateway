@@ -368,6 +368,7 @@ try {
     $env:LLMGATEWAY_VALKEY_PASSWORD = $valkeyPassword
     $env:LLMGATEWAY_VALKEY_DATABASE = "0"
     $env:LLMGATEWAY_COOKIE_SECURE = "false"
+    $env:LLMGATEWAY_ALLOWED_RESOLVED_NETWORKS = "198.18.0.0/15"
     $gatewayProcess = Start-Process -FilePath $gatewayBinary -WorkingDirectory $root `
       -NoNewWindow -PassThru
   } finally {

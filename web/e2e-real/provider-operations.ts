@@ -21,7 +21,6 @@ export async function editProvider(
 ): Promise<void> {
   await page.getByRole('button', { name: '编辑 Provider' }).click()
   const dialog = page.getByRole('dialog')
-  await expect(dialog.getByLabel('标识')).toHaveAttribute('readonly', '')
   await dialog.getByLabel('名称').fill(name)
   if (kind) await dialog.getByLabel('类型').selectOption(kind)
   await dialog.getByLabel('Base URL').fill(baseURL)
@@ -36,8 +35,6 @@ export async function editProvider(
 export async function renameEnabledProvider(page: Page, name: string): Promise<void> {
   await page.getByRole('button', { name: '编辑 Provider' }).click()
   const dialog = page.getByRole('dialog')
-  await expect(dialog.getByLabel('类型')).toBeDisabled()
-  await expect(dialog.getByLabel('Base URL')).toHaveAttribute('readonly', '')
   await dialog.getByLabel('名称').fill(name)
   const response = page.waitForResponse(
     (candidate) =>

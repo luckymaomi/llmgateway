@@ -180,7 +180,7 @@ export function CredentialsPage() {
   return (
     <Page>
       <PageHeader
-        title="Provider API Key"
+        title="上游 API Key"
         actions={
           canWrite ? (
             <Button
@@ -188,7 +188,7 @@ export function CredentialsPage() {
               disabled={Boolean(pendingOperation)}
               onClick={() => setCreating(true)}
             >
-              添加 API Key
+              添加上游 API Key
             </Button>
           ) : null
         }
@@ -252,7 +252,7 @@ export function CredentialsPage() {
           <FormProblem error={toggle.error} />
         )}
         <DataTable
-          ariaLabel="Provider API Key 列表"
+          ariaLabel="上游 API Key 列表"
           data={query.data?.items ?? []}
           columns={columns}
           getRowId={(credential) => credential.id}
@@ -260,7 +260,7 @@ export function CredentialsPage() {
           fetching={query.isFetching}
           error={query.error}
           onRetry={() => void query.refetch()}
-          emptyLabel="还没有 Provider API Key"
+          emptyLabel="还没有上游 API Key"
           page={query.data?.page ?? state.page}
           pageSize={query.data?.pageSize ?? state.pageSize}
           total={query.data?.total ?? 0}

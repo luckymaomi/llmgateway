@@ -31,7 +31,8 @@ WHERE (sqlc.narg(user_id)::uuid IS NULL OR e.user_id = sqlc.narg(user_id))
   AND (sqlc.arg(resource_domain)::text = '' OR e.resource_domain::text = sqlc.arg(resource_domain)::text);
 
 -- name: ListEntitlementsWithBalance :many
-SELECT e.*, coalesce(sum(le.token_delta), 0)::bigint AS balance_tokens
+SELECT e.*, owner.display_name AS owner_name, model.public_name AS model_alias,
+       coalesce(sum(le.token_delta), 0)::bigint AS balance_tokens
 FROM entitlements e
 JOIN users owner ON owner.id = e.user_id
 LEFT JOIN models model ON model.id = e.model_id
@@ -43,7 +44,7 @@ WHERE (sqlc.narg(user_id)::uuid IS NULL OR e.user_id = sqlc.narg(user_id))
     OR sqlc.arg(status)::text = 'active' AND e.starts_at <= now() AND e.expires_at > now()
     OR sqlc.arg(status)::text = 'expired' AND e.expires_at <= now())
   AND (sqlc.arg(resource_domain)::text = '' OR e.resource_domain::text = sqlc.arg(resource_domain)::text)
-GROUP BY e.id
+GROUP BY e.id, owner.display_name, model.public_name
 ORDER BY e.created_at DESC, e.id
 LIMIT sqlc.arg(page_size) OFFSET sqlc.arg(page_offset);
 
@@ -123,7 +124,8 @@ WHERE (sqlc.narg(user_id)::uuid IS NULL OR event.user_id = sqlc.narg(user_id))
   AND (sqlc.arg(resource_domain)::text = '' OR entitlement.resource_domain::text = sqlc.arg(resource_domain)::text);
 
 -- name: ListLedgerEvents :many
-SELECT event.*, entitlement.resource_domain
+SELECT event.*, entitlement.resource_domain, owner.display_name AS owner_name,
+       actor.display_name AS actor_name
 FROM ledger_events event
 JOIN users owner ON owner.id = event.user_id
 JOIN entitlements entitlement ON entitlement.id = event.entitlement_id
@@ -314,39 +316,72 @@ SELECT * FROM requests
 WHERE (sqlc.narg(user_id)::uuid IS NULL OR user_id = sqlc.narg(user_id))
 ORDER BY accepted_at DESC, id LIMIT sqlc.arg(page_size) OFFSET sqlc.arg(page_offset);
 
--- name: CountRequestUsage :one
+-- name: CountRequestLogs :one
 SELECT count(*)
 FROM requests AS request
 JOIN users AS owner ON owner.id = request.user_id
 JOIN gateway_keys AS key ON key.id = request.gateway_key_id
-JOIN config_revision_models AS model
-  ON model.revision_id = request.config_revision_id AND model.model_id = request.model_id
+JOIN models AS model ON model.id = request.model_id
 WHERE (sqlc.narg(user_id)::uuid IS NULL OR request.user_id = sqlc.narg(user_id))
-  AND request.input_tokens IS NOT NULL
-  AND request.output_tokens IS NOT NULL
-  AND request.usage_source IN ('authoritative', 'estimated')
-  AND request.completed_at IS NOT NULL
+  AND (sqlc.narg(gateway_key_id)::uuid IS NULL OR request.gateway_key_id = sqlc.narg(gateway_key_id))
+  AND (sqlc.narg(model_id)::uuid IS NULL OR request.model_id = sqlc.narg(model_id))
+  AND (sqlc.arg(status)::text = '' OR request.status::text = sqlc.arg(status)::text)
+  AND request.accepted_at >= sqlc.arg(from_time)
+  AND request.accepted_at < sqlc.arg(to_time)
   AND (sqlc.arg(search)::text = '' OR concat_ws(' ', owner.display_name, owner.email, key.prefix, model.public_name, request.id::text) ILIKE '%' || sqlc.arg(search)::text || '%')
   AND (sqlc.arg(resource_domain)::text = '' OR request.resource_domain::text = sqlc.arg(resource_domain)::text);
 
--- name: ListRequestUsage :many
-SELECT request.id, request.user_id, key.prefix AS key_prefix,
-       model.public_name AS model_alias, request.resource_domain,
-       request.input_tokens, request.output_tokens, request.usage_source, request.completed_at
+-- name: ListRequestLogs :many
+SELECT request.id, request.user_id, owner.display_name AS user_name,
+       request.gateway_key_id, key.prefix AS key_prefix,
+       request.model_id, model.public_name AS model_alias, request.resource_domain,
+       request.status, request.stream, request.input_tokens, request.output_tokens,
+       request.usage_source, request.error_kind, request.accepted_at, request.completed_at,
+       request.updated_at,
+       (SELECT count(*) FROM request_attempts attempt WHERE attempt.request_id = request.id)::bigint AS attempt_count,
+       coalesce((SELECT attempt.status::text FROM request_attempts attempt WHERE attempt.request_id = request.id ORDER BY attempt.sequence DESC, attempt.id DESC LIMIT 1), ''::text)::text AS last_attempt_status
 FROM requests AS request
 JOIN users AS owner ON owner.id = request.user_id
 JOIN gateway_keys AS key ON key.id = request.gateway_key_id
-JOIN config_revision_models AS model
-  ON model.revision_id = request.config_revision_id AND model.model_id = request.model_id
+JOIN models AS model ON model.id = request.model_id
 WHERE (sqlc.narg(user_id)::uuid IS NULL OR request.user_id = sqlc.narg(user_id))
-  AND request.input_tokens IS NOT NULL
-  AND request.output_tokens IS NOT NULL
-  AND request.usage_source IN ('authoritative', 'estimated')
-  AND request.completed_at IS NOT NULL
+  AND (sqlc.narg(gateway_key_id)::uuid IS NULL OR request.gateway_key_id = sqlc.narg(gateway_key_id))
+  AND (sqlc.narg(model_id)::uuid IS NULL OR request.model_id = sqlc.narg(model_id))
+  AND (sqlc.arg(status)::text = '' OR request.status::text = sqlc.arg(status)::text)
+  AND request.accepted_at >= sqlc.arg(from_time)
+  AND request.accepted_at < sqlc.arg(to_time)
   AND (sqlc.arg(search)::text = '' OR concat_ws(' ', owner.display_name, owner.email, key.prefix, model.public_name, request.id::text) ILIKE '%' || sqlc.arg(search)::text || '%')
   AND (sqlc.arg(resource_domain)::text = '' OR request.resource_domain::text = sqlc.arg(resource_domain)::text)
-ORDER BY request.completed_at DESC, request.id
+ORDER BY request.accepted_at DESC, request.id DESC
 LIMIT sqlc.arg(page_size) OFFSET sqlc.arg(page_offset);
+
+-- name: GetRequestLog :one
+SELECT request.id, request.user_id, owner.display_name AS user_name,
+       request.gateway_key_id, key.prefix AS key_prefix,
+       request.model_id, model.public_name AS model_alias, request.resource_domain,
+       request.status, request.stream, request.input_tokens, request.output_tokens,
+       request.usage_source, request.error_kind, request.accepted_at, request.completed_at,
+       request.updated_at,
+       (SELECT count(*) FROM request_attempts attempt WHERE attempt.request_id = request.id)::bigint AS attempt_count,
+       coalesce((SELECT attempt.status::text FROM request_attempts attempt WHERE attempt.request_id = request.id ORDER BY attempt.sequence DESC, attempt.id DESC LIMIT 1), ''::text)::text AS last_attempt_status
+FROM requests AS request
+JOIN users AS owner ON owner.id = request.user_id
+JOIN gateway_keys AS key ON key.id = request.gateway_key_id
+JOIN models AS model ON model.id = request.model_id
+WHERE request.id = sqlc.arg(request_id)
+  AND (sqlc.narg(user_id)::uuid IS NULL OR request.user_id = sqlc.narg(user_id));
+
+-- name: ListRequestLogAttempts :many
+SELECT attempt.id, attempt.sequence, attempt.status, provider.name AS provider_name,
+       credential.name AS credential_name, attempt.upstream_request_id, attempt.http_status,
+       attempt.error_kind, attempt.retry_after_at, attempt.sent_at, attempt.first_byte_at,
+       attempt.completed_at, attempt.input_tokens, attempt.output_tokens,
+       attempt.usage_source, attempt.created_at
+FROM request_attempts AS attempt
+JOIN provider_credentials AS credential ON credential.id = attempt.credential_id
+JOIN providers AS provider ON provider.id = credential.provider_id
+WHERE attempt.request_id = sqlc.arg(request_id)
+ORDER BY attempt.sequence, attempt.id;
 
 -- name: CreateAttempt :one
 INSERT INTO request_attempts (request_id, execution_id, execution_generation, credential_id, sequence, status)

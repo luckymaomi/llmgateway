@@ -1,4 +1,3 @@
-import { Link } from '@tanstack/react-router'
 import type { ReactNode } from 'react'
 
 import { cn } from '@/lib/cn'
@@ -31,23 +30,6 @@ export function PageHeader({
       </div>
       {actions ? <div className="page-header__actions">{actions}</div> : null}
     </header>
-  )
-}
-
-export interface SectionTab {
-  label: string
-  to: string
-}
-
-export function SectionTabs({ tabs }: { tabs: SectionTab[] }) {
-  return (
-    <nav className="section-tabs" aria-label="页面视图">
-      {tabs.map((tab) => (
-        <Link key={tab.to} to={tab.to} activeProps={{ 'aria-current': 'page' }}>
-          {tab.label}
-        </Link>
-      ))}
-    </nav>
   )
 }
 

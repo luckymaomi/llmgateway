@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
@@ -62,26 +63,43 @@ func (s *Service) ListLedger(ctx context.Context, actor identity.Principal, filt
 	return s.repository.ListLedger(ctx, filter)
 }
 
-func (s *Service) ListUsage(ctx context.Context, actor identity.Principal, query UsageQuery) (PageResult[UsageRecord], error) {
+func (s *Service) ListRequestLogs(ctx context.Context, actor identity.Principal, query RequestLogQuery) (PageResult[RequestLog], error) {
 	query.Page = normalizePage(query.Page)
 	query.Search = strings.TrimSpace(query.Search)
 	if actor.Status != identity.StatusActive {
-		return PageResult[UsageRecord]{}, ErrForbidden
+		return PageResult[RequestLog]{}, ErrForbidden
 	}
-	if len(query.Search) > 200 || query.ResourceDomain != "" && !validDomain(query.ResourceDomain) {
-		return PageResult[UsageRecord]{}, ErrInvalidInput
+	if len(query.Search) > 200 || query.ResourceDomain != "" && !validDomain(query.ResourceDomain) ||
+		query.Status != "" && !validRequestStatus(query.Status) || query.From.IsZero() || query.To.IsZero() ||
+		!query.To.After(query.From) || query.To.Sub(query.From) > 31*24*time.Hour {
+		return PageResult[RequestLog]{}, ErrInvalidInput
 	}
+	query.From, query.To = query.From.UTC(), query.To.UTC()
 	if actor.CanManageUsers() {
-		return s.repository.ListUsage(ctx, query)
+		return s.repository.ListRequestLogs(ctx, query)
 	}
 	if actor.Role != identity.RoleMember {
-		return PageResult[UsageRecord]{}, ErrForbidden
+		return PageResult[RequestLog]{}, ErrForbidden
 	}
 	if query.UserID != nil && *query.UserID != actor.UserID {
-		return PageResult[UsageRecord]{}, ErrForbidden
+		return PageResult[RequestLog]{}, ErrForbidden
 	}
 	query.UserID = &actor.UserID
-	return s.repository.ListUsage(ctx, query)
+	return s.repository.ListRequestLogs(ctx, query)
+}
+
+func (s *Service) GetRequestLog(ctx context.Context, actor identity.Principal, requestID uuid.UUID) (RequestLogDetail, error) {
+	if actor.Status != identity.StatusActive || requestID == uuid.Nil {
+		return RequestLogDetail{}, ErrForbidden
+	}
+	var userID *uuid.UUID
+	if !actor.CanManageUsers() {
+		if actor.Role != identity.RoleMember {
+			return RequestLogDetail{}, ErrForbidden
+		}
+		userID = &actor.UserID
+	}
+	return s.repository.GetRequestLog(ctx, requestID, userID)
 }
 
 func (s *Service) AcceptRequest(ctx context.Context, input AcceptInput) (AcceptedRequest, error) {
@@ -151,6 +169,11 @@ func validateEntitlement(input NewEntitlement) error {
 
 func validDomain(domain ResourceDomain) bool {
 	return domain == ResourceFree || domain == ResourceProfessional
+}
+
+func validRequestStatus(status RequestStatus) bool {
+	return status == RequestQueued || status == RequestDispatching || status == RequestStreaming ||
+		status == RequestCompleted || status == RequestFailed || status == RequestCanceled || status == RequestUncertain
 }
 
 func validKnownUsage(inputTokens, outputTokens int64, source UsageSource) bool {

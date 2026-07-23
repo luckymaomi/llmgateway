@@ -13,7 +13,7 @@ import { useListSearch } from '@/hooks/use-list-search'
 import { formatDateTime, formatNumber, formatTokens } from '@/lib/format'
 
 import { EntitlementForm } from './entitlement-form'
-import { LedgerTabs } from './ledger-tabs'
+import { EntitlementUtilizationChart } from './entitlement-utilization-chart'
 
 export function EntitlementsPage() {
   const session = useSession()
@@ -78,7 +78,7 @@ export function EntitlementsPage() {
   return (
     <Page>
       <PageHeader
-        title="用量与额度"
+        title={session.role === 'member' ? '订阅管理' : '订阅与额度'}
         actions={
           hasCapability(session, 'ledger:write') ? (
             <Button icon={<Plus size={16} />} onClick={() => setCreating(true)}>
@@ -87,7 +87,11 @@ export function EntitlementsPage() {
           ) : null
         }
       />
-      <LedgerTabs />
+      {query.data?.items.length ? (
+        <PageSection title="当前页额度消耗">
+          <EntitlementUtilizationChart items={query.data.items} />
+        </PageSection>
+      ) : null}
       <PageSection>
         <TableToolbar
           search={state.search}
@@ -133,7 +137,9 @@ export function EntitlementsPage() {
           )}
         />
       </PageSection>
-      <EntitlementForm open={creating} onOpenChange={setCreating} />
+      {session.role === 'administrator' ? (
+        <EntitlementForm open={creating} onOpenChange={setCreating} />
+      ) : null}
     </Page>
   )
 }

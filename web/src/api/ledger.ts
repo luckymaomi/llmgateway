@@ -5,15 +5,20 @@ import type {
   LedgerEntry,
   ListQuery,
   Page,
-  UsageRecord,
+  RequestLog,
+  RequestLogDetail,
 } from './types'
 
 const base = '/api/control'
 
 export const ledgerApi = {
-  usage: (query: ListQuery, signal?: AbortSignal) =>
-    apiClient.request<Page<UsageRecord>>(`${base}/usage`, {
+  requestLogs: (query: ListQuery, signal?: AbortSignal) =>
+    apiClient.request<Page<RequestLog>>(`${base}/requests`, {
       query: listQuery(query),
+      ...(signal ? { signal } : {}),
+    }),
+  requestLog: (requestId: string, signal?: AbortSignal) =>
+    apiClient.request<RequestLogDetail>(`${base}/requests/${encodeURIComponent(requestId)}`, {
       ...(signal ? { signal } : {}),
     }),
   entries: (query: ListQuery, signal?: AbortSignal) =>

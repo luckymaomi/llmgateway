@@ -14,7 +14,6 @@ import { FormProblem } from '@/features/auth/form-problem'
 import { useListSearch } from '@/hooks/use-list-search'
 import { formatDateTime } from '@/lib/format'
 
-import { AccessTabs } from './access-tabs'
 import { GatewayKeyTestDialog } from './gateway-key-test-dialog'
 import { KeyForm } from './key-form'
 import { KeyReplacementDialog } from './key-replacement-dialog'
@@ -127,7 +126,7 @@ export function KeysPage() {
   return (
     <Page>
       <PageHeader
-        title={session.role === 'member' ? '我的 API Key' : '成员与 API Key'}
+        title={session.role === 'member' ? 'Key 管理' : 'Gateway Key'}
         actions={
           session.role === 'administrator' ? (
             <Button icon={<Plus size={16} />} onClick={() => setCreating(true)}>
@@ -136,7 +135,6 @@ export function KeysPage() {
           ) : null
         }
       />
-      <AccessTabs />
       <PageSection>
         <FormProblem error={revoke.error} />
         <TableToolbar
@@ -152,7 +150,7 @@ export function KeysPage() {
           ]}
         />
         <DataTable
-          ariaLabel="API Key 列表"
+          ariaLabel="Gateway Key 列表"
           data={query.data?.items ?? []}
           columns={columns}
           getRowId={(key) => key.id}
@@ -160,7 +158,7 @@ export function KeysPage() {
           fetching={query.isFetching}
           error={query.error}
           onRetry={() => void query.refetch()}
-          emptyLabel="还没有 API Key"
+          emptyLabel="还没有 Gateway Key"
           page={query.data?.page ?? state.page}
           pageSize={query.data?.pageSize ?? state.pageSize}
           total={query.data?.total ?? 0}
@@ -198,7 +196,7 @@ export function KeysPage() {
       <ConfirmDialog
         open={revokeKey !== null}
         onOpenChange={(open) => !open && setRevokeKey(null)}
-        title="撤销 API Key"
+        title="撤销 Gateway Key"
         description={`撤销 ${revokeKey?.name ?? ''} 后，使用该 Key 的请求将立即失败。`}
         confirmLabel="确认撤销"
         onConfirm={() => revokeKey && revoke.mutate(revokeKey.id)}

@@ -49,6 +49,11 @@ export function dataRecord(body: unknown): Record<string, unknown> | undefined {
   return body.data
 }
 
+export function dataItems(body: unknown): Record<string, unknown>[] {
+  const data = dataRecord(body)
+  return Array.isArray(data?.items) ? data.items.filter(isRecord) : []
+}
+
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }

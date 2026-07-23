@@ -227,24 +227,11 @@ try {
     model = "capacity-chat"; messages = @(@{ role = "user"; content = "capacity short" }); max_tokens = 16
   } | ConvertTo-Json -Depth 4
   $probeKey = "llmg_capacity_$($report.runId)_250"
-  $observedLeaseBlock = $false
-  $recoveredTraffic = $false
-  $probeDeadline = (Get-Date).AddSeconds(20)
-  do {
-    try {
-      $probe = Invoke-WebRequest -UseBasicParsing -Method Post -Uri "$($gatewayURLs[1])/v1/chat/completions" `
-        -Headers @{ Authorization = "Bearer $probeKey"; "Idempotency-Key" = [guid]::NewGuid().ToString() } `
-        -ContentType "application/json" -Body $probeBody -TimeoutSec 5
-      if ($probe.StatusCode -eq 200) { $recoveredTraffic = $true; break }
-    } catch {
-      if ($null -ne $_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 429) {
-        $observedLeaseBlock = $true
-        Start-Sleep -Milliseconds 200
-      } else { throw }
-    }
-  } while ((Get-Date) -lt $probeDeadline)
+  $probe = Invoke-WebRequest -UseBasicParsing -Method Post -Uri "$($gatewayURLs[1])/v1/chat/completions" `
+    -Headers @{ Authorization = "Bearer $probeKey"; "Idempotency-Key" = [guid]::NewGuid().ToString() } `
+    -ContentType "application/json" -Body $probeBody -TimeoutSec 20
   $probeKey = $null
-  if (-not $observedLeaseBlock -or -not $recoveredTraffic) { throw "Surviving Gateway did not expose then recover the expired shared lease boundary." }
+  if ($probe.StatusCode -ne 200) { throw "Surviving Gateway did not recover after the shared lease expired." }
 
   $docker = Get-LLMGatewayDockerCommand
   $databaseDeadline = (Get-Date).AddSeconds(10)

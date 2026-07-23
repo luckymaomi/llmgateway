@@ -1,11 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
 import { Dialog, Tooltip } from 'radix-ui'
-import { KeyRound, LogOut, Menu, Network, PanelLeftClose, X } from 'lucide-react'
-import { Suspense, useEffect, useState } from 'react'
+import { KeyRound, LogOut, Menu, Network, X } from 'lucide-react'
+import { Suspense, useState } from 'react'
 
 import { authApi, type Session } from '@/api'
-import { navigationFor } from '@/app/navigation'
+import { navigationFor, navigationItemFor } from '@/app/navigation'
 import { clearAuthenticatedSession, useSession } from '@/app/session'
 import { siteProfileQuery } from '@/app/site-profile'
 import { PasswordChangeDialog } from '@/features/auth/password-change-dialog'
@@ -24,20 +24,12 @@ export function AppShell() {
   const siteProfile = useQuery(siteProfileQuery)
   const siteName = siteProfile.data?.name ?? 'LLMGateway'
   const navigation = navigationFor(session)
-  const [collapsed, setCollapsed] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
   const [passwordOpen, setPasswordOpen] = useState(false)
   const pathname = useRouterState({ select: (state) => state.location.pathname })
+  const currentPage = navigationItemFor(session, pathname)
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  useEffect(() => {
-    if (!mobileOpen) return
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setMobileOpen(false)
-    }
-    document.addEventListener('keydown', closeOnEscape, true)
-    return () => document.removeEventListener('keydown', closeOnEscape, true)
-  }, [mobileOpen])
   const logout = useMutation({
     mutationFn: authApi.logout,
     async onSettled() {
@@ -46,30 +38,40 @@ export function AppShell() {
     },
   })
 
-  const nav = (
+  const navigationContent = (
     <SidebarNavigation
-      collapsed={collapsed}
       pathname={pathname}
       navigation={navigation}
       onNavigate={() => setMobileOpen(false)}
     />
   )
+  const sessionControls = (
+    <SessionControls
+      session={session}
+      logoutPending={logout.isPending}
+      onChangePassword={() => {
+        setMobileOpen(false)
+        setPasswordOpen(true)
+      }}
+      onLogout={() => logout.mutate()}
+    />
+  )
 
   return (
     <Tooltip.Provider delayDuration={350}>
-      <div className={cn('app-shell', collapsed && 'app-shell--collapsed')}>
-        <aside className="sidebar" aria-label="主导航">
+      <div className="app-shell">
+        <aside
+          className="sidebar"
+          aria-label={session.role === 'administrator' ? '管理员导航' : '控制台导航'}
+        >
           <div className="sidebar__brand">
-            <Network size={22} aria-hidden="true" />
+            <span className="sidebar__brand-mark" aria-hidden="true">
+              <Network size={18} />
+            </span>
             <span>{siteName}</span>
           </div>
-          {nav}
-          <SessionControls
-            session={session}
-            logoutPending={logout.isPending}
-            onChangePassword={() => setPasswordOpen(true)}
-            onLogout={() => logout.mutate()}
-          />
+          {navigationContent}
+          {sessionControls}
         </aside>
 
         <div className="app-column">
@@ -92,27 +94,15 @@ export function AppShell() {
                         </IconButton>
                       </Dialog.Close>
                     </div>
-                    {nav}
-                    <SessionControls
-                      session={session}
-                      logoutPending={logout.isPending}
-                      onChangePassword={() => {
-                        setMobileOpen(false)
-                        setPasswordOpen(true)
-                      }}
-                      onLogout={() => logout.mutate()}
-                    />
+                    {navigationContent}
+                    {sessionControls}
                   </Dialog.Content>
                 </Dialog.Portal>
               </Dialog.Root>
-              <IconButton
-                label={collapsed ? '展开侧栏' : '收起侧栏'}
-                className="sidebar-toggle"
-                onClick={() => setCollapsed((value) => !value)}
-              >
-                <PanelLeftClose size={18} />
-              </IconButton>
-              <span className="app-header__context">控制面</span>
+              <strong>{currentPage?.label ?? '控制台'}</strong>
+              <span className="app-header__context">
+                {session.role === 'administrator' ? '管理员控制台' : '控制台'}
+              </span>
             </div>
             <div className="app-header__status">
               <span className="health-dot" aria-hidden="true" />
@@ -160,47 +150,37 @@ function SessionControls({
 }
 
 function SidebarNavigation({
-  collapsed,
   pathname,
   navigation,
   onNavigate,
 }: {
-  collapsed: boolean
   pathname: string
   navigation: ReturnType<typeof navigationFor>
   onNavigate: () => void
 }) {
   return (
     <nav className="sidebar__nav">
-      {navigation.map((item) => {
-        const Icon = item.icon
-        const active = pathname.startsWith(item.activePrefix)
-        const link = (
-          <Link
-            key={item.to}
-            to={item.to}
-            className={cn('sidebar__link', active && 'sidebar__link--active')}
-            aria-current={active ? 'page' : undefined}
-            onClick={onNavigate}
-          >
-            <Icon size={18} strokeWidth={1.8} />
-            <span>{item.label}</span>
-          </Link>
-        )
-        return collapsed ? (
-          <Tooltip.Root key={item.to}>
-            <Tooltip.Trigger asChild>{link}</Tooltip.Trigger>
-            <Tooltip.Portal>
-              <Tooltip.Content side="right" sideOffset={10} className="tooltip">
-                {item.label}
-                <Tooltip.Arrow className="tooltip__arrow" />
-              </Tooltip.Content>
-            </Tooltip.Portal>
-          </Tooltip.Root>
-        ) : (
-          link
-        )
-      })}
+      {navigation.map((group, groupIndex) => (
+        <div className="sidebar__group" key={group.label ?? `group-${groupIndex}`}>
+          {group.label ? <span className="sidebar__label">{group.label}</span> : null}
+          {group.items.map((item) => {
+            const Icon = item.icon
+            const active = pathname === item.to
+            return (
+              <Link
+                key={item.to}
+                to={item.to}
+                className={cn('sidebar__link', active && 'sidebar__link--active')}
+                aria-current={active ? 'page' : undefined}
+                onClick={onNavigate}
+              >
+                <Icon size={17} strokeWidth={1.8} />
+                <span>{item.label}</span>
+              </Link>
+            )
+          })}
+        </div>
+      ))}
     </nav>
   )
 }

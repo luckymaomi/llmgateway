@@ -12,6 +12,11 @@ type listQuery struct {
 	Status         string
 	ProviderID     string
 	ResourceDomain string
+	UserID         string
+	GatewayKeyID   string
+	ModelID        string
+	From           string
+	To             string
 }
 
 type pageView[T any] struct {
@@ -34,6 +39,11 @@ func parseListQuery(r *http.Request) listQuery {
 		Status:         r.URL.Query().Get("status"),
 		ProviderID:     r.URL.Query().Get("providerId"),
 		ResourceDomain: r.URL.Query().Get("resourceDomain"),
+		UserID:         r.URL.Query().Get("userId"),
+		GatewayKeyID:   r.URL.Query().Get("gatewayKeyId"),
+		ModelID:        r.URL.Query().Get("modelId"),
+		From:           r.URL.Query().Get("from"),
+		To:             r.URL.Query().Get("to"),
 	}
 }
 

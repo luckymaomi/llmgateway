@@ -1,8 +1,16 @@
 import {
+  Activity,
+  Blocks,
   BookOpenCheck,
   Boxes,
+  CircleDollarSign,
+  FileClock,
+  Gauge,
   KeyRound,
   LayoutDashboard,
+  Mail,
+  Rocket,
+  ScrollText,
   Settings,
   UsersRound,
   type LucideIcon,
@@ -15,94 +23,128 @@ export interface NavigationItem {
   to: string
   capability: Capability
   icon: LucideIcon
-  activePrefix: string
 }
 
-const managementNavigation: NavigationItem[] = [
+export interface NavigationGroup {
+  label?: string
+  items: NavigationItem[]
+}
+
+const administratorNavigation: NavigationGroup[] = [
   {
-    label: '总览',
-    to: '/overview',
-    capability: 'access:read',
-    icon: LayoutDashboard,
-    activePrefix: '/overview',
+    label: '控制台',
+    items: [
+      { label: '仪表盘', to: '/dashboard', capability: 'access:read', icon: LayoutDashboard },
+      { label: '运维监控', to: '/operations', capability: 'access:read', icon: Activity },
+    ],
   },
   {
-    label: 'Provider 接入',
-    to: '/providers/providers',
-    capability: 'providers:read',
-    icon: Boxes,
-    activePrefix: '/providers',
+    label: '上游资源',
+    items: [
+      { label: 'Provider', to: '/providers', capability: 'providers:read', icon: Boxes },
+      { label: '模型', to: '/models', capability: 'providers:read', icon: Blocks },
+      {
+        label: '上游 API Key',
+        to: '/provider-keys',
+        capability: 'credentials:read',
+        icon: KeyRound,
+      },
+      {
+        label: '配置发布',
+        to: '/configuration',
+        capability: 'providers:read',
+        icon: Rocket,
+      },
+    ],
   },
   {
-    label: 'Provider API Key',
-    to: '/credentials',
-    capability: 'credentials:read',
-    icon: KeyRound,
-    activePrefix: '/credentials',
+    label: '成员服务',
+    items: [
+      { label: '成员', to: '/members', capability: 'access:read', icon: UsersRound },
+      { label: '邀请', to: '/invitations', capability: 'access:read', icon: Mail },
+      {
+        label: 'Gateway Key',
+        to: '/gateway-keys',
+        capability: 'access:read',
+        icon: KeyRound,
+      },
+      {
+        label: '订阅与额度',
+        to: '/entitlements',
+        capability: 'ledger:read',
+        icon: Gauge,
+      },
+    ],
   },
   {
-    label: '成员与 API Key',
-    to: '/access/users',
-    capability: 'access:read',
-    icon: UsersRound,
-    activePrefix: '/access',
+    label: '运营数据',
+    items: [
+      { label: 'API 日志', to: '/api-logs', capability: 'ledger:read', icon: ScrollText },
+      {
+        label: '额度记录',
+        to: '/quota-records',
+        capability: 'ledger:read',
+        icon: FileClock,
+      },
+      {
+        label: '上游成本',
+        to: '/costs',
+        capability: 'ledger:write',
+        icon: CircleDollarSign,
+      },
+    ],
   },
   {
-    label: '用量与额度',
-    to: '/ledger/entitlements',
-    capability: 'ledger:read',
-    icon: BookOpenCheck,
-    activePrefix: '/ledger',
-  },
-  {
-    label: '设置',
-    to: '/settings',
-    capability: 'access:read',
-    icon: Settings,
-    activePrefix: '/settings',
+    label: '系统',
+    items: [{ label: '站点设置', to: '/site-settings', capability: 'access:read', icon: Settings }],
   },
 ]
 
-const memberNavigation: NavigationItem[] = [
+const memberNavigation: NavigationGroup[] = [
   {
-    label: '总览',
-    to: '/overview',
-    capability: 'access:read',
-    icon: LayoutDashboard,
-    activePrefix: '/overview',
-  },
-  {
-    label: '我的 API Key',
-    to: '/access/keys',
-    capability: 'access:read',
-    icon: KeyRound,
-    activePrefix: '/access/keys',
-  },
-  {
-    label: '我的用量',
-    to: '/ledger/usage',
-    capability: 'ledger:read',
-    icon: BookOpenCheck,
-    activePrefix: '/ledger/usage',
-  },
-  {
-    label: '设置',
-    to: '/settings',
-    capability: 'access:read',
-    icon: Settings,
-    activePrefix: '/settings',
+    items: [
+      { label: '仪表盘', to: '/dashboard', capability: 'access:read', icon: LayoutDashboard },
+      {
+        label: '订阅管理',
+        to: '/entitlements',
+        capability: 'ledger:read',
+        icon: BookOpenCheck,
+      },
+      {
+        label: '额度记录',
+        to: '/quota-records',
+        capability: 'ledger:read',
+        icon: FileClock,
+      },
+      {
+        label: 'Key 管理',
+        to: '/gateway-keys',
+        capability: 'access:read',
+        icon: KeyRound,
+      },
+      { label: 'API 日志', to: '/api-logs', capability: 'ledger:read', icon: ScrollText },
+    ],
   },
 ]
 
-export function navigationFor(session: Session): NavigationItem[] {
-  const source = session.role === 'member' ? memberNavigation : managementNavigation
-  return source.filter((item) => session.capabilities.includes(item.capability))
+export function navigationFor(session: Session): NavigationGroup[] {
+  const source = session.role === 'member' ? memberNavigation : administratorNavigation
+  return source
+    .map((group) => ({
+      ...group,
+      items: group.items.filter((item) => session.capabilities.includes(item.capability)),
+    }))
+    .filter((group) => group.items.length > 0)
 }
 
-export function defaultRouteFor(
-  session: Session,
-): '/overview' | '/providers/providers' | '/forbidden' {
-  if (session.capabilities.includes('access:read')) return '/overview'
-  if (session.capabilities.includes('providers:read')) return '/providers/providers'
+export function navigationItemFor(session: Session, pathname: string): NavigationItem | undefined {
+  return navigationFor(session)
+    .flatMap((group) => group.items)
+    .find((item) => pathname === item.to)
+}
+
+export function defaultRouteFor(session: Session): '/dashboard' | '/providers' | '/forbidden' {
+  if (session.capabilities.includes('access:read')) return '/dashboard'
+  if (session.capabilities.includes('providers:read')) return '/providers'
   return '/forbidden'
 }

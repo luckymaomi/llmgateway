@@ -233,73 +233,6 @@ Assert-ExactNames -Actual @($manifestBinaries | ForEach-Object name) -Expected $
 $binaryByName = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal)
 foreach ($binary in $manifestBinaries) { $binaryByName.Add($binary.name, $binary.sha256) }
 
-$deployEntries = @(
-  "deploy/backup.env.example",
-  "deploy/backup-lib.sh",
-  "deploy/backup-bundle-launcher-linux.sh",
-  "deploy/backup-linux.sh",
-  "deploy/Caddyfile",
-  "deploy/Caddyfile.internal",
-  "deploy/check-backup-freshness-linux.sh",
-  "deploy/check-restic-repository-linux.sh",
-  "deploy/compose.acceptance.yaml",
-  "deploy/compose.production.yaml",
-  "deploy/initialize-backup-linux.sh",
-  "deploy/install-backup-linux.sh",
-  "deploy/install-linux.sh",
-  "deploy/install-restored-configuration-linux.sh",
-  "deploy/lib.sh",
-  "deploy/list-backups-linux.sh",
-  "deploy/llmgateway-backup.service",
-  "deploy/llmgateway-backup.timer",
-  "deploy/llmgateway-backup-freshness.service",
-  "deploy/llmgateway-backup-freshness.timer",
-  "deploy/llmgateway-compose.service",
-  "deploy/observability/grafana-dashboard.json",
-  "deploy/observability/prometheus-rules.yaml",
-  "deploy/observability/runbook.md",
-  "deploy/production.env.example",
-  "deploy/README.md",
-  "deploy/restore-backup-linux.sh",
-  "deploy/restore-postgres-linux.sh",
-  "deploy/rotate-credentials-linux.sh",
-  "deploy/run-backup-with-retries-linux.sh",
-  "deploy/upgrade-linux.sh",
-  "deploy/windows-service.env.example"
-)
-function Assert-ReleaseArchive {
-  param(
-    [Parameter(Mandatory = $true)][string] $Path,
-    [Parameter(Mandatory = $true)][string[]] $BinaryNames,
-    [Parameter(Mandatory = $true)][string] $Platform
-  )
-  $expectedArchiveEntries = @("LICENSE", "README.md", "RELEASE.md", "spec.md", "dev.md", "CONTRIBUTING.md", "SECURITY.md") + $deployEntries + $BinaryNames
-  $archiveFiles = @(Get-ArchiveFiles -Path $Path)
-  Assert-ExactNames -Actual @($archiveFiles | ForEach-Object Name) -Expected $expectedArchiveEntries -Label "$Platform release archive"
-  if ($Platform -eq "linux-amd64") {
-    $regularMode = [Convert]::ToInt32("100644", 8)
-    $executableMode = [Convert]::ToInt32("100755", 8)
-    foreach ($file in $archiveFiles) {
-      $expectedMode = if ($file.Name -match '^deploy/[A-Za-z0-9._/-]+\.sh$' -or
-                          $file.Name -in @("llmgateway", "llmgateway-dbtool", "llmgateway-healthcheck")) {
-        $executableMode
-      } else {
-        $regularMode
-      }
-      if ($file.UnixMode -ne $expectedMode) {
-        throw "Linux release archive mode is invalid for $($file.Name)."
-      }
-    }
-  }
-  foreach ($entry in $expectedArchiveEntries) {
-    if ($entry -match '(?i)(^|/)(?:\.env|.*\.(?:key|pem|dump|log))$' -and $entry -notmatch '(?i)\.env\.example$') {
-      throw "Release archive contains a forbidden sensitive-looking file: $entry"
-    }
-  }
-}
-Assert-ReleaseArchive -Path (Join-Path $Directory $windowsZipName) -BinaryNames @("llmgateway.exe", "llmgateway-dbtool.exe", "llmgateway-healthcheck.exe") -Platform "windows-amd64"
-Assert-ReleaseArchive -Path (Join-Path $Directory $linuxZipName) -BinaryNames @("llmgateway", "llmgateway-dbtool", "llmgateway-healthcheck") -Platform "linux-amd64"
-
 $manifestArchives = @($manifest.archives | ForEach-Object {
   $archiveEntries = @($_.entries | ForEach-Object {
     $entryName = [string] $_
@@ -313,9 +246,40 @@ $manifestArchives = @($manifest.archives | ForEach-Object {
   [pscustomobject]@{ name = [string] $_.name; entries = $archiveEntries }
 })
 Assert-ExactNames -Actual @($manifestArchives | ForEach-Object name) -Expected @($windowsZipName, $linuxZipName) -Label "manifest archive evidence"
+function Assert-ReleaseArchive {
+  param(
+    [Parameter(Mandatory = $true)][string] $Path,
+    [Parameter(Mandatory = $true)][string[]] $BinaryNames,
+    [Parameter(Mandatory = $true)][string[]] $ExpectedEntries,
+    [Parameter(Mandatory = $true)][string] $Platform
+  )
+  foreach ($binaryName in $BinaryNames) {
+    if ($ExpectedEntries -cnotcontains $binaryName) { throw "$Platform release archive is missing a runtime binary." }
+  }
+  $archiveFiles = @(Get-ArchiveFiles -Path $Path)
+  Assert-ExactNames -Actual @($archiveFiles | ForEach-Object Name) -Expected $ExpectedEntries -Label "$Platform release archive manifest parity"
+  if ($Platform -eq "linux-amd64") {
+    $regularMode = [Convert]::ToInt32("100644", 8)
+    $executableMode = [Convert]::ToInt32("100755", 8)
+    foreach ($file in $archiveFiles) {
+      $expectedMode = if ($file.Name -match '^deploy/[A-Za-z0-9._/-]+\.sh$' -or $BinaryNames -ccontains $file.Name) {
+        $executableMode
+      } else {
+        $regularMode
+      }
+      if ($file.UnixMode -ne $expectedMode) { throw "Linux release archive mode is invalid for $($file.Name)." }
+    }
+  }
+  foreach ($entry in $ExpectedEntries) {
+    if ($entry -match '(?i)(^|/)(?:\.env|.*\.(?:key|pem|dump|log))$' -and $entry -notmatch '(?i)\.env\.example$') {
+      throw "Release archive contains a forbidden sensitive-looking file: $entry"
+    }
+  }
+}
 foreach ($archiveEvidence in $manifestArchives) {
   $binaryNames = if ($archiveEvidence.name -eq $windowsZipName) { @("llmgateway.exe", "llmgateway-dbtool.exe", "llmgateway-healthcheck.exe") } else { @("llmgateway", "llmgateway-dbtool", "llmgateway-healthcheck") }
-  Assert-ExactNames -Actual $archiveEvidence.entries -Expected (@("LICENSE", "README.md", "RELEASE.md") + $deployEntries + $binaryNames) -Label "manifest $($archiveEvidence.name) entries"
+  $platform = if ($archiveEvidence.name -eq $windowsZipName) { "windows-amd64" } else { "linux-amd64" }
+  Assert-ReleaseArchive -Path (Join-Path $Directory $archiveEvidence.name) -BinaryNames $binaryNames -ExpectedEntries $archiveEvidence.entries -Platform $platform
 }
 
 $spdx = Get-JsonDocument -Path (Join-Path $Directory $spdxName)

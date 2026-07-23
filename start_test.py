@@ -23,8 +23,8 @@ r"""LLMGateway 唯一人工测试入口。
         构建并验证测试签名发布物、重复构建、OCI 镜像、SBOM、checksum 和 provenance。
 
     python .\start_test.py everything
-        依次运行 full、provider、capacity、release；首个失败立即停止。
-        full 已包含 daily，因此不会重复跑 daily。
+        发布候选组合验收：依次运行 full、provider、capacity、release；首个失败立即停止。
+        full 已包含 daily，因此不会重复跑 daily；普通迭代按风险运行对应档位。
 
 长测试由 owner 在自己的终端运行。完成后只需把命令最后打印的日志路径告诉 Agent；
 日志不受 Git 跟踪。Agent 仅自行运行预计一分钟以内的定向测试。
@@ -52,7 +52,7 @@ MODE_MENU = (
     ("provider", "真实 Provider 与标准 SDK", "取决于外部网络"),
     ("capacity", "300 用户容量与强杀恢复", "默认约 2 分钟"),
     ("release", "测试签名发布物", "约 10～20 分钟"),
-    ("everything", "以上全部生产门槛", "约 30～60 分钟"),
+    ("everything", "发布候选组合验收", "约 30～60 分钟"),
 )
 
 

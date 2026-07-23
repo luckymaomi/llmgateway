@@ -17,10 +17,12 @@ import (
 )
 
 type quotaControlServiceStub struct {
-	createdInput *quota.NewEntitlement
-	items        []quota.Entitlement
-	usageItems   []quota.UsageRecord
-	createError  error
+	createdInput  *quota.NewEntitlement
+	items         []quota.Entitlement
+	requestItems  []quota.RequestLog
+	requestDetail quota.RequestLogDetail
+	requestQuery  *quota.RequestLogQuery
+	createError   error
 }
 
 func (s *quotaControlServiceStub) CreateEntitlement(_ context.Context, _ identity.Principal, input quota.NewEntitlement) (quota.Entitlement, error) {
@@ -43,15 +45,75 @@ func (s *quotaControlServiceStub) ListEntitlements(_ context.Context, _ identity
 	return quota.PageResult[quota.Entitlement]{Items: append([]quota.Entitlement(nil), s.items[query.Page.Offset:end]...), Total: int64(len(s.items))}, nil
 }
 
-func (s *quotaControlServiceStub) ListUsage(_ context.Context, _ identity.Principal, query quota.UsageQuery) (quota.PageResult[quota.UsageRecord], error) {
-	if query.Page.Offset >= int32(len(s.usageItems)) {
-		return quota.PageResult[quota.UsageRecord]{Items: []quota.UsageRecord{}, Total: int64(len(s.usageItems))}, nil
+func (s *quotaControlServiceStub) ListRequestLogs(_ context.Context, _ identity.Principal, query quota.RequestLogQuery) (quota.PageResult[quota.RequestLog], error) {
+	copy := query
+	s.requestQuery = &copy
+	if query.Page.Offset >= int32(len(s.requestItems)) {
+		return quota.PageResult[quota.RequestLog]{Items: []quota.RequestLog{}, Total: int64(len(s.requestItems))}, nil
 	}
 	end := int(query.Page.Offset + query.Page.Size)
-	if end > len(s.usageItems) {
-		end = len(s.usageItems)
+	if end > len(s.requestItems) {
+		end = len(s.requestItems)
 	}
-	return quota.PageResult[quota.UsageRecord]{Items: append([]quota.UsageRecord(nil), s.usageItems[query.Page.Offset:end]...), Total: int64(len(s.usageItems))}, nil
+	return quota.PageResult[quota.RequestLog]{Items: append([]quota.RequestLog(nil), s.requestItems[query.Page.Offset:end]...), Total: int64(len(s.requestItems))}, nil
+}
+
+func TestQuotaControlListsAllRequestStatesAndRedactsMemberAttemptOwnership(t *testing.T) {
+	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	requestID, ownerID, keyID, modelID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	errorKind := "upstream_outcome_uncertain"
+	request := quota.RequestLog{
+		RequestID: requestID, UserID: ownerID, UserName: "Request Member",
+		GatewayKeyID: keyID, KeyPrefix: "llmg_abcd", ModelID: modelID, ModelAlias: "browser-chat",
+		ResourceDomain: quota.ResourceFree, Status: quota.RequestUncertain, Stream: true,
+		UsageSource: quota.UsageUnknown, ErrorKind: &errorKind, AcceptedAt: now.Add(-time.Minute),
+		UpdatedAt: now, AttemptCount: 1,
+	}
+	service := &quotaControlServiceStub{
+		requestItems: []quota.RequestLog{request},
+		requestDetail: quota.RequestLogDetail{RequestLog: request, Attempts: []quota.RequestAttempt{{
+			ID: uuid.New(), Sequence: 1, Status: "uncertain", ProviderName: "Provider One",
+			CredentialName: "Primary upstream key", ErrorKind: &errorKind,
+			UsageSource: quota.UsageUnknown, CreatedAt: now.Add(-time.Minute),
+		}}},
+	}
+	api := NewQuotaAPI(service, quotaIdentityResolverStub{}, quotaModelResolverStub{}, nil)
+	api.now = func() time.Time { return now }
+	administrator := identity.Principal{UserID: uuid.New(), Role: identity.RoleAdministrator, Status: identity.StatusActive}
+	administratorHandler := httpserver.RequestID(withQuotaPrincipal(administrator, api.Routes(quotaAdministratorMiddleware(administrator), passthroughMiddleware)))
+	path := "/requests?status=uncertain&gatewayKeyId=" + keyID.String() + "&from=" + now.Add(-time.Hour).Format(time.RFC3339) + "&to=" + now.Format(time.RFC3339)
+	listResponse := httptest.NewRecorder()
+	administratorHandler.ServeHTTP(listResponse, httptest.NewRequest(http.MethodGet, path, nil))
+	if listResponse.Code != http.StatusOK {
+		t.Fatalf("request log list status = %d body = %s", listResponse.Code, listResponse.Body.String())
+	}
+	page := decodeData[pageView[requestLogView]](t, listResponse)
+	if len(page.Items) != 1 || page.Items[0].Status != quota.RequestUncertain || page.Items[0].ErrorKind == nil || *page.Items[0].ErrorKind != errorKind {
+		t.Fatalf("request log page = %#v", page)
+	}
+	if service.requestQuery == nil || service.requestQuery.Status != quota.RequestUncertain || service.requestQuery.GatewayKeyID == nil || *service.requestQuery.GatewayKeyID != keyID {
+		t.Fatalf("request log query = %#v", service.requestQuery)
+	}
+
+	detailResponse := httptest.NewRecorder()
+	administratorHandler.ServeHTTP(detailResponse, httptest.NewRequest(http.MethodGet, "/requests/"+requestID.String(), nil))
+	administratorDetail := decodeData[requestLogDetailView](t, detailResponse)
+	if len(administratorDetail.Attempts) != 1 || administratorDetail.Attempts[0].ProviderName == nil || *administratorDetail.Attempts[0].ProviderName != "Provider One" {
+		t.Fatalf("administrator request detail = %#v", administratorDetail)
+	}
+
+	member := identity.Principal{UserID: ownerID, DisplayName: "Request Member", Role: identity.RoleMember, Status: identity.StatusActive}
+	memberHandler := httpserver.RequestID(withQuotaPrincipal(member, api.Routes(quotaAdministratorMiddleware(member), passthroughMiddleware)))
+	memberResponse := httptest.NewRecorder()
+	memberHandler.ServeHTTP(memberResponse, httptest.NewRequest(http.MethodGet, "/requests/"+requestID.String(), nil))
+	memberDetail := decodeData[requestLogDetailView](t, memberResponse)
+	if len(memberDetail.Attempts) != 1 || memberDetail.Attempts[0].ProviderName != nil || memberDetail.Attempts[0].CredentialName != nil {
+		t.Fatalf("member request detail leaked upstream ownership = %#v", memberDetail)
+	}
+}
+
+func (s *quotaControlServiceStub) GetRequestLog(_ context.Context, _ identity.Principal, _ uuid.UUID) (quota.RequestLogDetail, error) {
+	return s.requestDetail, nil
 }
 
 func (s *quotaControlServiceStub) ListLedger(_ context.Context, _ identity.Principal, _ quota.LedgerFilter) (quota.PageResult[quota.LedgerEvent], error) {
@@ -87,6 +149,7 @@ func TestQuotaControlCreatesAndListsAnIdempotentStructuredEntitlement(t *testing
 		ID: entitlementID, UserID: ownerID, Plan: quota.PlanToken, ResourceDomain: quota.ResourceFree,
 		ModelID: &modelID, GrantedTokens: 50_000, BalanceTokens: 50_000,
 		StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(30 * 24 * time.Hour), ConcurrencyLimit: 2,
+		OwnerName: "Quota Member", ModelAlias: stringPointer("free-chat"),
 	}}}
 	api := NewQuotaAPI(
 		service,
@@ -96,7 +159,7 @@ func TestQuotaControlCreatesAndListsAnIdempotentStructuredEntitlement(t *testing
 	)
 	api.now = func() time.Time { return now }
 	principal := identity.Principal{UserID: actorID, Role: identity.RoleAdministrator, Status: identity.StatusActive}
-	handler := httpserver.RequestID(api.Routes(quotaAdministratorMiddleware(principal), passthroughMiddleware))
+	handler := httpserver.RequestID(withQuotaPrincipal(principal, api.Routes(quotaAdministratorMiddleware(principal), passthroughMiddleware)))
 
 	idempotencyKey := uuid.New()
 	body := map[string]any{
@@ -143,22 +206,25 @@ func TestQuotaControlRejectsMissingIdempotencyAndNonAdministratorAccess(t *testi
 	service := &quotaControlServiceStub{items: []quota.Entitlement{{
 		ID: uuid.New(), UserID: ownerID, Plan: quota.PlanToken, ResourceDomain: quota.ResourceFree,
 		GrantedTokens: 1, BalanceTokens: 1, StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour), ConcurrencyLimit: 1,
+		OwnerName: "Member",
 	}}}
 	api := NewQuotaAPI(service, quotaIdentityResolverStub{names: map[uuid.UUID]string{ownerID: "Member"}}, quotaModelResolverStub{}, nil)
 	member := identity.Principal{UserID: ownerID, Role: identity.RoleMember, Status: identity.StatusActive}
-	handler := httpserver.RequestID(api.Routes(quotaAdministratorMiddleware(member), passthroughMiddleware))
+	handler := httpserver.RequestID(withQuotaPrincipal(member, api.Routes(quotaAdministratorMiddleware(member), passthroughMiddleware)))
 
 	listResponse := httptest.NewRecorder()
 	handler.ServeHTTP(listResponse, httptest.NewRequest(http.MethodGet, "/entitlements", nil))
-	if listResponse.Code != http.StatusForbidden {
-		t.Fatalf("member entitlement list status = %d, want 403", listResponse.Code)
+	if listResponse.Code != http.StatusOK {
+		t.Fatalf("member entitlement list status = %d body = %s", listResponse.Code, listResponse.Body.String())
 	}
-	if service.createdInput != nil {
-		t.Fatal("forbidden quota request reached the service")
+	createAsMember := httptest.NewRecorder()
+	handler.ServeHTTP(createAsMember, httptest.NewRequest(http.MethodPost, "/entitlements", bytes.NewBufferString("{}")))
+	if createAsMember.Code != http.StatusForbidden {
+		t.Fatalf("member entitlement create status = %d, want 403", createAsMember.Code)
 	}
 
 	administrator := identity.Principal{UserID: uuid.New(), Role: identity.RoleAdministrator, Status: identity.StatusActive}
-	administratorHandler := httpserver.RequestID(api.Routes(quotaAdministratorMiddleware(administrator), passthroughMiddleware))
+	administratorHandler := httpserver.RequestID(withQuotaPrincipal(administrator, api.Routes(quotaAdministratorMiddleware(administrator), passthroughMiddleware)))
 	createResponse := httptest.NewRecorder()
 	administratorHandler.ServeHTTP(createResponse, httptest.NewRequest(http.MethodPost, "/entitlements", bytes.NewBufferString("{}")))
 	if createResponse.Code != http.StatusBadRequest {
@@ -183,4 +249,14 @@ func quotaAdministratorMiddleware(principal identity.Principal) func(http.Handle
 
 func passthroughMiddleware(next http.Handler) http.Handler {
 	return next
+}
+
+func withQuotaPrincipal(principal identity.Principal, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalContextKey{}, principal)))
+	})
+}
+
+func stringPointer(value string) *string {
+	return &value
 }

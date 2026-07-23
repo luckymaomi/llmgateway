@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -40,6 +42,7 @@ type requestResult struct {
 	ErrorCode      string
 	Failure        string
 	IdempotencyKey string
+	DialRetries    int
 }
 
 type loadClient struct {
@@ -94,24 +97,32 @@ func (c *loadClient) send(ctx context.Context, phase string, kind requestKind, u
 	}
 	requestContext, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
-	baseURL := c.baseURLs[int(c.nextHost.Add(1)-1)%len(c.baseURLs)]
-	request, err := http.NewRequestWithContext(requestContext, http.MethodPost, baseURL+path, bytes.NewReader(encoded))
-	if err != nil {
-		result.Failure = "create_request"
-		return result
-	}
-	request.Header.Set("Authorization", "Bearer "+user.Secret)
-	request.Header.Set("Content-Type", "application/json")
 	result.IdempotencyKey = uuid.NewString()
-	request.Header.Set("Idempotency-Key", result.IdempotencyKey)
 	started := time.Now()
-	response, err := c.client.Do(request)
-	result.FirstByte = time.Since(started)
-	if err != nil {
+	var response *http.Response
+	for attempt := 0; attempt < 2; attempt++ {
+		baseURL := c.baseURLs[int(c.nextHost.Add(1)-1)%len(c.baseURLs)]
+		request, requestErr := http.NewRequestWithContext(requestContext, http.MethodPost, baseURL+path, bytes.NewReader(encoded))
+		if requestErr != nil {
+			result.Failure = "create_request"
+			return result
+		}
+		request.Header.Set("Authorization", "Bearer "+user.Secret)
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Idempotency-Key", result.IdempotencyKey)
+		response, err = c.client.Do(request)
+		if err == nil {
+			break
+		}
+		if attempt == 0 && requestContext.Err() == nil && isSafeDialFailure(err) {
+			result.DialRetries++
+			continue
+		}
 		result.Latency = time.Since(started)
 		result.Failure = "transport_" + errorClass(err)
 		return result
 	}
+	result.FirstByte = time.Since(started)
 	defer response.Body.Close()
 	result.Status = response.StatusCode
 	result.RetryAfter = retryAfterSeconds(response.Header.Get("Retry-After"))
@@ -144,6 +155,11 @@ func (c *loadClient) send(ctx context.Context, phase string, kind requestKind, u
 	return result
 }
 
+func isSafeDialFailure(err error) bool {
+	var networkError *net.OpError
+	return errors.As(err, &networkError) && networkError.Op == "dial"
+}
+
 func responseErrorCode(payload []byte) string {
 	var value struct {
 		Error struct {
@@ -157,6 +173,16 @@ func responseErrorCode(payload []byte) string {
 }
 
 func errorClass(err error) string {
+	var networkError *net.OpError
+	if errors.As(err, &networkError) {
+		return "net_" + networkError.Op
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "deadline_exceeded"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "canceled"
+	}
 	name := fmt.Sprintf("%T", err)
 	if index := strings.LastIndex(name, "."); index >= 0 {
 		name = name[index+1:]

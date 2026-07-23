@@ -1232,25 +1232,32 @@ COMMIT;
     throw "A successful call did not close the administrator recovery and credential health loop: $restoredFacts"
   }
 
-  $memberUsage = Invoke-RestMethod -Uri "$baseURL/api/control/usage?page=1&pageSize=100" -WebSession $memberSession
-  $matchingUsage = @($memberUsage.data.items | Where-Object {
+  $memberRequests = Invoke-RestMethod -Uri "$baseURL/api/control/requests?page=1&pageSize=100" -WebSession $memberSession
+  $matchingRequests = @($memberRequests.data.items | Where-Object {
       $_.requestId -eq $gatewayRequestID -and $_.userName -eq "Member" -and
       $_.keyPrefix -eq $createdKey.data.key.prefix -and $_.modelAlias -eq "core-chat" -and
-      $_.resourceDomain -eq "free" -and $_.inputTokens -eq 4 -and $_.outputTokens -eq 2 -and
-      $_.usageSource -eq "authoritative"
+      $_.resourceDomain -eq "free" -and $_.status -eq "completed" -and
+      $_.inputTokens -eq 4 -and $_.outputTokens -eq 2 -and
+      $_.usageSource -eq "authoritative" -and $_.attemptCount -eq 1
     })
-  if ($matchingUsage.Count -ne 1 -or @($memberUsage.data.items | Where-Object { $_.userName -ne "Member" }).Count -ne 0) {
-    throw "Member usage did not expose only the authenticated owner's authoritative request facts."
+  if ($matchingRequests.Count -ne 1 -or @($memberRequests.data.items | Where-Object { $_.userName -ne "Member" }).Count -ne 0) {
+    throw "Member request logs did not expose only the authenticated owner's authoritative request facts."
   }
-  if (@($memberUsage.data.items | Where-Object { $_.PSObject.Properties.Name -contains "totalCostNanos" }).Count -ne 0) {
-    throw "Member usage exposed procurement cost facts."
+  if (@($memberRequests.data.items | Where-Object { $_.PSObject.Properties.Name -contains "totalCostNanos" }).Count -ne 0) {
+    throw "Member request logs exposed procurement cost facts."
   }
-  $administratorUsage = Invoke-RestMethod -Uri "$baseURL/api/control/usage?search=$gatewayRequestID&page=1&pageSize=20" -WebSession $adminSession
-  if ($administratorUsage.data.total -ne 1 -or $administratorUsage.data.items[0].requestId -ne $gatewayRequestID) {
-    throw "Administrator usage search did not find the persisted logical request."
+  $memberRequestDetail = Invoke-RestMethod -Uri "$baseURL/api/control/requests/$gatewayRequestID" -WebSession $memberSession
+  if ($memberRequestDetail.data.request.requestId -ne $gatewayRequestID -or $memberRequestDetail.data.attempts.Count -ne 1 -or
+      $memberRequestDetail.data.attempts[0].PSObject.Properties.Name -contains "providerName" -or
+      $memberRequestDetail.data.attempts[0].PSObject.Properties.Name -contains "credentialName") {
+    throw "Member request detail did not preserve the sending boundary without exposing upstream ownership."
   }
-  Assert-HTTPFailureStatus -ExpectedStatus 401 -FailureMessage "Unauthenticated usage query was accepted." -Action {
-    Invoke-RestMethod -Uri "$baseURL/api/control/usage?page=1&pageSize=20"
+  $administratorRequests = Invoke-RestMethod -Uri "$baseURL/api/control/requests?search=$gatewayRequestID&page=1&pageSize=20" -WebSession $adminSession
+  if ($administratorRequests.data.total -ne 1 -or $administratorRequests.data.items[0].requestId -ne $gatewayRequestID) {
+    throw "Administrator request search did not find the persisted logical request."
+  }
+  Assert-HTTPFailureStatus -ExpectedStatus 401 -FailureMessage "Unauthenticated request-log query was accepted." -Action {
+    Invoke-RestMethod -Uri "$baseURL/api/control/requests?page=1&pageSize=20"
   }
 
   Stop-Process -Id $process.Id -Force

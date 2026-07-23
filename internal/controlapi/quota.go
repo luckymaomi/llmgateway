@@ -20,7 +20,8 @@ type quotaService interface {
 	CreateEntitlement(context.Context, identity.Principal, quota.NewEntitlement) (quota.Entitlement, error)
 	ListEntitlements(context.Context, identity.Principal, quota.EntitlementQuery) (quota.PageResult[quota.Entitlement], error)
 	ListLedger(context.Context, identity.Principal, quota.LedgerFilter) (quota.PageResult[quota.LedgerEvent], error)
-	ListUsage(context.Context, identity.Principal, quota.UsageQuery) (quota.PageResult[quota.UsageRecord], error)
+	ListRequestLogs(context.Context, identity.Principal, quota.RequestLogQuery) (quota.PageResult[quota.RequestLog], error)
+	GetRequestLog(context.Context, identity.Principal, uuid.UUID) (quota.RequestLogDetail, error)
 }
 
 type quotaIdentityResolver interface {
@@ -47,13 +48,14 @@ func (a *QuotaAPI) RegisterRoutes(router chi.Router, authorizationMiddleware, mu
 	if authorizationMiddleware == nil || mutationMiddleware == nil {
 		panic("quota authorization and mutation middleware are required")
 	}
-	router.With(authorizationMiddleware).Get("/entitlements", a.listEntitlements)
+	router.Get("/entitlements", a.listEntitlements)
 	router.With(authorizationMiddleware, mutationMiddleware).Post("/entitlements", a.createEntitlement)
-	router.With(authorizationMiddleware).Get("/ledger/entries", a.listLedgerEntries)
-	router.Get("/usage", a.listUsage)
+	router.Get("/ledger/entries", a.listLedgerEntries)
+	router.Get("/requests", a.listRequestLogs)
+	router.Get("/requests/{requestID}", a.getRequestLog)
 }
 
-func (a *QuotaAPI) listUsage(w http.ResponseWriter, r *http.Request) {
+func (a *QuotaAPI) listRequestLogs(w http.ResponseWriter, r *http.Request) {
 	principal := principalFromContext(r.Context())
 	query := parseListQuery(r)
 	page, ok := quotaPage(query)
@@ -61,19 +63,93 @@ func (a *QuotaAPI) listUsage(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, r, quota.ErrInvalidInput)
 		return
 	}
-	result, err := a.service.ListUsage(r.Context(), principal, quota.UsageQuery{
-		Search: query.Search, ResourceDomain: quota.ResourceDomain(query.ResourceDomain), Page: page,
+	userID, err := optionalUUID(query.UserID)
+	if err != nil {
+		a.writeError(w, r, quota.ErrInvalidInput)
+		return
+	}
+	keyID, err := optionalUUID(query.GatewayKeyID)
+	if err != nil {
+		a.writeError(w, r, quota.ErrInvalidInput)
+		return
+	}
+	modelID, err := optionalUUID(query.ModelID)
+	if err != nil {
+		a.writeError(w, r, quota.ErrInvalidInput)
+		return
+	}
+	from, to, ok := a.requestLogWindow(query.From, query.To)
+	if !ok {
+		a.writeError(w, r, quota.ErrInvalidInput)
+		return
+	}
+	result, err := a.service.ListRequestLogs(r.Context(), principal, quota.RequestLogQuery{
+		UserID: userID, GatewayKeyID: keyID, ModelID: modelID,
+		Search: query.Search, Status: quota.RequestStatus(query.Status),
+		ResourceDomain: quota.ResourceDomain(query.ResourceDomain), From: from, To: to, Page: page,
 	})
 	if err != nil {
 		a.writeError(w, r, err)
 		return
 	}
-	views, err := a.presentUsage(r.Context(), principal, result.Items)
+	views, err := presentRequestLogs(principal, result.Items)
 	if err != nil {
 		a.writeError(w, r, err)
 		return
 	}
-	writeData(w, http.StatusOK, pageView[usageView]{Items: views, Page: query.Page, PageSize: query.PageSize, Total: int(result.Total)})
+	writeData(w, http.StatusOK, pageView[requestLogView]{Items: views, Page: query.Page, PageSize: query.PageSize, Total: int(result.Total)})
+}
+
+func (a *QuotaAPI) getRequestLog(w http.ResponseWriter, r *http.Request) {
+	requestID, err := uuid.Parse(chi.URLParam(r, "requestID"))
+	if err != nil {
+		a.writeError(w, r, quota.ErrInvalidInput)
+		return
+	}
+	principal := principalFromContext(r.Context())
+	detail, err := a.service.GetRequestLog(r.Context(), principal, requestID)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	view, err := presentRequestLogDetail(principal, detail)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	writeData(w, http.StatusOK, view)
+}
+
+func (a *QuotaAPI) requestLogWindow(fromValue, toValue string) (time.Time, time.Time, bool) {
+	to := a.now().UTC()
+	from := to.Add(-24 * time.Hour)
+	var err error
+	if strings.TrimSpace(toValue) != "" {
+		to, err = time.Parse(time.RFC3339, toValue)
+		if err != nil {
+			return time.Time{}, time.Time{}, false
+		}
+	}
+	if strings.TrimSpace(fromValue) != "" {
+		from, err = time.Parse(time.RFC3339, fromValue)
+		if err != nil {
+			return time.Time{}, time.Time{}, false
+		}
+	} else if strings.TrimSpace(toValue) != "" {
+		from = to.Add(-24 * time.Hour)
+	}
+	return from.UTC(), to.UTC(), to.After(from) && to.Sub(from) <= 31*24*time.Hour
+}
+
+func optionalUUID(value string) (*uuid.UUID, error) {
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	parsed, err := uuid.Parse(value)
+	if err != nil {
+		return nil, err
+	}
+	return &parsed, nil
 }
 
 func (a *QuotaAPI) Routes(authorizationMiddleware, mutationMiddleware func(http.Handler) http.Handler) http.Handler {
@@ -134,8 +210,14 @@ func (a *QuotaAPI) listEntitlements(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, r, quota.ErrInvalidInput)
 		return
 	}
+	userID, err := optionalUUID(query.UserID)
+	if err != nil {
+		a.writeError(w, r, quota.ErrInvalidInput)
+		return
+	}
 	result, err := a.service.ListEntitlements(r.Context(), principal, quota.EntitlementQuery{
-		Search: query.Search, Status: query.Status, ResourceDomain: quota.ResourceDomain(query.ResourceDomain), Page: page,
+		UserID: userID, Search: query.Search, Status: query.Status,
+		ResourceDomain: quota.ResourceDomain(query.ResourceDomain), Page: page,
 	})
 	if err != nil {
 		a.writeError(w, r, err)
