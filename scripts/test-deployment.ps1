@@ -44,6 +44,43 @@ function New-RandomHex {
   return (($buffer | ForEach-Object { $_.ToString("x2") }) -join "")
 }
 
+function Select-FreeEdgeNetwork {
+  param(
+    [Parameter(Mandatory = $true)][string] $Docker,
+    [Parameter(Mandatory = $true)][string] $RunID
+  )
+
+  $octets = @(22, 23, 24, 25, 26, 27, 28, 29, 30, 31) | Sort-Object { Get-Random }
+  foreach ($octet in $octets) {
+    $subnet = "172.$octet.0.0/24"
+    $probeName = "llmgateway-edge-probe-$RunID-$octet"
+    $probeOutput = @(& $Docker network create --internal `
+      --label "llmgateway.test.owner=deployment-network-probe" `
+      --label "llmgateway.test.run=$RunID" `
+      --subnet $subnet $probeName 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $probeOutput.Count -eq 0) { continue }
+
+    try {
+      $inspection = @(& $Docker network inspect $probeName 2>$null | ConvertFrom-Json)
+      if ($LASTEXITCODE -ne 0 -or $inspection.Count -ne 1 -or
+          $inspection[0].Labels.'llmgateway.test.owner' -ne 'deployment-network-probe' -or
+          $inspection[0].Labels.'llmgateway.test.run' -ne $RunID) {
+        throw "Docker returned an invalid ownership record for the edge network probe."
+      }
+    } finally {
+      & $Docker network rm $probeName *> $null
+      if ($LASTEXITCODE -ne 0) { throw "Could not remove the edge network probe $probeName." }
+    }
+
+    return [pscustomobject]@{
+      Subnet       = $subnet
+      ProxyAddress = "172.$octet.0.10"
+    }
+  }
+
+  throw "Could not find a free Docker edge subnet in the isolated deployment pool."
+}
+
 function Write-SecretFile {
   param([string] $Name, [string] $Value)
   $path = Join-Path $buildDirectory $Name
@@ -151,6 +188,9 @@ try {
   $env:LLMGATEWAY_HTTP_PORT = [string](Get-LLMGatewayFreeLoopbackPort)
   $env:LLMGATEWAY_HTTPS_PORT = [string](Get-LLMGatewayFreeLoopbackPort)
   $env:LLMGATEWAY_DEPLOYMENT_URL = "https://localhost:$($env:LLMGATEWAY_HTTPS_PORT)"
+  $edgeNetwork = Select-FreeEdgeNetwork -Docker $docker -RunID $runID
+  $env:LLMGATEWAY_EDGE_SUBNET = $edgeNetwork.Subnet
+  $env:LLMGATEWAY_TRUSTED_PROXY = $edgeNetwork.ProxyAddress
 
   if (-not $SkipBuild) {
     & $docker build --build-arg RELEASE_VERSION=deployment-release --tag $ReleaseImage .

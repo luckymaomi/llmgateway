@@ -29,7 +29,7 @@ x-gateway: &gateway
     LLMGATEWAY_API_KEY_PEPPER_FILE: /run/secrets/api_key_pepper
     LLMGATEWAY_COORDINATION_KEY_HASH_SECRET_FILE: /run/secrets/coordination_key_hash_secret
     LLMGATEWAY_COOKIE_SECURE: "true"
-    LLMGATEWAY_TRUSTED_PROXY: 172.30.0.10
+    LLMGATEWAY_TRUSTED_PROXY: ${LLMGATEWAY_TRUSTED_PROXY:-172.30.0.10}
     LLMGATEWAY_LOG_LEVEL: ${LLMGATEWAY_LOG_LEVEL:-info}
   secrets: &gateway-secrets
     - database_url
@@ -166,7 +166,7 @@ services:
         condition: service_healthy
     networks:
       edge:
-        ipv4_address: 172.30.0.10
+        ipv4_address: ${LLMGATEWAY_TRUSTED_PROXY:-172.30.0.10}
     logging: *service-logging
 
 networks:
@@ -175,7 +175,7 @@ networks:
   edge:
     ipam:
       config:
-        - subnet: 172.30.0.0/24
+        - subnet: ${LLMGATEWAY_EDGE_SUBNET:-172.30.0.0/24}
 
 volumes:
   postgres_data: {}
