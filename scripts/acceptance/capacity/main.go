@@ -21,8 +21,9 @@ func main() {
 		databaseURL             = flag.String("database-url", "", "isolated PostgreSQL URL")
 		valkeyAddress           = flag.String("valkey-address", "", "isolated Valkey address")
 		valkeyPassword          = flag.String("valkey-password", "", "isolated Valkey password")
-		apiKeyPepper            = flag.String("api-key-pepper", "", "test-only Gateway Key HMAC pepper")
+		apiKeyPepper            = flag.String("api-key-pepper", "", "test-only API key HMAC pepper")
 		modelIDValue            = flag.String("model-id", "", "published model UUID")
+		planVersionIDValue      = flag.String("plan-version-id", "", "published service plan version UUID")
 		model                   = flag.String("model", "capacity-chat", "published model alias")
 		providerAdminURL        = flag.String("provider-admin-url", "", "isolated Provider fixture admin URL")
 		userCount               = flag.Int("users", 300, "number of distinct controlled users")
@@ -33,7 +34,8 @@ func main() {
 	flag.Parse()
 	baseURLs := splitURLs(*baseURLValue)
 	modelID, modelErr := uuid.Parse(*modelIDValue)
-	if len(baseURLs) == 0 || *databaseURL == "" || *valkeyAddress == "" || len(*apiKeyPepper) < 32 || modelErr != nil || *providerAdminURL == "" || *userCount < 200 || *userCount > 300 || *activeUsers < 1 || *activeUsers > *userCount || *duration < 10*time.Second {
+	planVersionID, planVersionErr := uuid.Parse(*planVersionIDValue)
+	if len(baseURLs) == 0 || *databaseURL == "" || *valkeyAddress == "" || len(*apiKeyPepper) < 32 || modelErr != nil || planVersionErr != nil || *providerAdminURL == "" || *userCount < 200 || *userCount > 300 || *activeUsers < 1 || *activeUsers > *userCount || *duration < 10*time.Second {
 		fmt.Fprintln(os.Stderr, "capacity acceptance arguments are invalid")
 		os.Exit(2)
 	}
@@ -51,7 +53,7 @@ func main() {
 	}
 	defer pool.Close()
 	runID := strings.ReplaceAll(uuid.NewString()[:8], "-", "")
-	users, err := provisionUsers(ctx, pool, []byte(*apiKeyPepper), modelID, *userCount, runID)
+	users, err := provisionUsers(ctx, pool, []byte(*apiKeyPepper), modelID, planVersionID, *userCount, runID)
 	if err != nil {
 		fatal(err)
 	}

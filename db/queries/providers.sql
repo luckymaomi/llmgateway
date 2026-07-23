@@ -1,119 +1,124 @@
--- name: ClaimProviderMutation :one
-INSERT INTO provider_mutations (actor_user_id, action, idempotency_key, request_fingerprint, request_id)
-VALUES (sqlc.arg(actor_user_id), sqlc.arg(action), sqlc.arg(idempotency_key), sqlc.arg(request_fingerprint), sqlc.arg(request_id))
-ON CONFLICT (actor_user_id, action, idempotency_key) DO NOTHING
+-- Provider/model rows are deterministic projections of the validated code catalog.
+-- name: UpsertProviderProjection :one
+INSERT INTO providers (catalog_id, slug, name, kind, base_url, source_url, verified_at)
+VALUES (sqlc.arg(catalog_id), sqlc.arg(slug), sqlc.arg(name), sqlc.arg(kind), sqlc.arg(base_url), sqlc.arg(source_url), sqlc.arg(verified_at))
+ON CONFLICT (catalog_id) DO UPDATE
+SET slug = excluded.slug, name = excluded.name, kind = excluded.kind, base_url = excluded.base_url,
+    source_url = excluded.source_url, verified_at = excluded.verified_at, updated_at = now()
 RETURNING *;
 
--- name: GetProviderMutation :one
-SELECT * FROM provider_mutations
-WHERE actor_user_id = sqlc.arg(actor_user_id)
-  AND action = sqlc.arg(action)
-  AND idempotency_key = sqlc.arg(idempotency_key);
-
--- name: CompleteProviderMutation :one
-UPDATE provider_mutations
-SET provider_id = sqlc.arg(provider_id), result = sqlc.arg(result)
-WHERE id = sqlc.arg(id)
+-- name: UpsertModelProjection :one
+INSERT INTO models (provider_id, public_name, upstream_name, display_name, capabilities)
+VALUES (sqlc.arg(provider_id), sqlc.arg(public_name), sqlc.arg(upstream_name), sqlc.arg(display_name), sqlc.arg(capabilities))
+ON CONFLICT (public_name) DO UPDATE
+SET provider_id = excluded.provider_id, upstream_name = excluded.upstream_name,
+    display_name = excluded.display_name, capabilities = excluded.capabilities, updated_at = now()
 RETURNING *;
 
--- name: CreateProvider :one
-INSERT INTO providers (slug, name, kind, base_url, enabled, source_url, verified_at)
-VALUES (sqlc.arg(slug), sqlc.arg(name), sqlc.arg(kind), sqlc.arg(base_url), sqlc.arg(enabled), sqlc.narg(source_url), sqlc.narg(verified_at))
-RETURNING *;
-
--- name: CreateProviderWithID :one
-INSERT INTO providers (id, slug, name, kind, base_url, enabled, source_url, verified_at)
-VALUES (sqlc.arg(id), sqlc.arg(slug), sqlc.arg(name), sqlc.arg(kind), sqlc.arg(base_url), sqlc.arg(enabled), sqlc.narg(source_url), sqlc.narg(verified_at))
-RETURNING *;
-
--- name: UpdateProvider :one
-UPDATE providers
-SET name = sqlc.arg(name),
-    kind = sqlc.arg(kind),
-    base_url = sqlc.arg(base_url),
-    verified_at = CASE
-        WHEN kind IS DISTINCT FROM sqlc.arg(kind) OR base_url IS DISTINCT FROM sqlc.arg(base_url) THEN NULL
-        ELSE verified_at
-    END,
-    updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
-WHERE id = sqlc.arg(id) RETURNING *;
-
--- name: SetProviderEnabled :one
-UPDATE providers SET enabled = sqlc.arg(enabled), updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
-WHERE id = sqlc.arg(id) RETURNING *;
+-- name: GetProviderByCatalogID :one
+SELECT * FROM providers WHERE catalog_id = sqlc.arg(catalog_id);
 
 -- name: GetProvider :one
 SELECT * FROM providers WHERE id = sqlc.arg(id);
 
--- name: GetProviderForUpdate :one
-SELECT * FROM providers WHERE id = sqlc.arg(id) FOR UPDATE;
-
 -- name: ListProviders :many
-SELECT * FROM providers ORDER BY name, id;
-
--- name: CreateModel :one
-INSERT INTO models (provider_id, public_name, upstream_name, display_name, resource_domain, capabilities, enabled)
-VALUES (sqlc.arg(provider_id), sqlc.arg(public_name), sqlc.arg(upstream_name), sqlc.arg(display_name), sqlc.arg(resource_domain), sqlc.arg(capabilities), sqlc.arg(enabled))
-RETURNING *;
-
--- name: CreateModelWithID :one
-INSERT INTO models (id, provider_id, public_name, upstream_name, display_name, resource_domain, capabilities, enabled)
-VALUES (sqlc.arg(id), sqlc.arg(provider_id), sqlc.arg(public_name), sqlc.arg(upstream_name), sqlc.arg(display_name), sqlc.arg(resource_domain), sqlc.arg(capabilities), sqlc.arg(enabled))
-RETURNING *;
-
--- name: UpdateModel :one
-UPDATE models SET public_name = sqlc.arg(public_name), upstream_name = sqlc.arg(upstream_name), display_name = sqlc.arg(display_name), resource_domain = sqlc.arg(resource_domain), capabilities = sqlc.arg(capabilities), enabled = sqlc.arg(enabled), updated_at = now()
-WHERE id = sqlc.arg(id) RETURNING *;
+SELECT provider.*,
+       (SELECT count(*) FROM resource_pools pool WHERE pool.provider_id = provider.id AND pool.status <> 'retired') AS resource_pool_count,
+       (SELECT count(*) FROM provider_credentials credential
+        JOIN resource_pools pool ON pool.id = credential.resource_pool_id
+        WHERE pool.provider_id = provider.id AND credential.status = 'active') AS active_credential_count
+FROM providers provider ORDER BY provider.name, provider.id;
 
 -- name: GetModelByPublicName :one
-SELECT m.*, p.slug AS provider_slug, p.kind AS provider_kind, p.base_url AS provider_base_url, p.enabled AS provider_enabled
-FROM models m JOIN providers p ON p.id = m.provider_id WHERE m.public_name = sqlc.arg(public_name);
+SELECT model.*, provider.slug AS provider_slug, provider.kind AS provider_kind
+FROM models model JOIN providers provider ON provider.id = model.provider_id
+WHERE model.public_name = sqlc.arg(public_name);
+
+-- name: GetModelForCredentialBinding :one
+SELECT model.* FROM models model
+JOIN resource_pool_models pool_model ON pool_model.model_id = model.id
+WHERE model.id = sqlc.arg(id) AND pool_model.resource_pool_id = sqlc.arg(resource_pool_id)
+FOR SHARE OF model;
 
 -- name: ListModels :many
-SELECT m.*, p.slug AS provider_slug, p.name AS provider_name
-FROM models m JOIN providers p ON p.id = m.provider_id ORDER BY m.public_name, m.id;
+SELECT model.*, provider.slug AS provider_slug, provider.name AS provider_name
+FROM models model JOIN providers provider ON provider.id = model.provider_id
+ORDER BY model.public_name, model.id;
 
--- name: ListPublishedModelsForKey :many
-SELECT ac.revision_id,
-       m.model_id AS id, m.public_name, m.upstream_name, m.resource_domain, m.capabilities, m.created_at,
-       p.provider_id, p.slug AS provider_slug, p.kind AS provider_kind, p.base_url AS provider_base_url
-FROM active_config ac
-JOIN config_revision_models m ON m.revision_id = ac.revision_id
-JOIN config_revision_providers p ON p.revision_id = m.revision_id AND p.provider_id = m.provider_id
-JOIN gateway_key_models key_model ON key_model.model_id = m.model_id
-WHERE ac.singleton = true
-  AND key_model.gateway_key_id = sqlc.arg(gateway_key_id)
-  AND EXISTS (
-    SELECT 1
-    FROM config_revision_routes route
-    WHERE route.revision_id = ac.revision_id
-      AND route.model_id = m.model_id
-  )
-ORDER BY m.public_name, m.model_id;
+-- name: ClaimResourcePoolMutation :one
+INSERT INTO resource_pool_mutations (actor_user_id, action, idempotency_key, request_fingerprint, request_id)
+VALUES (sqlc.arg(actor_user_id), sqlc.arg(action), sqlc.arg(idempotency_key), sqlc.arg(request_fingerprint), sqlc.arg(request_id))
+ON CONFLICT (actor_user_id, action, idempotency_key) DO NOTHING
+RETURNING *;
 
--- name: ResolvePublishedModelForKey :one
-SELECT ac.revision_id,
-       m.model_id AS id, m.public_name, m.upstream_name, m.resource_domain, m.capabilities, m.created_at,
-       p.provider_id, p.slug AS provider_slug, p.kind AS provider_kind, p.base_url AS provider_base_url,
-       EXISTS (
-         SELECT 1 FROM gateway_key_models key_model
-         WHERE key_model.gateway_key_id = sqlc.arg(gateway_key_id) AND key_model.model_id = m.model_id
-       ) AS authorized
-FROM active_config ac
-JOIN config_revision_models m ON m.revision_id = ac.revision_id
-JOIN config_revision_providers p ON p.revision_id = m.revision_id AND p.provider_id = m.provider_id
-WHERE ac.singleton = true
-  AND m.public_name = sqlc.arg(public_name);
+-- name: GetResourcePoolMutation :one
+SELECT * FROM resource_pool_mutations
+WHERE actor_user_id = sqlc.arg(actor_user_id) AND action = sqlc.arg(action) AND idempotency_key = sqlc.arg(idempotency_key);
+
+-- name: CompleteResourcePoolMutation :one
+UPDATE resource_pool_mutations SET resource_pool_id = sqlc.arg(resource_pool_id), result = sqlc.arg(result)
+WHERE id = sqlc.arg(id) RETURNING *;
+
+-- name: CreateResourcePool :one
+INSERT INTO resource_pools (provider_id, slug, name)
+VALUES (sqlc.arg(provider_id), sqlc.arg(slug), sqlc.arg(name)) RETURNING *;
+
+-- name: BindResourcePoolModel :exec
+INSERT INTO resource_pool_models (resource_pool_id, model_id)
+VALUES (sqlc.arg(resource_pool_id), sqlc.arg(model_id));
+
+-- name: GetResourcePoolForUpdate :one
+SELECT * FROM resource_pools WHERE id = sqlc.arg(id) FOR UPDATE;
+
+-- name: UpdateResourcePool :one
+UPDATE resource_pools
+SET name = sqlc.arg(name), updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
+WHERE id = sqlc.arg(id) AND status <> 'retired' AND updated_at = sqlc.arg(expected_updated_at)
+RETURNING *;
+
+-- name: SetResourcePoolStatus :one
+UPDATE resource_pools
+SET status = sqlc.arg(status),
+    retired_at = CASE WHEN sqlc.arg(status)::resource_pool_status = 'retired' THEN now() ELSE NULL END,
+    updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
+WHERE id = sqlc.arg(id) AND status <> 'retired' AND updated_at = sqlc.arg(expected_updated_at)
+RETURNING *;
+
+-- name: GetResourcePool :one
+SELECT pool.*, provider.catalog_id, provider.slug AS provider_slug, provider.name AS provider_name,
+       provider.kind AS provider_kind, provider.base_url AS provider_base_url,
+       provider.source_url AS provider_source_url, provider.verified_at AS provider_verified_at
+FROM resource_pools pool JOIN providers provider ON provider.id = pool.provider_id
+WHERE pool.id = sqlc.arg(id);
+
+-- name: ListResourcePools :many
+SELECT pool.*, provider.catalog_id, provider.slug AS provider_slug, provider.name AS provider_name,
+       provider.kind AS provider_kind, provider.base_url AS provider_base_url,
+       provider.source_url AS provider_source_url, provider.verified_at AS provider_verified_at,
+       (SELECT count(*) FROM resource_pool_models model WHERE model.resource_pool_id = pool.id) AS model_count,
+       (SELECT count(*) FROM provider_credentials credential WHERE credential.resource_pool_id = pool.id AND credential.status <> 'retired') AS credential_count,
+       (SELECT count(*) FROM provider_credentials credential WHERE credential.resource_pool_id = pool.id AND credential.status = 'active') AS active_credential_count
+FROM resource_pools pool JOIN providers provider ON provider.id = pool.provider_id
+WHERE (sqlc.arg(include_retired)::boolean OR pool.status <> 'retired')
+ORDER BY CASE pool.status WHEN 'active' THEN 0 WHEN 'disabled' THEN 1 ELSE 2 END, pool.name, pool.id;
+
+-- name: ListResourcePoolModels :many
+SELECT model.*, provider.slug AS provider_slug, provider.name AS provider_name
+FROM resource_pool_models pool_model
+JOIN models model ON model.id = pool_model.model_id
+JOIN providers provider ON provider.id = model.provider_id
+WHERE pool_model.resource_pool_id = sqlc.arg(resource_pool_id)
+ORDER BY model.public_name, model.id;
 
 -- name: CreateCredential :one
-INSERT INTO provider_credentials (id, provider_id, name, encrypted_secret, resource_domain, rpm_limit, tpm_limit, concurrency_limit)
-VALUES (sqlc.arg(id), sqlc.arg(provider_id), sqlc.arg(name), sqlc.arg(encrypted_secret), sqlc.arg(resource_domain), sqlc.narg(rpm_limit), sqlc.narg(tpm_limit), sqlc.narg(concurrency_limit))
+INSERT INTO provider_credentials (id, resource_pool_id, name, encrypted_secret, rpm_limit, tpm_limit, concurrency_limit)
+VALUES (sqlc.arg(id), sqlc.arg(resource_pool_id), sqlc.arg(name), sqlc.arg(encrypted_secret), sqlc.narg(rpm_limit), sqlc.narg(tpm_limit), sqlc.narg(concurrency_limit))
 RETURNING *;
 
 -- name: ClaimCredentialMutation :one
 INSERT INTO credential_mutations (actor_user_id, action, idempotency_key, request_fingerprint, request_id)
 VALUES (sqlc.arg(actor_user_id), sqlc.arg(action), sqlc.arg(idempotency_key), sqlc.arg(request_fingerprint), sqlc.arg(request_id))
-ON CONFLICT (actor_user_id, idempotency_key) DO NOTHING
+ON CONFLICT (actor_user_id, action, idempotency_key) DO NOTHING
 RETURNING *;
 
 -- name: GetCredentialMutation :one
@@ -121,13 +126,8 @@ SELECT * FROM credential_mutations
 WHERE actor_user_id = sqlc.arg(actor_user_id) AND action = sqlc.arg(action) AND idempotency_key = sqlc.arg(idempotency_key);
 
 -- name: CompleteCredentialMutation :one
-UPDATE credential_mutations
-SET credential_id = sqlc.arg(credential_id), result = sqlc.arg(result)
-WHERE id = sqlc.arg(id)
-RETURNING *;
-
--- name: GetModelForCredentialBinding :one
-SELECT * FROM models WHERE id = sqlc.arg(id) FOR SHARE;
+UPDATE credential_mutations SET credential_id = sqlc.arg(credential_id), result = sqlc.arg(result)
+WHERE id = sqlc.arg(id) RETURNING *;
 
 -- name: GetCredentialForUpdate :one
 SELECT * FROM provider_credentials WHERE id = sqlc.arg(id) FOR UPDATE;
@@ -136,117 +136,133 @@ SELECT * FROM provider_credentials WHERE id = sqlc.arg(id) FOR UPDATE;
 UPDATE provider_credentials
 SET name = sqlc.arg(name),
     encrypted_secret = CASE WHEN sqlc.arg(replace_secret)::boolean THEN sqlc.arg(encrypted_secret) ELSE encrypted_secret END,
-    resource_domain = sqlc.arg(resource_domain),
-    rpm_limit = sqlc.narg(rpm_limit),
-    tpm_limit = sqlc.narg(tpm_limit),
-    concurrency_limit = sqlc.narg(concurrency_limit),
-    updated_at = GREATEST(now(), updated_at + interval '1 microsecond')
-WHERE id = sqlc.arg(id) AND updated_at = sqlc.arg(expected_updated_at)
+    rpm_limit = sqlc.narg(rpm_limit), tpm_limit = sqlc.narg(tpm_limit), concurrency_limit = sqlc.narg(concurrency_limit),
+    updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
+WHERE id = sqlc.arg(id) AND status <> 'retired' AND updated_at = sqlc.arg(expected_updated_at)
 RETURNING *;
 
 -- name: SetCredentialStatus :one
 UPDATE provider_credentials
 SET status = sqlc.arg(status),
     cooldown_until = CASE WHEN sqlc.arg(status)::credential_status = 'active' THEN NULL ELSE cooldown_until END,
-    updated_at = GREATEST(now(), updated_at + interval '1 microsecond')
-WHERE id = sqlc.arg(id) AND updated_at = sqlc.arg(expected_updated_at)
+    updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
+WHERE id = sqlc.arg(id) AND status <> 'retired' AND sqlc.arg(status)::credential_status <> 'retired'
+  AND updated_at = sqlc.arg(expected_updated_at)
+RETURNING *;
+
+-- name: RetireCredential :one
+UPDATE provider_credentials
+SET status = 'retired', encrypted_secret = sqlc.arg(encrypted_tombstone), cooldown_until = NULL,
+    retired_at = now(), updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
+WHERE id = sqlc.arg(id) AND status <> 'retired' AND updated_at = sqlc.arg(expected_updated_at)
 RETURNING *;
 
 -- name: DeleteCredentialModelBindings :exec
 DELETE FROM credential_models WHERE credential_id = sqlc.arg(credential_id);
 
+-- name: BindCredentialModel :exec
+INSERT INTO credential_models (credential_id, model_id, priority, weight)
+VALUES (sqlc.arg(credential_id), sqlc.arg(model_id), sqlc.arg(priority), sqlc.arg(weight));
+
+-- name: ListCredentialModelBindings :many
+SELECT binding.credential_id, binding.model_id, model.public_name AS model_name, binding.priority, binding.weight
+FROM credential_models binding JOIN models model ON model.id = binding.model_id
+WHERE binding.credential_id = sqlc.arg(credential_id)
+ORDER BY model.public_name, binding.model_id;
+
 -- name: RecordCredentialProbe :one
 UPDATE provider_credentials
-SET last_probe_at = sqlc.arg(last_probe_at),
-    last_probe_latency_ms = sqlc.arg(last_probe_latency_ms),
-    last_probe_kind = sqlc.arg(last_probe_kind),
-    last_probe_status = sqlc.arg(last_probe_status),
-    last_probe_error_kind = sqlc.narg(last_probe_error_kind)
-WHERE id = sqlc.arg(id)
-RETURNING *;
-
--- name: UpdateCredentialState :one
-UPDATE provider_credentials
-SET status = sqlc.arg(status), cooldown_until = sqlc.narg(cooldown_until), consecutive_failures = sqlc.arg(consecutive_failures), last_success_at = sqlc.narg(last_success_at), last_error_kind = sqlc.narg(last_error_kind), updated_at = now()
-WHERE id = sqlc.arg(id) RETURNING *;
+SET last_probe_at = sqlc.arg(last_probe_at), last_probe_latency_ms = sqlc.arg(last_probe_latency_ms),
+    last_probe_kind = sqlc.arg(last_probe_kind), last_probe_status = sqlc.arg(last_probe_status),
+    last_probe_error_kind = sqlc.narg(last_probe_error_kind),
+    updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
+WHERE id = sqlc.arg(id) AND status <> 'retired' RETURNING *;
 
 -- name: RecordCredentialRuntimeSuccess :exec
 UPDATE provider_credentials
 SET status = 'active', cooldown_until = NULL, consecutive_failures = 0,
     last_success_at = sqlc.arg(observed_at), last_error_kind = NULL
-WHERE id = sqlc.arg(id) AND status <> 'disabled';
+WHERE id = sqlc.arg(id) AND status IN ('active', 'cooling');
 
 -- name: RecordCredentialRuntimeFailure :exec
 UPDATE provider_credentials
 SET status = 'cooling', cooldown_until = sqlc.narg(cooldown_until),
-    consecutive_failures = consecutive_failures + 1,
-    last_error_kind = sqlc.arg(error_kind)
-WHERE id = sqlc.arg(id) AND status <> 'disabled';
+    consecutive_failures = consecutive_failures + 1, last_error_kind = sqlc.arg(error_kind)
+WHERE id = sqlc.arg(id) AND status IN ('active', 'cooling');
+
+-- name: GetCredential :one
+SELECT credential.*, pool.provider_id, pool.name AS resource_pool_name, pool.slug AS resource_pool_slug,
+       provider.name AS provider_name, provider.kind AS provider_kind, provider.base_url AS provider_base_url
+FROM provider_credentials credential
+JOIN resource_pools pool ON pool.id = credential.resource_pool_id
+JOIN providers provider ON provider.id = pool.provider_id
+WHERE credential.id = sqlc.arg(id);
+
+-- name: GetEncryptedCredential :one
+SELECT encrypted_secret FROM provider_credentials WHERE id = sqlc.arg(id) AND status <> 'retired';
 
 -- name: ListCredentials :many
-SELECT credential.id, credential.provider_id, credential.name, credential.resource_domain, credential.status,
-       credential.rpm_limit, credential.tpm_limit, credential.concurrency_limit, credential.cooldown_until,
-       credential.consecutive_failures, credential.last_success_at, credential.last_error_kind,
-       credential.last_probe_at, credential.last_probe_latency_ms, credential.last_probe_kind,
-       credential.last_probe_status, credential.last_probe_error_kind, credential.created_at, credential.updated_at,
-       recent.terminal_count,
-       recent.completed_count,
-       recent.last_checked_unix_seconds,
-       recent.first_byte_p95_ms,
-       recent.total_latency_p95_ms
+SELECT credential.*, pool.provider_id, pool.name AS resource_pool_name, pool.slug AS resource_pool_slug,
+       provider.name AS provider_name, provider.kind AS provider_kind, provider.base_url AS provider_base_url,
+       recent.terminal_count, recent.completed_count, recent.last_checked_unix_seconds,
+       recent.first_byte_p95_ms, recent.total_latency_p95_ms
 FROM provider_credentials credential
+JOIN resource_pools pool ON pool.id = credential.resource_pool_id
+JOIN providers provider ON provider.id = pool.provider_id
 LEFT JOIN LATERAL (
-  SELECT
-    count(*) FILTER (WHERE attempt.status IN ('completed', 'failed', 'uncertain')) AS terminal_count,
-    count(*) FILTER (WHERE attempt.status = 'completed') AS completed_count,
-    COALESCE(extract(epoch FROM max(COALESCE(attempt.completed_at, attempt.first_byte_at, attempt.sent_at, attempt.created_at))
-      FILTER (WHERE attempt.status IN ('completed', 'failed', 'uncertain'))), -1)::bigint AS last_checked_unix_seconds,
-    COALESCE((percentile_cont(0.95) WITHIN GROUP (
-      ORDER BY extract(epoch FROM (attempt.first_byte_at - attempt.sent_at)) * 1000
-    ) FILTER (WHERE attempt.sent_at IS NOT NULL AND attempt.first_byte_at IS NOT NULL))::bigint, -1)::bigint AS first_byte_p95_ms,
-    COALESCE((percentile_cont(0.95) WITHIN GROUP (
-      ORDER BY extract(epoch FROM (attempt.completed_at - attempt.sent_at)) * 1000
-    ) FILTER (WHERE attempt.sent_at IS NOT NULL AND attempt.completed_at IS NOT NULL))::bigint, -1)::bigint AS total_latency_p95_ms
+  SELECT count(*) FILTER (WHERE attempt.status IN ('completed', 'failed', 'uncertain')) AS terminal_count,
+         count(*) FILTER (WHERE attempt.status = 'completed') AS completed_count,
+         COALESCE(extract(epoch FROM max(COALESCE(attempt.completed_at, attempt.first_byte_at, attempt.sent_at, attempt.created_at))
+           FILTER (WHERE attempt.status IN ('completed', 'failed', 'uncertain'))), -1)::bigint AS last_checked_unix_seconds,
+         COALESCE((percentile_cont(0.95) WITHIN GROUP (ORDER BY extract(epoch FROM (attempt.first_byte_at - attempt.sent_at)) * 1000)
+           FILTER (WHERE attempt.sent_at IS NOT NULL AND attempt.first_byte_at IS NOT NULL))::bigint, -1)::bigint AS first_byte_p95_ms,
+         COALESCE((percentile_cont(0.95) WITHIN GROUP (ORDER BY extract(epoch FROM (attempt.completed_at - attempt.sent_at)) * 1000)
+           FILTER (WHERE attempt.sent_at IS NOT NULL AND attempt.completed_at IS NOT NULL))::bigint, -1)::bigint AS total_latency_p95_ms
   FROM request_attempts attempt
-  WHERE attempt.credential_id = credential.id
-    AND attempt.created_at >= CURRENT_TIMESTAMP - interval '24 hours'
+  WHERE attempt.credential_id = credential.id AND attempt.created_at >= now() - interval '24 hours'
 ) recent ON true
-ORDER BY credential.name, credential.id;
+WHERE (sqlc.arg(include_retired)::boolean OR credential.status <> 'retired')
+ORDER BY CASE credential.status WHEN 'active' THEN 0 WHEN 'cooling' THEN 1 WHEN 'disabled' THEN 2 ELSE 3 END,
+         credential.created_at DESC, credential.id;
 
--- name: GetCredentialSecret :one
-SELECT * FROM provider_credentials WHERE id = sqlc.arg(id);
-
--- name: BindCredentialModel :exec
-INSERT INTO credential_models (credential_id, model_id, priority, weight)
-VALUES (sqlc.arg(credential_id), sqlc.arg(model_id), sqlc.arg(priority), sqlc.arg(weight))
-ON CONFLICT (credential_id, model_id) DO UPDATE SET priority = excluded.priority, weight = excluded.weight;
-
--- name: ListCredentialModelBindings :many
-SELECT cm.credential_id, m.id AS model_id, m.public_name, cm.priority, cm.weight
-FROM credential_models cm
-JOIN models m ON m.id = cm.model_id
-ORDER BY cm.credential_id, m.public_name, m.id;
-
--- name: ListCredentialModelBindingsForCredential :many
-SELECT cm.credential_id, m.id AS model_id, m.public_name, cm.priority, cm.weight
-FROM credential_models cm
-JOIN models m ON m.id = cm.model_id
-WHERE cm.credential_id = sqlc.arg(credential_id)
-ORDER BY m.public_name, m.id;
-
--- name: ListPublishedCandidates :many
-SELECT route.credential_id AS id, route.priority, route.weight,
-       credential.rpm_limit, credential.tpm_limit, credential.concurrency_limit,
-       live_credential.consecutive_failures, live_credential.last_success_at, live_credential.cooldown_until
-FROM config_revision_routes route
-JOIN config_revision_credentials credential
-  ON credential.revision_id = route.revision_id AND credential.credential_id = route.credential_id
-JOIN provider_credentials live_credential ON live_credential.id = credential.credential_id
-WHERE route.revision_id = sqlc.arg(revision_id)
-  AND route.model_id = sqlc.arg(model_id)
-  AND credential.resource_domain = sqlc.arg(resource_domain)
-  AND (
-    live_credential.status = 'active'
-    OR (live_credential.status = 'cooling' AND live_credential.cooldown_until IS NOT NULL)
+-- name: ListAvailableModelsForKey :many
+SELECT DISTINCT model.id, model.public_name, model.upstream_name, model.capabilities, model.created_at,
+       provider.id AS provider_id, provider.slug AS provider_slug, provider.kind AS provider_kind,
+       provider.base_url AS provider_base_url
+FROM gateway_key_models key_model
+JOIN gateway_keys key ON key.id = key_model.gateway_key_id
+JOIN models model ON model.id = key_model.model_id
+JOIN providers provider ON provider.id = model.provider_id
+WHERE key_model.gateway_key_id = sqlc.arg(gateway_key_id)
+  AND key.revoked_at IS NULL AND (key.expires_at IS NULL OR key.expires_at > now())
+  AND EXISTS (
+    SELECT 1 FROM subscriptions subscription
+    JOIN service_plan_version_routes route ON route.service_plan_version_id = subscription.service_plan_version_id
+    JOIN resource_pools pool ON pool.id = route.resource_pool_id
+    WHERE subscription.user_id = key.user_id AND route.model_id = model.id
+      AND subscription.status = 'active' AND subscription.starts_at <= now() AND subscription.expires_at > now()
+      AND pool.status = 'active'
   )
-ORDER BY route.priority, route.credential_id;
+ORDER BY model.public_name, model.id;
+
+-- name: ResolveAvailableModelForKey :one
+SELECT model.id, model.public_name, model.upstream_name, model.capabilities, model.created_at,
+       provider.id AS provider_id, provider.slug AS provider_slug, provider.kind AS provider_kind,
+       provider.base_url AS provider_base_url,
+       EXISTS (
+         SELECT 1 FROM gateway_key_models key_model
+         WHERE key_model.gateway_key_id = sqlc.arg(gateway_key_id) AND key_model.model_id = model.id
+       ) AS key_authorized
+FROM models model JOIN providers provider ON provider.id = model.provider_id
+WHERE model.public_name = sqlc.arg(public_name);
+
+-- name: ListResourcePoolCandidates :many
+SELECT credential.id, binding.priority, binding.weight,
+       credential.rpm_limit, credential.tpm_limit, credential.concurrency_limit,
+       credential.consecutive_failures, credential.last_success_at, credential.cooldown_until
+FROM provider_credentials credential
+JOIN credential_models binding ON binding.credential_id = credential.id
+JOIN resource_pools pool ON pool.id = credential.resource_pool_id
+WHERE credential.resource_pool_id = sqlc.arg(resource_pool_id) AND binding.model_id = sqlc.arg(model_id)
+  AND pool.status = 'active' AND credential.status IN ('active', 'cooling')
+ORDER BY binding.priority, credential.id;

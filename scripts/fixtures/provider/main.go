@@ -94,7 +94,7 @@ func main() {
 func (f *fixture) providerRoutes() http.Handler {
 	router := http.NewServeMux()
 	router.HandleFunc("/v1/models", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.Header.Get("Authorization") != "Bearer core-upstream-secret" {
+		if r.Method != http.MethodGet || !validFixtureAuthorization(r.Header.Get("Authorization")) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -105,7 +105,7 @@ func (f *fixture) providerRoutes() http.Handler {
 		})
 	})
 	router.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.Header.Get("Authorization") != "Bearer core-upstream-secret" {
+		if r.Method != http.MethodPost || !validFixtureAuthorization(r.Header.Get("Authorization")) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -191,6 +191,10 @@ func (f *fixture) providerRoutes() http.Handler {
 		})
 	})
 	return router
+}
+
+func validFixtureAuthorization(value string) bool {
+	return value == "Bearer core-upstream-secret" || value == "Bearer browser-upstream-secret-replaced"
 }
 
 func (f *fixture) adminRoutes() http.Handler {

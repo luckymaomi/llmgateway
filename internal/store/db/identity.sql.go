@@ -13,8 +13,7 @@ import (
 )
 
 const bindGatewayKeyModel = `-- name: BindGatewayKeyModel :exec
-INSERT INTO gateway_key_models (gateway_key_id, model_id)
-VALUES ($1, $2)
+INSERT INTO gateway_key_models (gateway_key_id, model_id) VALUES ($1, $2)
 `
 
 type BindGatewayKeyModelParams struct {
@@ -62,94 +61,43 @@ func (q *Queries) ClaimGatewayKeyMutation(ctx context.Context, arg ClaimGatewayK
 	return i, err
 }
 
-const claimInvitation = `-- name: ClaimInvitation :execrows
-UPDATE invitations
-SET claimed_by = $1, claimed_at = now()
-WHERE id = $2 AND claimed_at IS NULL AND revoked_at IS NULL AND expires_at > now()
+const claimMemberMutation = `-- name: ClaimMemberMutation :one
+INSERT INTO member_mutations (actor_user_id, action, idempotency_key, user_id, request_fingerprint, request_id, encrypted_one_time_secret)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (actor_user_id, action, idempotency_key) DO NOTHING
+RETURNING id, actor_user_id, action, idempotency_key, user_id, request_fingerprint, request_id, encrypted_one_time_secret, result, created_at
 `
 
-type ClaimInvitationParams struct {
-	ClaimedBy *uuid.UUID `json:"claimed_by"`
-	ID        uuid.UUID  `json:"id"`
+type ClaimMemberMutationParams struct {
+	ActorUserID            uuid.UUID  `json:"actor_user_id"`
+	Action                 string     `json:"action"`
+	IdempotencyKey         uuid.UUID  `json:"idempotency_key"`
+	UserID                 *uuid.UUID `json:"user_id"`
+	RequestFingerprint     []byte     `json:"request_fingerprint"`
+	RequestID              string     `json:"request_id"`
+	EncryptedOneTimeSecret []byte     `json:"encrypted_one_time_secret"`
 }
 
-func (q *Queries) ClaimInvitation(ctx context.Context, arg ClaimInvitationParams) (int64, error) {
-	result, err := q.db.Exec(ctx, claimInvitation, arg.ClaimedBy, arg.ID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const claimInvitationMutation = `-- name: ClaimInvitationMutation :one
-INSERT INTO invitation_mutations (actor_user_id, idempotency_key, request_fingerprint, request_id)
-VALUES ($1, $2, $3, $4)
-ON CONFLICT (actor_user_id, idempotency_key) DO NOTHING
-RETURNING id, actor_user_id, idempotency_key, request_fingerprint, request_id, invitation_id, result, created_at
-`
-
-type ClaimInvitationMutationParams struct {
-	ActorUserID        uuid.UUID `json:"actor_user_id"`
-	IdempotencyKey     uuid.UUID `json:"idempotency_key"`
-	RequestFingerprint []byte    `json:"request_fingerprint"`
-	RequestID          string    `json:"request_id"`
-}
-
-func (q *Queries) ClaimInvitationMutation(ctx context.Context, arg ClaimInvitationMutationParams) (InvitationMutation, error) {
-	row := q.db.QueryRow(ctx, claimInvitationMutation,
+func (q *Queries) ClaimMemberMutation(ctx context.Context, arg ClaimMemberMutationParams) (MemberMutation, error) {
+	row := q.db.QueryRow(ctx, claimMemberMutation,
 		arg.ActorUserID,
-		arg.IdempotencyKey,
-		arg.RequestFingerprint,
-		arg.RequestID,
-	)
-	var i InvitationMutation
-	err := row.Scan(
-		&i.ID,
-		&i.ActorUserID,
-		&i.IdempotencyKey,
-		&i.RequestFingerprint,
-		&i.RequestID,
-		&i.InvitationID,
-		&i.Result,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
-const claimMemberPasswordResetMutation = `-- name: ClaimMemberPasswordResetMutation :one
-INSERT INTO member_password_reset_mutations (
-  actor_user_id, idempotency_key, user_id, request_fingerprint, request_id
-) VALUES (
-  $1, $2, $3, $4, $5
-)
-ON CONFLICT (actor_user_id, idempotency_key) DO NOTHING
-RETURNING id, actor_user_id, idempotency_key, user_id, request_fingerprint, request_id, result, created_at
-`
-
-type ClaimMemberPasswordResetMutationParams struct {
-	ActorUserID        uuid.UUID `json:"actor_user_id"`
-	IdempotencyKey     uuid.UUID `json:"idempotency_key"`
-	UserID             uuid.UUID `json:"user_id"`
-	RequestFingerprint []byte    `json:"request_fingerprint"`
-	RequestID          string    `json:"request_id"`
-}
-
-func (q *Queries) ClaimMemberPasswordResetMutation(ctx context.Context, arg ClaimMemberPasswordResetMutationParams) (MemberPasswordResetMutation, error) {
-	row := q.db.QueryRow(ctx, claimMemberPasswordResetMutation,
-		arg.ActorUserID,
+		arg.Action,
 		arg.IdempotencyKey,
 		arg.UserID,
 		arg.RequestFingerprint,
 		arg.RequestID,
+		arg.EncryptedOneTimeSecret,
 	)
-	var i MemberPasswordResetMutation
+	var i MemberMutation
 	err := row.Scan(
 		&i.ID,
 		&i.ActorUserID,
+		&i.Action,
 		&i.IdempotencyKey,
 		&i.UserID,
 		&i.RequestFingerprint,
 		&i.RequestID,
+		&i.EncryptedOneTimeSecret,
 		&i.Result,
 		&i.CreatedAt,
 	)
@@ -157,10 +105,8 @@ func (q *Queries) ClaimMemberPasswordResetMutation(ctx context.Context, arg Clai
 }
 
 const completeGatewayKeyMutation = `-- name: CompleteGatewayKeyMutation :one
-UPDATE gateway_key_mutations
-SET gateway_key_id = $1, result = $2
-WHERE id = $3
-RETURNING id, actor_user_id, idempotency_key, request_fingerprint, request_id, gateway_key_id, result, created_at
+UPDATE gateway_key_mutations SET gateway_key_id = $1, result = $2
+WHERE id = $3 RETURNING id, actor_user_id, idempotency_key, request_fingerprint, request_id, gateway_key_id, result, created_at
 `
 
 type CompleteGatewayKeyMutationParams struct {
@@ -185,57 +131,31 @@ func (q *Queries) CompleteGatewayKeyMutation(ctx context.Context, arg CompleteGa
 	return i, err
 }
 
-const completeInvitationMutation = `-- name: CompleteInvitationMutation :one
-UPDATE invitation_mutations
-SET invitation_id = $1, result = $2
-WHERE id = $3 AND invitation_id IS NULL
-RETURNING id, actor_user_id, idempotency_key, request_fingerprint, request_id, invitation_id, result, created_at
+const completeMemberMutation = `-- name: CompleteMemberMutation :one
+UPDATE member_mutations
+SET user_id = $1, result = $2
+WHERE id = $3
+RETURNING id, actor_user_id, action, idempotency_key, user_id, request_fingerprint, request_id, encrypted_one_time_secret, result, created_at
 `
 
-type CompleteInvitationMutationParams struct {
-	InvitationID *uuid.UUID `json:"invitation_id"`
-	Result       []byte     `json:"result"`
-	ID           uuid.UUID  `json:"id"`
+type CompleteMemberMutationParams struct {
+	UserID *uuid.UUID `json:"user_id"`
+	Result []byte     `json:"result"`
+	ID     uuid.UUID  `json:"id"`
 }
 
-func (q *Queries) CompleteInvitationMutation(ctx context.Context, arg CompleteInvitationMutationParams) (InvitationMutation, error) {
-	row := q.db.QueryRow(ctx, completeInvitationMutation, arg.InvitationID, arg.Result, arg.ID)
-	var i InvitationMutation
+func (q *Queries) CompleteMemberMutation(ctx context.Context, arg CompleteMemberMutationParams) (MemberMutation, error) {
+	row := q.db.QueryRow(ctx, completeMemberMutation, arg.UserID, arg.Result, arg.ID)
+	var i MemberMutation
 	err := row.Scan(
 		&i.ID,
 		&i.ActorUserID,
-		&i.IdempotencyKey,
-		&i.RequestFingerprint,
-		&i.RequestID,
-		&i.InvitationID,
-		&i.Result,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
-const completeMemberPasswordResetMutation = `-- name: CompleteMemberPasswordResetMutation :one
-UPDATE member_password_reset_mutations
-SET result = $1
-WHERE id = $2
-RETURNING id, actor_user_id, idempotency_key, user_id, request_fingerprint, request_id, result, created_at
-`
-
-type CompleteMemberPasswordResetMutationParams struct {
-	Result []byte    `json:"result"`
-	ID     uuid.UUID `json:"id"`
-}
-
-func (q *Queries) CompleteMemberPasswordResetMutation(ctx context.Context, arg CompleteMemberPasswordResetMutationParams) (MemberPasswordResetMutation, error) {
-	row := q.db.QueryRow(ctx, completeMemberPasswordResetMutation, arg.Result, arg.ID)
-	var i MemberPasswordResetMutation
-	err := row.Scan(
-		&i.ID,
-		&i.ActorUserID,
+		&i.Action,
 		&i.IdempotencyKey,
 		&i.UserID,
 		&i.RequestFingerprint,
 		&i.RequestID,
+		&i.EncryptedOneTimeSecret,
 		&i.Result,
 		&i.CreatedAt,
 	)
@@ -243,11 +163,19 @@ func (q *Queries) CompleteMemberPasswordResetMutation(ctx context.Context, arg C
 }
 
 const countUsers = `-- name: CountUsers :one
-SELECT count(*) FROM users WHERE ($1::user_status IS NULL OR status = $1)
+SELECT count(*) FROM users
+WHERE status <> 'deleted'
+  AND ($1::user_status IS NULL OR status = $1)
+  AND ($2::text = '' OR concat_ws(' ', email, display_name) ILIKE '%' || $2::text || '%')
 `
 
-func (q *Queries) CountUsers(ctx context.Context, status *UserStatus) (int64, error) {
-	row := q.db.QueryRow(ctx, countUsers, status)
+type CountUsersParams struct {
+	Status *UserStatus `json:"status"`
+	Search string      `json:"search"`
+}
+
+func (q *Queries) CountUsers(ctx context.Context, arg CountUsersParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countUsers, arg.Status, arg.Search)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -290,41 +218,6 @@ func (q *Queries) CreateGatewayKey(ctx context.Context, arg CreateGatewayKeyPara
 	return i, err
 }
 
-const createInvitation = `-- name: CreateInvitation :one
-INSERT INTO invitations (code_digest, code_prefix, created_by, expires_at)
-VALUES ($1, $2, $3, $4)
-RETURNING id, code_digest, code_prefix, created_by, expires_at, claimed_by, claimed_at, revoked_at, created_at
-`
-
-type CreateInvitationParams struct {
-	CodeDigest []byte             `json:"code_digest"`
-	CodePrefix string             `json:"code_prefix"`
-	CreatedBy  uuid.UUID          `json:"created_by"`
-	ExpiresAt  pgtype.Timestamptz `json:"expires_at"`
-}
-
-func (q *Queries) CreateInvitation(ctx context.Context, arg CreateInvitationParams) (Invitation, error) {
-	row := q.db.QueryRow(ctx, createInvitation,
-		arg.CodeDigest,
-		arg.CodePrefix,
-		arg.CreatedBy,
-		arg.ExpiresAt,
-	)
-	var i Invitation
-	err := row.Scan(
-		&i.ID,
-		&i.CodeDigest,
-		&i.CodePrefix,
-		&i.CreatedBy,
-		&i.ExpiresAt,
-		&i.ClaimedBy,
-		&i.ClaimedAt,
-		&i.RevokedAt,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
 const createSession = `-- name: CreateSession :one
 INSERT INTO sessions (user_id, token_digest, csrf_digest, expires_at)
 VALUES ($1, $2, $3, $4)
@@ -360,18 +253,17 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (S
 }
 
 const createUser = `-- name: CreateUser :one
-INSERT INTO users (email, display_name, password_hash, role, status, approved_at)
-VALUES (lower($1), $2, $3, $4, $5, $6)
-RETURNING id, email, display_name, password_hash, role, status, approved_at, disabled_at, created_at, updated_at
+INSERT INTO users (email, display_name, password_hash, role, status)
+VALUES (lower($1), $2, $3, $4, $5)
+RETURNING id, email, display_name, password_hash, role, status, disabled_at, deleted_at, created_at, updated_at
 `
 
 type CreateUserParams struct {
-	Email        string             `json:"email"`
-	DisplayName  string             `json:"display_name"`
-	PasswordHash string             `json:"password_hash"`
-	Role         UserRole           `json:"role"`
-	Status       UserStatus         `json:"status"`
-	ApprovedAt   pgtype.Timestamptz `json:"approved_at"`
+	Email        string     `json:"email"`
+	DisplayName  string     `json:"display_name"`
+	PasswordHash string     `json:"password_hash"`
+	Role         UserRole   `json:"role"`
+	Status       UserStatus `json:"status"`
 }
 
 func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, error) {
@@ -381,7 +273,6 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		arg.PasswordHash,
 		arg.Role,
 		arg.Status,
-		arg.ApprovedAt,
 	)
 	var i User
 	err := row.Scan(
@@ -391,8 +282,8 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.PasswordHash,
 		&i.Role,
 		&i.Status,
-		&i.ApprovedAt,
 		&i.DisabledAt,
+		&i.DeletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -412,12 +303,10 @@ func (q *Queries) DeleteExpiredSessions(ctx context.Context) (int64, error) {
 }
 
 const getGatewayKeyByDigest = `-- name: GetGatewayKeyByDigest :one
-SELECT k.id, k.user_id, k.name, k.prefix, k.secret_digest, k.expires_at, k.revoked_at, k.last_used_at, k.created_at, u.status AS user_status, u.role AS user_role
-FROM gateway_keys k
-JOIN users u ON u.id = k.user_id
-WHERE k.secret_digest = $1
-  AND k.revoked_at IS NULL
-  AND (k.expires_at IS NULL OR k.expires_at > now())
+SELECT key.id, key.user_id, key.name, key.prefix, key.secret_digest, key.expires_at, key.revoked_at, key.last_used_at, key.created_at, member.status AS user_status, member.role AS user_role
+FROM gateway_keys key JOIN users member ON member.id = key.user_id
+WHERE key.secret_digest = $1 AND key.revoked_at IS NULL
+  AND (key.expires_at IS NULL OR key.expires_at > now())
 `
 
 type GetGatewayKeyByDigestRow struct {
@@ -456,9 +345,7 @@ func (q *Queries) GetGatewayKeyByDigest(ctx context.Context, secretDigest []byte
 const getGatewayKeyForReplacement = `-- name: GetGatewayKeyForReplacement :one
 SELECT id, user_id, name, prefix, expires_at, revoked_at, last_used_at, created_at
 FROM gateway_keys
-WHERE id = $1
-  AND revoked_at IS NULL
-  AND (expires_at IS NULL OR expires_at > now())
+WHERE id = $1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now())
 FOR UPDATE
 `
 
@@ -490,10 +377,7 @@ func (q *Queries) GetGatewayKeyForReplacement(ctx context.Context, id uuid.UUID)
 }
 
 const getGatewayKeyForRevocation = `-- name: GetGatewayKeyForRevocation :one
-SELECT id, user_id, revoked_at
-FROM gateway_keys
-WHERE id = $1
-FOR UPDATE
+SELECT id, user_id, revoked_at FROM gateway_keys WHERE id = $1 FOR UPDATE
 `
 
 type GetGatewayKeyForRevocationRow struct {
@@ -536,12 +420,10 @@ func (q *Queries) GetGatewayKeyMutation(ctx context.Context, arg GetGatewayKeyMu
 }
 
 const getGatewayKeyPrincipalByID = `-- name: GetGatewayKeyPrincipalByID :one
-SELECT k.id, k.user_id, k.name, k.prefix, k.secret_digest, k.expires_at, k.revoked_at, k.last_used_at, k.created_at, u.status AS user_status, u.role AS user_role
-FROM gateway_keys k
-JOIN users u ON u.id = k.user_id
-WHERE k.id = $1
-  AND k.revoked_at IS NULL
-  AND (k.expires_at IS NULL OR k.expires_at > now())
+SELECT key.id, key.user_id, key.name, key.prefix, key.secret_digest, key.expires_at, key.revoked_at, key.last_used_at, key.created_at, member.status AS user_status, member.role AS user_role
+FROM gateway_keys key JOIN users member ON member.id = key.user_id
+WHERE key.id = $1 AND key.revoked_at IS NULL
+  AND (key.expires_at IS NULL OR key.expires_at > now())
 `
 
 type GetGatewayKeyPrincipalByIDRow struct {
@@ -578,9 +460,7 @@ func (q *Queries) GetGatewayKeyPrincipalByID(ctx context.Context, id uuid.UUID) 
 }
 
 const getGatewayKeyRevocationState = `-- name: GetGatewayKeyRevocationState :one
-SELECT user_id, revoked_at
-FROM gateway_keys
-WHERE id = $1
+SELECT user_id, revoked_at FROM gateway_keys WHERE id = $1
 `
 
 type GetGatewayKeyRevocationStateRow struct {
@@ -595,73 +475,29 @@ func (q *Queries) GetGatewayKeyRevocationState(ctx context.Context, id uuid.UUID
 	return i, err
 }
 
-const getInvitationByDigestForUpdate = `-- name: GetInvitationByDigestForUpdate :one
-SELECT id, code_digest, code_prefix, created_by, expires_at, claimed_by, claimed_at, revoked_at, created_at FROM invitations WHERE code_digest = $1 FOR UPDATE
+const getMemberMutation = `-- name: GetMemberMutation :one
+SELECT id, actor_user_id, action, idempotency_key, user_id, request_fingerprint, request_id, encrypted_one_time_secret, result, created_at FROM member_mutations
+WHERE actor_user_id = $1 AND action = $2 AND idempotency_key = $3
 `
 
-func (q *Queries) GetInvitationByDigestForUpdate(ctx context.Context, codeDigest []byte) (Invitation, error) {
-	row := q.db.QueryRow(ctx, getInvitationByDigestForUpdate, codeDigest)
-	var i Invitation
-	err := row.Scan(
-		&i.ID,
-		&i.CodeDigest,
-		&i.CodePrefix,
-		&i.CreatedBy,
-		&i.ExpiresAt,
-		&i.ClaimedBy,
-		&i.ClaimedAt,
-		&i.RevokedAt,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
-const getInvitationMutation = `-- name: GetInvitationMutation :one
-SELECT id, actor_user_id, idempotency_key, request_fingerprint, request_id, invitation_id, result, created_at FROM invitation_mutations
-WHERE actor_user_id = $1 AND idempotency_key = $2
-`
-
-type GetInvitationMutationParams struct {
+type GetMemberMutationParams struct {
 	ActorUserID    uuid.UUID `json:"actor_user_id"`
+	Action         string    `json:"action"`
 	IdempotencyKey uuid.UUID `json:"idempotency_key"`
 }
 
-func (q *Queries) GetInvitationMutation(ctx context.Context, arg GetInvitationMutationParams) (InvitationMutation, error) {
-	row := q.db.QueryRow(ctx, getInvitationMutation, arg.ActorUserID, arg.IdempotencyKey)
-	var i InvitationMutation
+func (q *Queries) GetMemberMutation(ctx context.Context, arg GetMemberMutationParams) (MemberMutation, error) {
+	row := q.db.QueryRow(ctx, getMemberMutation, arg.ActorUserID, arg.Action, arg.IdempotencyKey)
+	var i MemberMutation
 	err := row.Scan(
 		&i.ID,
 		&i.ActorUserID,
-		&i.IdempotencyKey,
-		&i.RequestFingerprint,
-		&i.RequestID,
-		&i.InvitationID,
-		&i.Result,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
-const getMemberPasswordResetMutation = `-- name: GetMemberPasswordResetMutation :one
-SELECT id, actor_user_id, idempotency_key, user_id, request_fingerprint, request_id, result, created_at FROM member_password_reset_mutations
-WHERE actor_user_id = $1 AND idempotency_key = $2
-`
-
-type GetMemberPasswordResetMutationParams struct {
-	ActorUserID    uuid.UUID `json:"actor_user_id"`
-	IdempotencyKey uuid.UUID `json:"idempotency_key"`
-}
-
-func (q *Queries) GetMemberPasswordResetMutation(ctx context.Context, arg GetMemberPasswordResetMutationParams) (MemberPasswordResetMutation, error) {
-	row := q.db.QueryRow(ctx, getMemberPasswordResetMutation, arg.ActorUserID, arg.IdempotencyKey)
-	var i MemberPasswordResetMutation
-	err := row.Scan(
-		&i.ID,
-		&i.ActorUserID,
+		&i.Action,
 		&i.IdempotencyKey,
 		&i.UserID,
 		&i.RequestFingerprint,
 		&i.RequestID,
+		&i.EncryptedOneTimeSecret,
 		&i.Result,
 		&i.CreatedAt,
 	)
@@ -669,26 +505,33 @@ func (q *Queries) GetMemberPasswordResetMutation(ctx context.Context, arg GetMem
 }
 
 const getModelForGatewayKeyBinding = `-- name: GetModelForGatewayKeyBinding :one
-SELECT model.model_id AS id, model.public_name
-FROM active_config active
-JOIN config_revision_models model ON model.revision_id = active.revision_id
-WHERE active.singleton = true AND model.model_id = $1
+SELECT model.id, model.public_name
+FROM models model
+WHERE model.id = $1
   AND EXISTS (
     SELECT 1
-    FROM config_revision_routes route
-    WHERE route.revision_id = active.revision_id
-      AND route.model_id = model.model_id
+    FROM subscriptions subscription
+    JOIN service_plan_versions version ON version.id = subscription.service_plan_version_id
+    JOIN service_plan_version_routes route ON route.service_plan_version_id = version.id AND route.model_id = model.id
+    WHERE subscription.user_id = $2
+      AND subscription.status = 'active'
+      AND subscription.starts_at <= now() AND subscription.expires_at > now()
   )
-FOR SHARE OF active
+FOR SHARE
 `
+
+type GetModelForGatewayKeyBindingParams struct {
+	ID     uuid.UUID `json:"id"`
+	UserID uuid.UUID `json:"user_id"`
+}
 
 type GetModelForGatewayKeyBindingRow struct {
 	ID         uuid.UUID `json:"id"`
 	PublicName string    `json:"public_name"`
 }
 
-func (q *Queries) GetModelForGatewayKeyBinding(ctx context.Context, id uuid.UUID) (GetModelForGatewayKeyBindingRow, error) {
-	row := q.db.QueryRow(ctx, getModelForGatewayKeyBinding, id)
+func (q *Queries) GetModelForGatewayKeyBinding(ctx context.Context, arg GetModelForGatewayKeyBindingParams) (GetModelForGatewayKeyBindingRow, error) {
+	row := q.db.QueryRow(ctx, getModelForGatewayKeyBinding, arg.ID, arg.UserID)
 	var i GetModelForGatewayKeyBindingRow
 	err := row.Scan(&i.ID, &i.PublicName)
 	return i, err
@@ -696,11 +539,8 @@ func (q *Queries) GetModelForGatewayKeyBinding(ctx context.Context, id uuid.UUID
 
 const getSessionByDigest = `-- name: GetSessionByDigest :one
 SELECT s.id, s.user_id, s.token_digest, s.csrf_digest, s.expires_at, s.revoked_at, s.last_seen_at, s.created_at, u.email, u.display_name, u.role, u.status AS user_status
-FROM sessions s
-JOIN users u ON u.id = s.user_id
-WHERE s.token_digest = $1
-  AND s.revoked_at IS NULL
-  AND s.expires_at > now()
+FROM sessions s JOIN users u ON u.id = s.user_id
+WHERE s.token_digest = $1 AND s.revoked_at IS NULL AND s.expires_at > now()
 `
 
 type GetSessionByDigestRow struct {
@@ -739,7 +579,7 @@ func (q *Queries) GetSessionByDigest(ctx context.Context, tokenDigest []byte) (G
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, email, display_name, password_hash, role, status, approved_at, disabled_at, created_at, updated_at FROM users WHERE lower(email) = lower($1)
+SELECT id, email, display_name, password_hash, role, status, disabled_at, deleted_at, created_at, updated_at FROM users WHERE lower(email) = lower($1) AND status <> 'deleted'
 `
 
 func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error) {
@@ -752,8 +592,8 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 		&i.PasswordHash,
 		&i.Role,
 		&i.Status,
-		&i.ApprovedAt,
 		&i.DisabledAt,
+		&i.DeletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -761,7 +601,7 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 }
 
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, email, display_name, password_hash, role, status, approved_at, disabled_at, created_at, updated_at FROM users WHERE id = $1
+SELECT id, email, display_name, password_hash, role, status, disabled_at, deleted_at, created_at, updated_at FROM users WHERE id = $1
 `
 
 func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
@@ -774,8 +614,8 @@ func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
 		&i.PasswordHash,
 		&i.Role,
 		&i.Status,
-		&i.ApprovedAt,
 		&i.DisabledAt,
+		&i.DeletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -783,7 +623,7 @@ func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
 }
 
 const getUserForAdministrativeRecovery = `-- name: GetUserForAdministrativeRecovery :one
-SELECT id, email, display_name, password_hash, role, status, approved_at, disabled_at, created_at, updated_at FROM users WHERE id = $1 FOR UPDATE
+SELECT id, email, display_name, password_hash, role, status, disabled_at, deleted_at, created_at, updated_at FROM users WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) GetUserForAdministrativeRecovery(ctx context.Context, id uuid.UUID) (User, error) {
@@ -796,8 +636,8 @@ func (q *Queries) GetUserForAdministrativeRecovery(ctx context.Context, id uuid.
 		&i.PasswordHash,
 		&i.Role,
 		&i.Status,
-		&i.ApprovedAt,
 		&i.DisabledAt,
+		&i.DeletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -805,7 +645,7 @@ func (q *Queries) GetUserForAdministrativeRecovery(ctx context.Context, id uuid.
 }
 
 const getUserForGatewayKeyCreation = `-- name: GetUserForGatewayKeyCreation :one
-SELECT id, email, display_name, password_hash, role, status, approved_at, disabled_at, created_at, updated_at FROM users WHERE id = $1 FOR SHARE
+SELECT id, email, display_name, password_hash, role, status, disabled_at, deleted_at, created_at, updated_at FROM users WHERE id = $1 AND status = 'active' FOR SHARE
 `
 
 func (q *Queries) GetUserForGatewayKeyCreation(ctx context.Context, id uuid.UUID) (User, error) {
@@ -818,8 +658,8 @@ func (q *Queries) GetUserForGatewayKeyCreation(ctx context.Context, id uuid.UUID
 		&i.PasswordHash,
 		&i.Role,
 		&i.Status,
-		&i.ApprovedAt,
 		&i.DisabledAt,
+		&i.DeletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -838,10 +678,7 @@ func (q *Queries) IsBootstrapped(ctx context.Context) (bool, error) {
 }
 
 const isGatewayKeyAuthorizedForModel = `-- name: IsGatewayKeyAuthorizedForModel :one
-SELECT EXISTS (
-  SELECT 1 FROM gateway_key_models
-  WHERE gateway_key_id = $1 AND model_id = $2
-)
+SELECT EXISTS (SELECT 1 FROM gateway_key_models WHERE gateway_key_id = $1 AND model_id = $2)
 `
 
 type IsGatewayKeyAuthorizedForModelParams struct {
@@ -857,18 +694,10 @@ func (q *Queries) IsGatewayKeyAuthorizedForModel(ctx context.Context, arg IsGate
 }
 
 const listGatewayKeyModelBindingsByKey = `-- name: ListGatewayKeyModelBindingsByKey :many
-SELECT gkm.model_id, published.public_name
-FROM gateway_key_models gkm
-JOIN LATERAL (
-  SELECT model.public_name
-  FROM config_revision_models model
-  JOIN config_revisions revision ON revision.id = model.revision_id
-  WHERE model.model_id = gkm.model_id AND revision.published_at IS NOT NULL
-  ORDER BY revision.revision DESC
-  LIMIT 1
-) published ON true
+SELECT gkm.model_id, model.public_name
+FROM gateway_key_models gkm JOIN models model ON model.id = gkm.model_id
 WHERE gkm.gateway_key_id = $1
-ORDER BY published.public_name, gkm.model_id
+ORDER BY model.public_name, gkm.model_id
 `
 
 type ListGatewayKeyModelBindingsByKeyRow struct {
@@ -897,19 +726,12 @@ func (q *Queries) ListGatewayKeyModelBindingsByKey(ctx context.Context, gatewayK
 }
 
 const listGatewayKeyModelBindingsByUser = `-- name: ListGatewayKeyModelBindingsByUser :many
-SELECT gkm.gateway_key_id, gkm.model_id, published.public_name
+SELECT gkm.gateway_key_id, gkm.model_id, model.public_name
 FROM gateway_key_models gkm
-JOIN gateway_keys k ON k.id = gkm.gateway_key_id
-JOIN LATERAL (
-  SELECT model.public_name
-  FROM config_revision_models model
-  JOIN config_revisions revision ON revision.id = model.revision_id
-  WHERE model.model_id = gkm.model_id AND revision.published_at IS NOT NULL
-  ORDER BY revision.revision DESC
-  LIMIT 1
-) published ON true
-WHERE k.user_id = $1
-ORDER BY gkm.gateway_key_id, published.public_name, gkm.model_id
+JOIN gateway_keys key ON key.id = gkm.gateway_key_id
+JOIN models model ON model.id = gkm.model_id
+WHERE key.user_id = $1
+ORDER BY gkm.gateway_key_id, model.public_name, gkm.model_id
 `
 
 type ListGatewayKeyModelBindingsByUserRow struct {
@@ -983,50 +805,8 @@ func (q *Queries) ListGatewayKeysByUser(ctx context.Context, userID uuid.UUID) (
 	return items, nil
 }
 
-const listInvitations = `-- name: ListInvitations :many
-SELECT id, code_digest, code_prefix, created_by, expires_at, claimed_by, claimed_at, revoked_at, created_at FROM invitations ORDER BY created_at DESC, id LIMIT $2 OFFSET $1
-`
-
-type ListInvitationsParams struct {
-	PageOffset int32 `json:"page_offset"`
-	PageSize   int32 `json:"page_size"`
-}
-
-func (q *Queries) ListInvitations(ctx context.Context, arg ListInvitationsParams) ([]Invitation, error) {
-	rows, err := q.db.Query(ctx, listInvitations, arg.PageOffset, arg.PageSize)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []Invitation{}
-	for rows.Next() {
-		var i Invitation
-		if err := rows.Scan(
-			&i.ID,
-			&i.CodeDigest,
-			&i.CodePrefix,
-			&i.CreatedBy,
-			&i.ExpiresAt,
-			&i.ClaimedBy,
-			&i.ClaimedAt,
-			&i.RevokedAt,
-			&i.CreatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listUserDisplayNames = `-- name: ListUserDisplayNames :many
-SELECT id, display_name
-FROM users
-WHERE id = ANY($1::uuid[])
-ORDER BY id
+SELECT id, display_name FROM users WHERE id = ANY($1::uuid[]) ORDER BY id
 `
 
 type ListUserDisplayNamesRow struct {
@@ -1055,20 +835,28 @@ func (q *Queries) ListUserDisplayNames(ctx context.Context, userIds []uuid.UUID)
 }
 
 const listUsers = `-- name: ListUsers :many
-SELECT id, email, display_name, password_hash, role, status, approved_at, disabled_at, created_at, updated_at FROM users
-WHERE ($1::user_status IS NULL OR status = $1)
+SELECT id, email, display_name, password_hash, role, status, disabled_at, deleted_at, created_at, updated_at FROM users
+WHERE status <> 'deleted'
+  AND ($1::user_status IS NULL OR status = $1)
+  AND ($2::text = '' OR concat_ws(' ', email, display_name) ILIKE '%' || $2::text || '%')
 ORDER BY created_at DESC, id
-LIMIT $3 OFFSET $2
+LIMIT $4 OFFSET $3
 `
 
 type ListUsersParams struct {
 	Status     *UserStatus `json:"status"`
+	Search     string      `json:"search"`
 	PageOffset int32       `json:"page_offset"`
 	PageSize   int32       `json:"page_size"`
 }
 
 func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]User, error) {
-	rows, err := q.db.Query(ctx, listUsers, arg.Status, arg.PageOffset, arg.PageSize)
+	rows, err := q.db.Query(ctx, listUsers,
+		arg.Status,
+		arg.Search,
+		arg.PageOffset,
+		arg.PageSize,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -1083,8 +871,8 @@ func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]User, e
 			&i.PasswordHash,
 			&i.Role,
 			&i.Status,
-			&i.ApprovedAt,
 			&i.DisabledAt,
+			&i.DeletedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -1122,12 +910,38 @@ func (q *Queries) MarkGatewayKeyRevoked(ctx context.Context, id uuid.UUID) (int6
 	return result.RowsAffected(), nil
 }
 
-const revokeInvitation = `-- name: RevokeInvitation :execrows
-UPDATE invitations SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL AND claimed_at IS NULL
+const markUserDeleted = `-- name: MarkUserDeleted :one
+UPDATE users
+SET status = 'deleted', disabled_at = NULL, deleted_at = now(),
+    updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
+WHERE id = $1 AND role = 'member' AND status <> 'deleted'
+RETURNING id, email, display_name, password_hash, role, status, disabled_at, deleted_at, created_at, updated_at
 `
 
-func (q *Queries) RevokeInvitation(ctx context.Context, id uuid.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, revokeInvitation, id)
+func (q *Queries) MarkUserDeleted(ctx context.Context, id uuid.UUID) (User, error) {
+	row := q.db.QueryRow(ctx, markUserDeleted, id)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.DisplayName,
+		&i.PasswordHash,
+		&i.Role,
+		&i.Status,
+		&i.DisabledAt,
+		&i.DeletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const revokeGatewayKeysForUser = `-- name: RevokeGatewayKeysForUser :execrows
+UPDATE gateway_keys SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL
+`
+
+func (q *Queries) RevokeGatewayKeysForUser(ctx context.Context, userID uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, revokeGatewayKeysForUser, userID)
 	if err != nil {
 		return 0, err
 	}
@@ -1196,7 +1010,7 @@ func (q *Queries) TouchSession(ctx context.Context, id uuid.UUID) error {
 
 const updateOwnPassword = `-- name: UpdateOwnPassword :execrows
 UPDATE users SET password_hash = $1, updated_at = now()
-WHERE id = $2 AND password_hash = $3
+WHERE id = $2 AND password_hash = $3 AND status = 'active'
 `
 
 type UpdateOwnPasswordParams struct {
@@ -1215,8 +1029,8 @@ func (q *Queries) UpdateOwnPassword(ctx context.Context, arg UpdateOwnPasswordPa
 
 const updateUserPassword = `-- name: UpdateUserPassword :one
 UPDATE users SET password_hash = $1, updated_at = now()
-WHERE id = $2
-RETURNING id, email, display_name, password_hash, role, status, approved_at, disabled_at, created_at, updated_at
+WHERE id = $2 AND status <> 'deleted'
+RETURNING id, email, display_name, password_hash, role, status, disabled_at, deleted_at, created_at, updated_at
 `
 
 type UpdateUserPasswordParams struct {
@@ -1234,8 +1048,46 @@ func (q *Queries) UpdateUserPassword(ctx context.Context, arg UpdateUserPassword
 		&i.PasswordHash,
 		&i.Role,
 		&i.Status,
-		&i.ApprovedAt,
 		&i.DisabledAt,
+		&i.DeletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const updateUserProfile = `-- name: UpdateUserProfile :one
+UPDATE users
+SET email = lower($1), display_name = $2,
+    updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
+WHERE id = $3 AND role = 'member' AND status <> 'deleted' AND updated_at = $4
+RETURNING id, email, display_name, password_hash, role, status, disabled_at, deleted_at, created_at, updated_at
+`
+
+type UpdateUserProfileParams struct {
+	Email             string             `json:"email"`
+	DisplayName       string             `json:"display_name"`
+	ID                uuid.UUID          `json:"id"`
+	ExpectedUpdatedAt pgtype.Timestamptz `json:"expected_updated_at"`
+}
+
+func (q *Queries) UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) (User, error) {
+	row := q.db.QueryRow(ctx, updateUserProfile,
+		arg.Email,
+		arg.DisplayName,
+		arg.ID,
+		arg.ExpectedUpdatedAt,
+	)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.DisplayName,
+		&i.PasswordHash,
+		&i.Role,
+		&i.Status,
+		&i.DisabledAt,
+		&i.DeletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -1245,11 +1097,11 @@ func (q *Queries) UpdateUserPassword(ctx context.Context, arg UpdateUserPassword
 const updateUserStatus = `-- name: UpdateUserStatus :one
 UPDATE users
 SET status = $1,
-    approved_at = CASE WHEN $1::user_status = 'active' THEN coalesce(approved_at, now()) ELSE approved_at END,
     disabled_at = CASE WHEN $1::user_status = 'disabled' THEN now() ELSE NULL END,
-    updated_at = now()
-WHERE id = $2
-RETURNING id, email, display_name, password_hash, role, status, approved_at, disabled_at, created_at, updated_at
+    deleted_at = NULL,
+    updated_at = GREATEST(clock_timestamp(), updated_at + interval '1 microsecond')
+WHERE id = $2 AND role = 'member' AND status <> 'deleted'
+RETURNING id, email, display_name, password_hash, role, status, disabled_at, deleted_at, created_at, updated_at
 `
 
 type UpdateUserStatusParams struct {
@@ -1267,8 +1119,8 @@ func (q *Queries) UpdateUserStatus(ctx context.Context, arg UpdateUserStatusPara
 		&i.PasswordHash,
 		&i.Role,
 		&i.Status,
-		&i.ApprovedAt,
 		&i.DisabledAt,
+		&i.DeletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

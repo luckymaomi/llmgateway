@@ -72,9 +72,6 @@ func (r *CostRepository) CreatePriceVersion(ctx context.Context, input costing.N
 	if err != nil {
 		return costing.PriceVersion{}, translateCostError(err)
 	}
-	if _, err := queries.GetModelForCredentialBinding(ctx, input.ModelID); err != nil {
-		return costing.PriceVersion{}, translateCostError(err)
-	}
 	created, err := queries.CreateModelPriceVersion(ctx, db.CreateModelPriceVersionParams{
 		ModelID: input.ModelID, Currency: input.Currency, InputRateNanosPerMillion: inputRate,
 		OutputRateNanosPerMillion: outputRate, EffectiveAt: pgtype.Timestamptz{Time: input.EffectiveAt, Valid: true}, CreatedBy: actorID,
@@ -121,9 +118,9 @@ func (r *CostRepository) ListSummaries(ctx context.Context, page costing.Page) (
 	result := make([]costing.Summary, 0, len(rows))
 	for _, row := range rows {
 		result = append(result, costing.Summary{
-			UserID: row.UserID, UserName: row.UserName, EntitlementID: row.EntitlementID, Plan: row.Plan,
+			UserID: row.UserID, UserName: row.UserName, SubscriptionID: row.SubscriptionID, ServicePlanName: row.ServicePlanName, PlanKind: row.PlanKind,
 			ModelID: row.ModelID, ModelAlias: row.ModelAlias, ProviderID: row.ProviderID, ProviderName: row.ProviderName,
-			ResourceDomain: row.ResourceDomain, Currency: row.Currency, RequestCount: row.RequestCount,
+			ResourcePoolID: row.ResourcePoolID, ResourcePoolName: row.ResourcePoolName, Currency: row.Currency, RequestCount: row.RequestCount,
 			InputTokens: row.InputTokens, OutputTokens: row.OutputTokens, InputCostNanos: row.InputCostNanos,
 			OutputCostNanos: row.OutputCostNanos, TotalCostNanos: row.TotalCostNanos,
 		})

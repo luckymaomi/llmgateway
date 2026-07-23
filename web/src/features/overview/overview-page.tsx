@@ -1,7 +1,8 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { Activity, Check, Circle, KeyRound, Network, UsersRound, Zap } from 'lucide-react'
-import { operationsApi, type OperationsOverview, type OverviewStep } from '@/api'
+import { Activity, KeyRound, Network, PackageCheck, UsersRound, Zap } from 'lucide-react'
+
+import { operationsApi, type OperationsOverview } from '@/api'
 import { Page, PageHeader, PageSection } from '@/components/layout'
 import { Button } from '@/components/ui/button'
 import { ErrorState, LoadingState } from '@/components/ui/state'
@@ -13,7 +14,7 @@ import {
   formatTokens,
 } from '@/lib/format'
 
-import { RequestErrorChart, RequestTrendChart } from './operations-charts'
+import { RequestErrorChart, RequestOutcomeChart, RequestTrendChart } from './operations-charts'
 
 export function OverviewPage() {
   const query = useQuery({
@@ -24,7 +25,7 @@ export function OverviewPage() {
   if (query.isLoading)
     return (
       <Page>
-        <LoadingState label="正在读取运行状态" />
+        <LoadingState label="正在读取仪表盘" />
       </Page>
     )
   if (query.error || !query.data)
@@ -34,13 +35,13 @@ export function OverviewPage() {
       </Page>
     )
   return query.data.scope === 'administrator' ? (
-    <AdministratorOverviewView overview={query.data} />
+    <AdministratorView overview={query.data} />
   ) : (
-    <MemberOverviewView overview={query.data} />
+    <MemberView overview={query.data} />
   )
 }
 
-function AdministratorOverviewView({
+function AdministratorView({
   overview,
 }: {
   overview: Extract<OperationsOverview, { scope: 'administrator' }>
@@ -51,65 +52,122 @@ function AdministratorOverviewView({
       : undefined
   return (
     <Page>
-      <PageHeader title="仪表盘" />
+      <PageHeader
+        title="仪表盘"
+        actions={
+          !overview.resources.hasActiveUpstream ? (
+            <Button asChild>
+              <Link to="/provider-keys">处理上游资源</Link>
+            </Button>
+          ) : undefined
+        }
+      />
       <div className="summary-grid">
         <SummaryMetric
           icon={<Activity size={16} />}
           label="24 小时请求"
           value={formatNumber(overview.requests.requestCount)}
         />
-        <SummaryMetric icon={<Zap size={16} />} label="成功率" value={formatPercent(successRate)} />
+        <SummaryMetric icon={<Zap size={16} />} label="完成率" value={formatPercent(successRate)} />
         <SummaryMetric
           icon={<Network size={16} />}
-          label="上游 API Key"
+          label="活动资源池"
+          value={`${overview.resources.activeResourcePoolCount} / ${overview.resources.resourcePoolCount}`}
+        />
+        <SummaryMetric
+          icon={<KeyRound size={16} />}
+          label="活动上游 Key"
           value={`${overview.resources.activeCredentialCount} / ${overview.resources.credentialCount}`}
         />
         <SummaryMetric
+          icon={<PackageCheck size={16} />}
+          label="活动订阅"
+          value={formatNumber(overview.resources.activeSubscriptionCount)}
+        />
+        <SummaryMetric
           icon={<UsersRound size={16} />}
-          label="成员"
+          label="活动成员"
           value={formatNumber(overview.resources.activeMemberCount)}
-          marker={
-            overview.resources.pendingMemberCount > 0
-              ? `${overview.resources.pendingMemberCount} 待审核`
-              : undefined
-          }
         />
       </div>
-      <NextActions scope="administrator" steps={overview.steps} />
       <PageSection title="24 小时趋势">
         <RequestTrendChart overview={overview} />
       </PageSection>
-      <div className="overview-grid">
-        <PageSection title="运行状态">
-          <dl className="fact-grid">
-            <Fact
-              label="Provider"
-              value={`${overview.resources.enabledProviderCount} / ${overview.resources.providerCount}`}
-            />
-            <Fact label="模型" value={formatNumber(overview.resources.modelCount)} />
-            <Fact label="首字节 P95" value={formatDuration(overview.requests.firstByteP95Ms)} />
-            <Fact label="总延迟 P95" value={formatDuration(overview.requests.totalLatencyP95Ms)} />
-          </dl>
+      <div className="chart-grid">
+        <PageSection title="请求终态">
+          <RequestOutcomeChart overview={overview} />
         </PageSection>
         <ErrorDistribution overview={overview} />
       </div>
+      <PageSection title="运行事实">
+        <dl className="fact-grid">
+          <Fact
+            label="连接 Provider"
+            value={formatNumber(overview.resources.connectedProviderCount)}
+          />
+          <Fact label="模型" value={formatNumber(overview.resources.modelCount)} />
+          <Fact label="首字节 P95" value={formatDuration(overview.requests.firstByteP95Ms)} />
+          <Fact label="总延迟 P95" value={formatDuration(overview.requests.totalLatencyP95Ms)} />
+        </dl>
+      </PageSection>
     </Page>
   )
 }
 
-function MemberOverviewView({
-  overview,
-}: {
-  overview: Extract<OperationsOverview, { scope: 'member' }>
-}) {
+function MemberView({ overview }: { overview: Extract<OperationsOverview, { scope: 'member' }> }) {
+  const available =
+    overview.access.activeSubscriptionCount > 0 &&
+    overview.access.activeApiKeyCount > 0 &&
+    overview.access.remainingTokens > 0
   return (
     <Page>
-      <PageHeader title="仪表盘" />
+      <PageHeader
+        title="仪表盘"
+        actions={
+          <Button asChild variant="secondary">
+            <Link
+              to={
+                available
+                  ? '/api-logs'
+                  : overview.access.activeSubscriptionCount > 0
+                    ? '/api-keys'
+                    : '/subscriptions'
+              }
+            >
+              {available
+                ? '查看 API 日志'
+                : overview.access.activeSubscriptionCount > 0
+                  ? '管理 API 密钥'
+                  : '查看我的订阅'}
+            </Link>
+          </Button>
+        }
+      />
       <div className="summary-grid">
+        <SummaryMetric
+          icon={<Zap size={16} />}
+          label="服务状态"
+          value={available ? '可用' : '不可用'}
+        />
+        <SummaryMetric
+          icon={<PackageCheck size={16} />}
+          label="活动订阅"
+          value={formatNumber(overview.access.activeSubscriptionCount)}
+          marker={
+            overview.access.nearestSubscriptionExpiry
+              ? `到期 ${formatDateTime(overview.access.nearestSubscriptionExpiry)}`
+              : undefined
+          }
+        />
         <SummaryMetric
           icon={<Zap size={16} />}
           label="剩余 Token"
           value={formatTokens(overview.access.remainingTokens)}
+        />
+        <SummaryMetric
+          icon={<KeyRound size={16} />}
+          label="API 密钥"
+          value={formatNumber(overview.access.activeApiKeyCount)}
         />
         <SummaryMetric
           icon={<Activity size={16} />}
@@ -121,32 +179,24 @@ function MemberOverviewView({
           label="24 小时 Token"
           value={formatTokens(overview.requests.inputTokens + overview.requests.outputTokens)}
         />
-        <SummaryMetric
-          icon={<KeyRound size={16} />}
-          label="Gateway Key"
-          value={formatNumber(overview.access.activeGatewayKeyCount)}
-          marker={
-            overview.access.nearestEntitlementExpiry
-              ? `额度到期 ${formatDateTime(overview.access.nearestEntitlementExpiry)}`
-              : undefined
-          }
-        />
       </div>
-      <NextActions scope="member" steps={overview.steps} />
       <PageSection title="24 小时趋势">
         <RequestTrendChart overview={overview} />
       </PageSection>
-      <div className="overview-grid">
-        <PageSection title="请求状态">
-          <dl className="fact-grid">
-            <Fact label="完成" value={formatNumber(overview.requests.completedCount)} />
-            <Fact label="失败" value={formatNumber(overview.requests.failedCount)} />
-            <Fact label="首字节 P95" value={formatDuration(overview.requests.firstByteP95Ms)} />
-            <Fact label="总延迟 P95" value={formatDuration(overview.requests.totalLatencyP95Ms)} />
-          </dl>
+      <div className="chart-grid">
+        <PageSection title="请求终态">
+          <RequestOutcomeChart overview={overview} />
         </PageSection>
         <ErrorDistribution overview={overview} />
       </div>
+      <PageSection title="请求状态">
+        <dl className="fact-grid">
+          <Fact label="完成" value={formatNumber(overview.requests.completedCount)} />
+          <Fact label="失败" value={formatNumber(overview.requests.failedCount)} />
+          <Fact label="首字节 P95" value={formatDuration(overview.requests.firstByteP95Ms)} />
+          <Fact label="总延迟 P95" value={formatDuration(overview.requests.totalLatencyP95Ms)} />
+        </dl>
+      </PageSection>
     </Page>
   )
 }
@@ -174,51 +224,6 @@ function SummaryMetric({
   )
 }
 
-function NextActions({
-  scope,
-  steps,
-}: {
-  scope: OperationsOverview['scope']
-  steps: OverviewStep[]
-}) {
-  const pending = steps.filter((step) => !step.complete)
-  if (pending.length === 0)
-    return (
-      <div className="quick-actions" aria-label="常用操作">
-        {(scope === 'administrator' ? administratorQuickActions : memberQuickActions).map(
-          (action) => (
-            <Button key={action.to} asChild variant="secondary" size="sm">
-              <Link to={action.to}>{action.label}</Link>
-            </Button>
-          ),
-        )}
-      </div>
-    )
-  return (
-    <PageSection title="下一步">
-      <div className="action-list" role="list">
-        {steps.map((step) => {
-          const action = stepActions[scope][step.id]
-          if (!action) return null
-          return (
-            <div className="action-row" role="listitem" key={step.id} data-complete={step.complete}>
-              <span className="action-row__state" aria-hidden="true">
-                {step.complete ? <Check size={16} /> : <Circle size={16} />}
-              </span>
-              <strong>{action.label}</strong>
-              {!step.complete && action.to ? (
-                <Button asChild size="sm">
-                  <Link to={action.to}>{action.command}</Link>
-                </Button>
-              ) : null}
-            </div>
-          )
-        })}
-      </div>
-    </PageSection>
-  )
-}
-
 function ErrorDistribution({ overview }: { overview: OperationsOverview }) {
   return (
     <PageSection title="错误分布">
@@ -226,7 +231,6 @@ function ErrorDistribution({ overview }: { overview: OperationsOverview }) {
     </PageSection>
   )
 }
-
 function Fact({ label, value }: { label: string; value: string }) {
   return (
     <div>
@@ -235,47 +239,3 @@ function Fact({ label, value }: { label: string; value: string }) {
     </div>
   )
 }
-
-type StepAction = {
-  label: string
-  command?: string
-  to?:
-    | '/providers'
-    | '/provider-keys'
-    | '/costs'
-    | '/configuration'
-    | '/members'
-    | '/entitlements'
-    | '/gateway-keys'
-}
-
-const stepActions: Record<OperationsOverview['scope'], Record<string, StepAction>> = {
-  administrator: {
-    provider: { label: '接入 Provider', command: '接入', to: '/providers' },
-    credential: { label: '添加上游 API Key', command: '添加', to: '/provider-keys' },
-    price: { label: '设置模型价格', command: '设置', to: '/costs' },
-    publication: { label: '发布模型配置', command: '发布', to: '/configuration' },
-    member: { label: '激活成员', command: '管理', to: '/members' },
-    entitlement: { label: '分配成员额度', command: '分配', to: '/entitlements' },
-    gateway_key: { label: '创建 Gateway Key', command: '创建', to: '/gateway-keys' },
-    request: { label: '测试 Gateway Key', command: '测试', to: '/gateway-keys' },
-  },
-  member: {
-    entitlement: { label: '额度待管理员分配' },
-    gateway_key: { label: '等待管理员分配 Gateway Key' },
-    request: { label: '测试 Gateway Key', command: '测试', to: '/gateway-keys' },
-  },
-}
-
-const administratorQuickActions = [
-  { label: '上游 API Key', to: '/provider-keys' },
-  { label: '成员', to: '/members' },
-  { label: 'API 日志', to: '/api-logs' },
-  { label: 'Gateway Key', to: '/gateway-keys' },
-] as const
-
-const memberQuickActions = [
-  { label: 'Key 管理', to: '/gateway-keys' },
-  { label: '订阅管理', to: '/entitlements' },
-  { label: 'API 日志', to: '/api-logs' },
-] as const

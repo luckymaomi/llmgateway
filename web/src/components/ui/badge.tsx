@@ -13,7 +13,6 @@ const statusLabels: Record<string, string> = {
   enabled: '已启用',
   disabled: '已停用',
   pending: '待处理',
-  pending_review: '待审核',
   cooling: '冷却中',
   unknown: '未知',
   healthy: '健康',
@@ -21,7 +20,6 @@ const statusLabels: Record<string, string> = {
   unavailable: '不可用',
   issued: '已签发',
   claimed: '已领取',
-  approved: '已批准',
   expired: '已过期',
   revoked: '已撤销',
   suspended: '已停用',
@@ -45,11 +43,8 @@ const statusLabels: Record<string, string> = {
 }
 
 function statusTone(status: string): BadgeTone {
-  if (['active', 'enabled', 'healthy', 'published', 'completed', 'approved'].includes(status))
-    return 'positive'
-  if (
-    ['cooling', 'pending', 'pending_review', 'validating', 'queued', 'uncertain'].includes(status)
-  ) {
+  if (['active', 'enabled', 'healthy', 'published', 'completed'].includes(status)) return 'positive'
+  if (['cooling', 'pending', 'validating', 'queued', 'uncertain'].includes(status)) {
     return 'warning'
   }
   if (['failed', 'invalid', 'unavailable', 'suspended'].includes(status)) return 'danger'

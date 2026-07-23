@@ -15,13 +15,6 @@ type bootstrapRequest struct {
 	Email string `json:"email"`
 }
 
-type registrationRequest struct {
-	Invitation  string `json:"invitation"`
-	Email       string `json:"email"`
-	DisplayName string `json:"displayName"`
-	Password    string `json:"password"`
-}
-
 type loginRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
@@ -29,12 +22,6 @@ type loginRequest struct {
 
 type setupStatusView struct {
 	Required bool `json:"required"`
-}
-
-type registrationView struct {
-	UserID string        `json:"userId"`
-	Role   identity.Role `json:"role"`
-	Status string        `json:"status"`
 }
 
 type sessionView struct {
@@ -99,24 +86,6 @@ func (a *API) changePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeData(w, http.StatusOK, sessionRevocationView{RevokedSessions: result.RevokedSessions})
-}
-
-func (a *API) register(w http.ResponseWriter, r *http.Request) {
-	var input registrationRequest
-	if err := decodeJSON(w, r, &input); err != nil {
-		writeDecodeError(w, r, err)
-		return
-	}
-	user, err := a.identity.Register(r.Context(), input.Invitation, input.Email, input.DisplayName, input.Password)
-	if err != nil {
-		a.writeIdentityError(w, r, err)
-		return
-	}
-	status := "pending_review"
-	if user.Status == identity.StatusActive {
-		status = "active"
-	}
-	writeData(w, http.StatusAccepted, registrationView{UserID: user.ID.String(), Role: user.Role, Status: status})
 }
 
 func (a *API) login(w http.ResponseWriter, r *http.Request) {
@@ -185,9 +154,9 @@ func presentSession(principal identity.Principal, csrfToken string) sessionView 
 func capabilitiesFor(role identity.Role) []string {
 	switch role {
 	case identity.RoleAdministrator:
-		return []string{"providers:read", "providers:write", "credentials:read", "credentials:write", "access:read", "access:write", "ledger:read", "ledger:write", "gateway-key:test", "revisions:publish"}
+		return []string{"providers:read", "resource-pools:write", "credentials:write", "members:write", "plans:write", "subscriptions:write", "keys:write", "operations:read", "api-key:test"}
 	case identity.RoleMember:
-		return []string{"access:read", "ledger:read", "gateway-key:test"}
+		return []string{"subscriptions:read", "keys:write", "usage:read", "api-key:test"}
 	default:
 		return []string{}
 	}

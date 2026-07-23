@@ -26,7 +26,7 @@ WHERE id = $2
       OR
       (status = 'dispatching' AND execution_id = $1)
   )
-RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, input_cost_nanos, output_cost_nanos, total_cost_nanos, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
+RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, subscription_id, resource_pool_id, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, input_cost_nanos, output_cost_nanos, total_cost_nanos, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
 `
 
 type ClaimRequestExecutionParams struct {
@@ -44,9 +44,8 @@ func (q *Queries) ClaimRequestExecution(ctx context.Context, arg ClaimRequestExe
 		&i.UserID,
 		&i.GatewayKeyID,
 		&i.ModelID,
-		&i.EntitlementID,
-		&i.ConfigRevisionID,
-		&i.ResourceDomain,
+		&i.SubscriptionID,
+		&i.ResourcePoolID,
 		&i.PriceVersionID,
 		&i.CostCurrency,
 		&i.InputRateNanosPerMillion,
@@ -76,7 +75,7 @@ const completeLedgerReservation = `-- name: CompleteLedgerReservation :one
 UPDATE ledger_reservations
 SET state = $1, charged_tokens = $2, usage_source = $3, terminal_event_id = $4, updated_at = now()
 WHERE id = $5 AND state = 'reserved'
-RETURNING id, entitlement_id, request_id, state, reserved_tokens, charged_tokens, usage_source, reserve_event_id, terminal_event_id, created_at, updated_at
+RETURNING id, subscription_id, request_id, state, reserved_tokens, charged_tokens, usage_source, reserve_event_id, terminal_event_id, created_at, updated_at
 `
 
 type CompleteLedgerReservationParams struct {
@@ -98,7 +97,7 @@ func (q *Queries) CompleteLedgerReservation(ctx context.Context, arg CompleteLed
 	var i LedgerReservation
 	err := row.Scan(
 		&i.ID,
-		&i.EntitlementID,
+		&i.SubscriptionID,
 		&i.RequestID,
 		&i.State,
 		&i.ReservedTokens,
@@ -120,7 +119,7 @@ WHERE id = $7
   AND execution_id = $8
   AND execution_generation = $9
   AND status IN ('dispatching', 'streaming')
-RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, input_cost_nanos, output_cost_nanos, total_cost_nanos, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
+RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, subscription_id, resource_pool_id, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, input_cost_nanos, output_cost_nanos, total_cost_nanos, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
 `
 
 type CompleteRequestParams struct {
@@ -155,9 +154,8 @@ func (q *Queries) CompleteRequest(ctx context.Context, arg CompleteRequestParams
 		&i.UserID,
 		&i.GatewayKeyID,
 		&i.ModelID,
-		&i.EntitlementID,
-		&i.ConfigRevisionID,
-		&i.ResourceDomain,
+		&i.SubscriptionID,
+		&i.ResourcePoolID,
 		&i.PriceVersionID,
 		&i.CostCurrency,
 		&i.InputRateNanosPerMillion,
@@ -183,65 +181,27 @@ func (q *Queries) CompleteRequest(ctx context.Context, arg CompleteRequestParams
 	return i, err
 }
 
-const countEntitlements = `-- name: CountEntitlements :one
-SELECT count(*)
-FROM entitlements e
-JOIN users owner ON owner.id = e.user_id
-LEFT JOIN models model ON model.id = e.model_id
-WHERE ($1::uuid IS NULL OR e.user_id = $1)
-  AND ($2::text = '' OR concat_ws(' ', owner.display_name, owner.email, model.public_name, e.plan::text, e.resource_domain::text) ILIKE '%' || $2::text || '%')
-  AND ($3::text = ''
-    OR $3::text = 'scheduled' AND e.starts_at > now()
-    OR $3::text = 'active' AND e.starts_at <= now() AND e.expires_at > now()
-    OR $3::text = 'expired' AND e.expires_at <= now())
-  AND ($4::text = '' OR e.resource_domain::text = $4::text)
-`
-
-type CountEntitlementsParams struct {
-	UserID         *uuid.UUID `json:"user_id"`
-	Search         string     `json:"search"`
-	Status         string     `json:"status"`
-	ResourceDomain string     `json:"resource_domain"`
-}
-
-func (q *Queries) CountEntitlements(ctx context.Context, arg CountEntitlementsParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countEntitlements,
-		arg.UserID,
-		arg.Search,
-		arg.Status,
-		arg.ResourceDomain,
-	)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
 const countLedgerEvents = `-- name: CountLedgerEvents :one
 SELECT count(*)
 FROM ledger_events event
 JOIN users owner ON owner.id = event.user_id
-JOIN entitlements entitlement ON entitlement.id = event.entitlement_id
+JOIN subscriptions subscription ON subscription.id = event.subscription_id
+JOIN service_plan_versions version ON version.id = subscription.service_plan_version_id
+JOIN service_plans plan ON plan.id = version.service_plan_id
 LEFT JOIN users actor ON actor.id = event.created_by
 WHERE ($1::uuid IS NULL OR event.user_id = $1)
-  AND ($2::uuid IS NULL OR event.entitlement_id = $2)
-  AND ($3::text = '' OR concat_ws(' ', owner.display_name, owner.email, actor.display_name, actor.email, event.note, event.request_id::text) ILIKE '%' || $3::text || '%')
-  AND ($4::text = '' OR entitlement.resource_domain::text = $4::text)
+  AND ($2::uuid IS NULL OR event.subscription_id = $2)
+  AND ($3::text = '' OR concat_ws(' ', owner.display_name, owner.email, plan.name, actor.display_name, actor.email, event.note, event.request_id::text) ILIKE '%' || $3::text || '%')
 `
 
 type CountLedgerEventsParams struct {
 	UserID         *uuid.UUID `json:"user_id"`
-	EntitlementID  *uuid.UUID `json:"entitlement_id"`
+	SubscriptionID *uuid.UUID `json:"subscription_id"`
 	Search         string     `json:"search"`
-	ResourceDomain string     `json:"resource_domain"`
 }
 
 func (q *Queries) CountLedgerEvents(ctx context.Context, arg CountLedgerEventsParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countLedgerEvents,
-		arg.UserID,
-		arg.EntitlementID,
-		arg.Search,
-		arg.ResourceDomain,
-	)
+	row := q.db.QueryRow(ctx, countLedgerEvents, arg.UserID, arg.SubscriptionID, arg.Search)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -253,14 +213,15 @@ FROM requests AS request
 JOIN users AS owner ON owner.id = request.user_id
 JOIN gateway_keys AS key ON key.id = request.gateway_key_id
 JOIN models AS model ON model.id = request.model_id
+JOIN resource_pools AS pool ON pool.id = request.resource_pool_id
 WHERE ($1::uuid IS NULL OR request.user_id = $1)
   AND ($2::uuid IS NULL OR request.gateway_key_id = $2)
   AND ($3::uuid IS NULL OR request.model_id = $3)
   AND ($4::text = '' OR request.status::text = $4::text)
   AND request.accepted_at >= $5
   AND request.accepted_at < $6
-  AND ($7::text = '' OR concat_ws(' ', owner.display_name, owner.email, key.prefix, model.public_name, request.id::text) ILIKE '%' || $7::text || '%')
-  AND ($8::text = '' OR request.resource_domain::text = $8::text)
+  AND ($7::text = '' OR concat_ws(' ', owner.display_name, owner.email, key.prefix, model.public_name, pool.name, request.id::text) ILIKE '%' || $7::text || '%')
+  AND ($8::uuid IS NULL OR request.resource_pool_id = $8)
 `
 
 type CountRequestLogsParams struct {
@@ -271,7 +232,7 @@ type CountRequestLogsParams struct {
 	FromTime       pgtype.Timestamptz `json:"from_time"`
 	ToTime         pgtype.Timestamptz `json:"to_time"`
 	Search         string             `json:"search"`
-	ResourceDomain string             `json:"resource_domain"`
+	ResourcePoolID *uuid.UUID         `json:"resource_pool_id"`
 }
 
 func (q *Queries) CountRequestLogs(ctx context.Context, arg CountRequestLogsParams) (int64, error) {
@@ -283,7 +244,7 @@ func (q *Queries) CountRequestLogs(ctx context.Context, arg CountRequestLogsPara
 		arg.FromTime,
 		arg.ToTime,
 		arg.Search,
-		arg.ResourceDomain,
+		arg.ResourcePoolID,
 	)
 	var count int64
 	err := row.Scan(&count)
@@ -343,65 +304,15 @@ func (q *Queries) CreateAttempt(ctx context.Context, arg CreateAttemptParams) (R
 	return i, err
 }
 
-const createEntitlement = `-- name: CreateEntitlement :one
-INSERT INTO entitlements (user_id, plan, resource_domain, model_id, granted_tokens, starts_at, expires_at, concurrency_limit, rpm_limit, tpm_limit)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-RETURNING id, user_id, plan, resource_domain, model_id, granted_tokens, starts_at, expires_at, concurrency_limit, rpm_limit, tpm_limit, created_at
-`
-
-type CreateEntitlementParams struct {
-	UserID           uuid.UUID          `json:"user_id"`
-	Plan             PlanKind           `json:"plan"`
-	ResourceDomain   ResourceDomain     `json:"resource_domain"`
-	ModelID          *uuid.UUID         `json:"model_id"`
-	GrantedTokens    int64              `json:"granted_tokens"`
-	StartsAt         pgtype.Timestamptz `json:"starts_at"`
-	ExpiresAt        pgtype.Timestamptz `json:"expires_at"`
-	ConcurrencyLimit int32              `json:"concurrency_limit"`
-	RpmLimit         *int32             `json:"rpm_limit"`
-	TpmLimit         *int64             `json:"tpm_limit"`
-}
-
-func (q *Queries) CreateEntitlement(ctx context.Context, arg CreateEntitlementParams) (Entitlement, error) {
-	row := q.db.QueryRow(ctx, createEntitlement,
-		arg.UserID,
-		arg.Plan,
-		arg.ResourceDomain,
-		arg.ModelID,
-		arg.GrantedTokens,
-		arg.StartsAt,
-		arg.ExpiresAt,
-		arg.ConcurrencyLimit,
-		arg.RpmLimit,
-		arg.TpmLimit,
-	)
-	var i Entitlement
-	err := row.Scan(
-		&i.ID,
-		&i.UserID,
-		&i.Plan,
-		&i.ResourceDomain,
-		&i.ModelID,
-		&i.GrantedTokens,
-		&i.StartsAt,
-		&i.ExpiresAt,
-		&i.ConcurrencyLimit,
-		&i.RpmLimit,
-		&i.TpmLimit,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
 const createLedgerEvent = `-- name: CreateLedgerEvent :one
-INSERT INTO ledger_events (user_id, entitlement_id, request_id, reservation_id, kind, token_delta, reserved_tokens, input_tokens, output_tokens, usage_source, source_event_id, note, created_by)
+INSERT INTO ledger_events (user_id, subscription_id, request_id, reservation_id, kind, token_delta, reserved_tokens, input_tokens, output_tokens, usage_source, source_event_id, note, created_by)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-RETURNING id, user_id, entitlement_id, request_id, reservation_id, kind, token_delta, reserved_tokens, input_tokens, output_tokens, usage_source, source_event_id, note, created_by, created_at
+RETURNING id, user_id, subscription_id, request_id, reservation_id, kind, token_delta, reserved_tokens, input_tokens, output_tokens, usage_source, source_event_id, note, created_by, created_at
 `
 
 type CreateLedgerEventParams struct {
 	UserID         uuid.UUID       `json:"user_id"`
-	EntitlementID  uuid.UUID       `json:"entitlement_id"`
+	SubscriptionID uuid.UUID       `json:"subscription_id"`
 	RequestID      *uuid.UUID      `json:"request_id"`
 	ReservationID  *uuid.UUID      `json:"reservation_id"`
 	Kind           LedgerEventKind `json:"kind"`
@@ -418,7 +329,7 @@ type CreateLedgerEventParams struct {
 func (q *Queries) CreateLedgerEvent(ctx context.Context, arg CreateLedgerEventParams) (LedgerEvent, error) {
 	row := q.db.QueryRow(ctx, createLedgerEvent,
 		arg.UserID,
-		arg.EntitlementID,
+		arg.SubscriptionID,
 		arg.RequestID,
 		arg.ReservationID,
 		arg.Kind,
@@ -435,7 +346,7 @@ func (q *Queries) CreateLedgerEvent(ctx context.Context, arg CreateLedgerEventPa
 	err := row.Scan(
 		&i.ID,
 		&i.UserID,
-		&i.EntitlementID,
+		&i.SubscriptionID,
 		&i.RequestID,
 		&i.ReservationID,
 		&i.Kind,
@@ -453,14 +364,14 @@ func (q *Queries) CreateLedgerEvent(ctx context.Context, arg CreateLedgerEventPa
 }
 
 const createLedgerReservation = `-- name: CreateLedgerReservation :one
-INSERT INTO ledger_reservations (id, entitlement_id, request_id, state, reserved_tokens, reserve_event_id)
+INSERT INTO ledger_reservations (id, subscription_id, request_id, state, reserved_tokens, reserve_event_id)
 VALUES ($1, $2, $3, 'reserved', $4, $5)
-RETURNING id, entitlement_id, request_id, state, reserved_tokens, charged_tokens, usage_source, reserve_event_id, terminal_event_id, created_at, updated_at
+RETURNING id, subscription_id, request_id, state, reserved_tokens, charged_tokens, usage_source, reserve_event_id, terminal_event_id, created_at, updated_at
 `
 
 type CreateLedgerReservationParams struct {
 	ID             uuid.UUID `json:"id"`
-	EntitlementID  uuid.UUID `json:"entitlement_id"`
+	SubscriptionID uuid.UUID `json:"subscription_id"`
 	RequestID      uuid.UUID `json:"request_id"`
 	ReservedTokens int64     `json:"reserved_tokens"`
 	ReserveEventID uuid.UUID `json:"reserve_event_id"`
@@ -469,7 +380,7 @@ type CreateLedgerReservationParams struct {
 func (q *Queries) CreateLedgerReservation(ctx context.Context, arg CreateLedgerReservationParams) (LedgerReservation, error) {
 	row := q.db.QueryRow(ctx, createLedgerReservation,
 		arg.ID,
-		arg.EntitlementID,
+		arg.SubscriptionID,
 		arg.RequestID,
 		arg.ReservedTokens,
 		arg.ReserveEventID,
@@ -477,7 +388,7 @@ func (q *Queries) CreateLedgerReservation(ctx context.Context, arg CreateLedgerR
 	var i LedgerReservation
 	err := row.Scan(
 		&i.ID,
-		&i.EntitlementID,
+		&i.SubscriptionID,
 		&i.RequestID,
 		&i.State,
 		&i.ReservedTokens,
@@ -492,29 +403,28 @@ func (q *Queries) CreateLedgerReservation(ctx context.Context, arg CreateLedgerR
 }
 
 const createRequest = `-- name: CreateRequest :one
-INSERT INTO requests (id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain,
+INSERT INTO requests (id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, subscription_id, resource_pool_id,
                       price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, status, stream)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
-        $10, $11, $12, $13, $14, $15)
-RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, input_cost_nanos, output_cost_nanos, total_cost_nanos, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
+        $9, $10, $11, $12, $13, $14)
+RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, subscription_id, resource_pool_id, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, input_cost_nanos, output_cost_nanos, total_cost_nanos, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
 `
 
 type CreateRequestParams struct {
-	ID                        uuid.UUID      `json:"id"`
-	IdempotencyKey            *string        `json:"idempotency_key"`
-	RequestDigest             []byte         `json:"request_digest"`
-	UserID                    uuid.UUID      `json:"user_id"`
-	GatewayKeyID              uuid.UUID      `json:"gateway_key_id"`
-	ModelID                   uuid.UUID      `json:"model_id"`
-	EntitlementID             uuid.UUID      `json:"entitlement_id"`
-	ConfigRevisionID          *uuid.UUID     `json:"config_revision_id"`
-	ResourceDomain            ResourceDomain `json:"resource_domain"`
-	PriceVersionID            uuid.UUID      `json:"price_version_id"`
-	CostCurrency              string         `json:"cost_currency"`
-	InputRateNanosPerMillion  int64          `json:"input_rate_nanos_per_million"`
-	OutputRateNanosPerMillion int64          `json:"output_rate_nanos_per_million"`
-	Status                    RequestStatus  `json:"status"`
-	Stream                    bool           `json:"stream"`
+	ID                        uuid.UUID     `json:"id"`
+	IdempotencyKey            *string       `json:"idempotency_key"`
+	RequestDigest             []byte        `json:"request_digest"`
+	UserID                    uuid.UUID     `json:"user_id"`
+	GatewayKeyID              uuid.UUID     `json:"gateway_key_id"`
+	ModelID                   uuid.UUID     `json:"model_id"`
+	SubscriptionID            uuid.UUID     `json:"subscription_id"`
+	ResourcePoolID            uuid.UUID     `json:"resource_pool_id"`
+	PriceVersionID            uuid.UUID     `json:"price_version_id"`
+	CostCurrency              string        `json:"cost_currency"`
+	InputRateNanosPerMillion  int64         `json:"input_rate_nanos_per_million"`
+	OutputRateNanosPerMillion int64         `json:"output_rate_nanos_per_million"`
+	Status                    RequestStatus `json:"status"`
+	Stream                    bool          `json:"stream"`
 }
 
 func (q *Queries) CreateRequest(ctx context.Context, arg CreateRequestParams) (Request, error) {
@@ -525,9 +435,8 @@ func (q *Queries) CreateRequest(ctx context.Context, arg CreateRequestParams) (R
 		arg.UserID,
 		arg.GatewayKeyID,
 		arg.ModelID,
-		arg.EntitlementID,
-		arg.ConfigRevisionID,
-		arg.ResourceDomain,
+		arg.SubscriptionID,
+		arg.ResourcePoolID,
 		arg.PriceVersionID,
 		arg.CostCurrency,
 		arg.InputRateNanosPerMillion,
@@ -543,9 +452,8 @@ func (q *Queries) CreateRequest(ctx context.Context, arg CreateRequestParams) (R
 		&i.UserID,
 		&i.GatewayKeyID,
 		&i.ModelID,
-		&i.EntitlementID,
-		&i.ConfigRevisionID,
-		&i.ResourceDomain,
+		&i.SubscriptionID,
+		&i.ResourcePoolID,
 		&i.PriceVersionID,
 		&i.CostCurrency,
 		&i.InputRateNanosPerMillion,
@@ -571,17 +479,6 @@ func (q *Queries) CreateRequest(ctx context.Context, arg CreateRequestParams) (R
 	return i, err
 }
 
-const entitlementBalance = `-- name: EntitlementBalance :one
-SELECT coalesce(sum(token_delta), 0)::bigint FROM ledger_events WHERE entitlement_id = $1
-`
-
-func (q *Queries) EntitlementBalance(ctx context.Context, entitlementID uuid.UUID) (int64, error) {
-	row := q.db.QueryRow(ctx, entitlementBalance, entitlementID)
-	var column_1 int64
-	err := row.Scan(&column_1)
-	return column_1, err
-}
-
 const failRequest = `-- name: FailRequest :one
 UPDATE requests
 SET status = 'failed', error_kind = $1, error_detail = $2, completed_at = now(), updated_at = now()
@@ -592,7 +489,7 @@ WHERE id = $3
       OR
       (execution_id = $4 AND execution_generation = $5)
   )
-RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, input_cost_nanos, output_cost_nanos, total_cost_nanos, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
+RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, subscription_id, resource_pool_id, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, input_cost_nanos, output_cost_nanos, total_cost_nanos, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
 `
 
 type FailRequestParams struct {
@@ -619,9 +516,8 @@ func (q *Queries) FailRequest(ctx context.Context, arg FailRequestParams) (Reque
 		&i.UserID,
 		&i.GatewayKeyID,
 		&i.ModelID,
-		&i.EntitlementID,
-		&i.ConfigRevisionID,
-		&i.ResourceDomain,
+		&i.SubscriptionID,
+		&i.ResourcePoolID,
 		&i.PriceVersionID,
 		&i.CostCurrency,
 		&i.InputRateNanosPerMillion,
@@ -656,7 +552,7 @@ WHERE id = $9
   AND execution_id = $10
   AND execution_generation = $11
   AND status IN ('dispatching', 'streaming')
-RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, input_cost_nanos, output_cost_nanos, total_cost_nanos, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
+RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, subscription_id, resource_pool_id, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, input_cost_nanos, output_cost_nanos, total_cost_nanos, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
 `
 
 type FailRequestWithUsageParams struct {
@@ -695,9 +591,8 @@ func (q *Queries) FailRequestWithUsage(ctx context.Context, arg FailRequestWithU
 		&i.UserID,
 		&i.GatewayKeyID,
 		&i.ModelID,
-		&i.EntitlementID,
-		&i.ConfigRevisionID,
-		&i.ResourceDomain,
+		&i.SubscriptionID,
+		&i.ResourcePoolID,
 		&i.PriceVersionID,
 		&i.CostCurrency,
 		&i.InputRateNanosPerMillion,
@@ -747,107 +642,8 @@ func (q *Queries) GetActiveGatewayKeyForRequest(ctx context.Context, arg GetActi
 	return user_id, err
 }
 
-const getAuthorizedGatewayKeyModelDomain = `-- name: GetAuthorizedGatewayKeyModelDomain :one
-SELECT model.resource_domain
-FROM config_revision_models model
-JOIN config_revisions revision ON revision.id = model.revision_id
-JOIN gateway_key_models key_model
-  ON key_model.model_id = model.model_id AND key_model.gateway_key_id = $1
-WHERE model.revision_id = $2
-  AND model.model_id = $3
-  AND revision.published_at IS NOT NULL
-`
-
-type GetAuthorizedGatewayKeyModelDomainParams struct {
-	GatewayKeyID uuid.UUID `json:"gateway_key_id"`
-	RevisionID   uuid.UUID `json:"revision_id"`
-	ModelID      uuid.UUID `json:"model_id"`
-}
-
-func (q *Queries) GetAuthorizedGatewayKeyModelDomain(ctx context.Context, arg GetAuthorizedGatewayKeyModelDomainParams) (ResourceDomain, error) {
-	row := q.db.QueryRow(ctx, getAuthorizedGatewayKeyModelDomain, arg.GatewayKeyID, arg.RevisionID, arg.ModelID)
-	var resource_domain ResourceDomain
-	err := row.Scan(&resource_domain)
-	return resource_domain, err
-}
-
-const getEntitlementByGrantIdempotency = `-- name: GetEntitlementByGrantIdempotency :one
-SELECT e.id, e.user_id, e.plan, e.resource_domain, e.model_id, e.granted_tokens, e.starts_at, e.expires_at, e.concurrency_limit, e.rpm_limit, e.tpm_limit, e.created_at, le.note AS grant_note
-FROM ledger_events le
-JOIN entitlements e ON e.id = le.entitlement_id
-WHERE le.source_event_id = $1
-  AND le.kind = 'grant'
-  AND le.created_by = $2
-`
-
-type GetEntitlementByGrantIdempotencyParams struct {
-	SourceEventID *uuid.UUID `json:"source_event_id"`
-	CreatedBy     *uuid.UUID `json:"created_by"`
-}
-
-type GetEntitlementByGrantIdempotencyRow struct {
-	ID               uuid.UUID          `json:"id"`
-	UserID           uuid.UUID          `json:"user_id"`
-	Plan             PlanKind           `json:"plan"`
-	ResourceDomain   ResourceDomain     `json:"resource_domain"`
-	ModelID          *uuid.UUID         `json:"model_id"`
-	GrantedTokens    int64              `json:"granted_tokens"`
-	StartsAt         pgtype.Timestamptz `json:"starts_at"`
-	ExpiresAt        pgtype.Timestamptz `json:"expires_at"`
-	ConcurrencyLimit int32              `json:"concurrency_limit"`
-	RpmLimit         *int32             `json:"rpm_limit"`
-	TpmLimit         *int64             `json:"tpm_limit"`
-	CreatedAt        pgtype.Timestamptz `json:"created_at"`
-	GrantNote        *string            `json:"grant_note"`
-}
-
-func (q *Queries) GetEntitlementByGrantIdempotency(ctx context.Context, arg GetEntitlementByGrantIdempotencyParams) (GetEntitlementByGrantIdempotencyRow, error) {
-	row := q.db.QueryRow(ctx, getEntitlementByGrantIdempotency, arg.SourceEventID, arg.CreatedBy)
-	var i GetEntitlementByGrantIdempotencyRow
-	err := row.Scan(
-		&i.ID,
-		&i.UserID,
-		&i.Plan,
-		&i.ResourceDomain,
-		&i.ModelID,
-		&i.GrantedTokens,
-		&i.StartsAt,
-		&i.ExpiresAt,
-		&i.ConcurrencyLimit,
-		&i.RpmLimit,
-		&i.TpmLimit,
-		&i.CreatedAt,
-		&i.GrantNote,
-	)
-	return i, err
-}
-
-const getEntitlementForUpdate = `-- name: GetEntitlementForUpdate :one
-SELECT id, user_id, plan, resource_domain, model_id, granted_tokens, starts_at, expires_at, concurrency_limit, rpm_limit, tpm_limit, created_at FROM entitlements WHERE id = $1 FOR UPDATE
-`
-
-func (q *Queries) GetEntitlementForUpdate(ctx context.Context, id uuid.UUID) (Entitlement, error) {
-	row := q.db.QueryRow(ctx, getEntitlementForUpdate, id)
-	var i Entitlement
-	err := row.Scan(
-		&i.ID,
-		&i.UserID,
-		&i.Plan,
-		&i.ResourceDomain,
-		&i.ModelID,
-		&i.GrantedTokens,
-		&i.StartsAt,
-		&i.ExpiresAt,
-		&i.ConcurrencyLimit,
-		&i.RpmLimit,
-		&i.TpmLimit,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
 const getLedgerReservationByRequest = `-- name: GetLedgerReservationByRequest :one
-SELECT id, entitlement_id, request_id, state, reserved_tokens, charged_tokens, usage_source, reserve_event_id, terminal_event_id, created_at, updated_at FROM ledger_reservations WHERE request_id = $1
+SELECT id, subscription_id, request_id, state, reserved_tokens, charged_tokens, usage_source, reserve_event_id, terminal_event_id, created_at, updated_at FROM ledger_reservations WHERE request_id = $1
 `
 
 func (q *Queries) GetLedgerReservationByRequest(ctx context.Context, requestID uuid.UUID) (LedgerReservation, error) {
@@ -855,7 +651,7 @@ func (q *Queries) GetLedgerReservationByRequest(ctx context.Context, requestID u
 	var i LedgerReservation
 	err := row.Scan(
 		&i.ID,
-		&i.EntitlementID,
+		&i.SubscriptionID,
 		&i.RequestID,
 		&i.State,
 		&i.ReservedTokens,
@@ -870,7 +666,7 @@ func (q *Queries) GetLedgerReservationByRequest(ctx context.Context, requestID u
 }
 
 const getLedgerReservationByRequestForUpdate = `-- name: GetLedgerReservationByRequestForUpdate :one
-SELECT id, entitlement_id, request_id, state, reserved_tokens, charged_tokens, usage_source, reserve_event_id, terminal_event_id, created_at, updated_at FROM ledger_reservations WHERE request_id = $1 FOR UPDATE
+SELECT id, subscription_id, request_id, state, reserved_tokens, charged_tokens, usage_source, reserve_event_id, terminal_event_id, created_at, updated_at FROM ledger_reservations WHERE request_id = $1 FOR UPDATE
 `
 
 func (q *Queries) GetLedgerReservationByRequestForUpdate(ctx context.Context, requestID uuid.UUID) (LedgerReservation, error) {
@@ -878,7 +674,7 @@ func (q *Queries) GetLedgerReservationByRequestForUpdate(ctx context.Context, re
 	var i LedgerReservation
 	err := row.Scan(
 		&i.ID,
-		&i.EntitlementID,
+		&i.SubscriptionID,
 		&i.RequestID,
 		&i.State,
 		&i.ReservedTokens,
@@ -893,7 +689,7 @@ func (q *Queries) GetLedgerReservationByRequestForUpdate(ctx context.Context, re
 }
 
 const getLedgerReservationForUpdate = `-- name: GetLedgerReservationForUpdate :one
-SELECT id, entitlement_id, request_id, state, reserved_tokens, charged_tokens, usage_source, reserve_event_id, terminal_event_id, created_at, updated_at FROM ledger_reservations WHERE id = $1 FOR UPDATE
+SELECT id, subscription_id, request_id, state, reserved_tokens, charged_tokens, usage_source, reserve_event_id, terminal_event_id, created_at, updated_at FROM ledger_reservations WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) GetLedgerReservationForUpdate(ctx context.Context, id uuid.UUID) (LedgerReservation, error) {
@@ -901,7 +697,7 @@ func (q *Queries) GetLedgerReservationForUpdate(ctx context.Context, id uuid.UUI
 	var i LedgerReservation
 	err := row.Scan(
 		&i.ID,
-		&i.EntitlementID,
+		&i.SubscriptionID,
 		&i.RequestID,
 		&i.State,
 		&i.ReservedTokens,
@@ -915,19 +711,8 @@ func (q *Queries) GetLedgerReservationForUpdate(ctx context.Context, id uuid.UUI
 	return i, err
 }
 
-const getModelDomain = `-- name: GetModelDomain :one
-SELECT resource_domain FROM models WHERE id = $1
-`
-
-func (q *Queries) GetModelDomain(ctx context.Context, modelID uuid.UUID) (ResourceDomain, error) {
-	row := q.db.QueryRow(ctx, getModelDomain, modelID)
-	var resource_domain ResourceDomain
-	err := row.Scan(&resource_domain)
-	return resource_domain, err
-}
-
 const getRequest = `-- name: GetRequest :one
-SELECT id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, input_cost_nanos, output_cost_nanos, total_cost_nanos, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at FROM requests WHERE id = $1
+SELECT id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, subscription_id, resource_pool_id, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, input_cost_nanos, output_cost_nanos, total_cost_nanos, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at FROM requests WHERE id = $1
 `
 
 func (q *Queries) GetRequest(ctx context.Context, id uuid.UUID) (Request, error) {
@@ -940,9 +725,8 @@ func (q *Queries) GetRequest(ctx context.Context, id uuid.UUID) (Request, error)
 		&i.UserID,
 		&i.GatewayKeyID,
 		&i.ModelID,
-		&i.EntitlementID,
-		&i.ConfigRevisionID,
-		&i.ResourceDomain,
+		&i.SubscriptionID,
+		&i.ResourcePoolID,
 		&i.PriceVersionID,
 		&i.CostCurrency,
 		&i.InputRateNanosPerMillion,
@@ -969,7 +753,7 @@ func (q *Queries) GetRequest(ctx context.Context, id uuid.UUID) (Request, error)
 }
 
 const getRequestByIdempotencyKey = `-- name: GetRequestByIdempotencyKey :one
-SELECT id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, input_cost_nanos, output_cost_nanos, total_cost_nanos, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at FROM requests WHERE gateway_key_id = $1 AND idempotency_key = $2
+SELECT id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, subscription_id, resource_pool_id, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, input_cost_nanos, output_cost_nanos, total_cost_nanos, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at FROM requests WHERE gateway_key_id = $1 AND idempotency_key = $2
 `
 
 type GetRequestByIdempotencyKeyParams struct {
@@ -987,9 +771,8 @@ func (q *Queries) GetRequestByIdempotencyKey(ctx context.Context, arg GetRequest
 		&i.UserID,
 		&i.GatewayKeyID,
 		&i.ModelID,
-		&i.EntitlementID,
-		&i.ConfigRevisionID,
-		&i.ResourceDomain,
+		&i.SubscriptionID,
+		&i.ResourcePoolID,
 		&i.PriceVersionID,
 		&i.CostCurrency,
 		&i.InputRateNanosPerMillion,
@@ -1016,7 +799,7 @@ func (q *Queries) GetRequestByIdempotencyKey(ctx context.Context, arg GetRequest
 }
 
 const getRequestForUpdate = `-- name: GetRequestForUpdate :one
-SELECT id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, input_cost_nanos, output_cost_nanos, total_cost_nanos, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at FROM requests WHERE id = $1 FOR UPDATE
+SELECT id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, subscription_id, resource_pool_id, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, input_cost_nanos, output_cost_nanos, total_cost_nanos, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at FROM requests WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) GetRequestForUpdate(ctx context.Context, id uuid.UUID) (Request, error) {
@@ -1029,9 +812,8 @@ func (q *Queries) GetRequestForUpdate(ctx context.Context, id uuid.UUID) (Reques
 		&i.UserID,
 		&i.GatewayKeyID,
 		&i.ModelID,
-		&i.EntitlementID,
-		&i.ConfigRevisionID,
-		&i.ResourceDomain,
+		&i.SubscriptionID,
+		&i.ResourcePoolID,
 		&i.PriceVersionID,
 		&i.CostCurrency,
 		&i.InputRateNanosPerMillion,
@@ -1060,7 +842,8 @@ func (q *Queries) GetRequestForUpdate(ctx context.Context, id uuid.UUID) (Reques
 const getRequestLog = `-- name: GetRequestLog :one
 SELECT request.id, request.user_id, owner.display_name AS user_name,
        request.gateway_key_id, key.prefix AS key_prefix,
-       request.model_id, model.public_name AS model_alias, request.resource_domain,
+       request.model_id, model.public_name AS model_alias,
+       request.resource_pool_id, pool.name AS resource_pool_name, pool.slug AS resource_pool_slug,
        request.status, request.stream, request.input_tokens, request.output_tokens,
        request.usage_source, request.error_kind, request.accepted_at, request.completed_at,
        request.updated_at,
@@ -1070,6 +853,7 @@ FROM requests AS request
 JOIN users AS owner ON owner.id = request.user_id
 JOIN gateway_keys AS key ON key.id = request.gateway_key_id
 JOIN models AS model ON model.id = request.model_id
+JOIN resource_pools AS pool ON pool.id = request.resource_pool_id
 WHERE request.id = $1
   AND ($2::uuid IS NULL OR request.user_id = $2)
 `
@@ -1087,7 +871,9 @@ type GetRequestLogRow struct {
 	KeyPrefix         string             `json:"key_prefix"`
 	ModelID           uuid.UUID          `json:"model_id"`
 	ModelAlias        string             `json:"model_alias"`
-	ResourceDomain    ResourceDomain     `json:"resource_domain"`
+	ResourcePoolID    uuid.UUID          `json:"resource_pool_id"`
+	ResourcePoolName  string             `json:"resource_pool_name"`
+	ResourcePoolSlug  string             `json:"resource_pool_slug"`
 	Status            RequestStatus      `json:"status"`
 	Stream            bool               `json:"stream"`
 	InputTokens       *int64             `json:"input_tokens"`
@@ -1112,7 +898,9 @@ func (q *Queries) GetRequestLog(ctx context.Context, arg GetRequestLogParams) (G
 		&i.KeyPrefix,
 		&i.ModelID,
 		&i.ModelAlias,
-		&i.ResourceDomain,
+		&i.ResourcePoolID,
+		&i.ResourcePoolName,
+		&i.ResourcePoolSlug,
 		&i.Status,
 		&i.Stream,
 		&i.InputTokens,
@@ -1135,7 +923,7 @@ WHERE id = $1
   AND execution_id = $2
   AND execution_generation = $3
   AND status IN ('dispatching', 'streaming')
-RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, input_cost_nanos, output_cost_nanos, total_cost_nanos, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
+RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, subscription_id, resource_pool_id, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, input_cost_nanos, output_cost_nanos, total_cost_nanos, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
 `
 
 type HeartbeatRequestExecutionParams struct {
@@ -1154,9 +942,8 @@ func (q *Queries) HeartbeatRequestExecution(ctx context.Context, arg HeartbeatRe
 		&i.UserID,
 		&i.GatewayKeyID,
 		&i.ModelID,
-		&i.EntitlementID,
-		&i.ConfigRevisionID,
-		&i.ResourceDomain,
+		&i.SubscriptionID,
+		&i.ResourcePoolID,
 		&i.PriceVersionID,
 		&i.CostCurrency,
 		&i.InputRateNanosPerMillion,
@@ -1182,231 +969,54 @@ func (q *Queries) HeartbeatRequestExecution(ctx context.Context, arg HeartbeatRe
 	return i, err
 }
 
-const listActiveEntitlements = `-- name: ListActiveEntitlements :many
-SELECT id, user_id, plan, resource_domain, model_id, granted_tokens, starts_at, expires_at, concurrency_limit, rpm_limit, tpm_limit, created_at FROM entitlements WHERE user_id = $1 AND starts_at <= now() AND expires_at > now() ORDER BY resource_domain, expires_at, id
-`
-
-func (q *Queries) ListActiveEntitlements(ctx context.Context, userID uuid.UUID) ([]Entitlement, error) {
-	rows, err := q.db.Query(ctx, listActiveEntitlements, userID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []Entitlement{}
-	for rows.Next() {
-		var i Entitlement
-		if err := rows.Scan(
-			&i.ID,
-			&i.UserID,
-			&i.Plan,
-			&i.ResourceDomain,
-			&i.ModelID,
-			&i.GrantedTokens,
-			&i.StartsAt,
-			&i.ExpiresAt,
-			&i.ConcurrencyLimit,
-			&i.RpmLimit,
-			&i.TpmLimit,
-			&i.CreatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listApplicableEntitlementsForUpdate = `-- name: ListApplicableEntitlementsForUpdate :many
-SELECT id, user_id, plan, resource_domain, model_id, granted_tokens, starts_at, expires_at, concurrency_limit, rpm_limit, tpm_limit, created_at FROM entitlements
-WHERE user_id = $1
-  AND resource_domain = $2
-  AND starts_at <= now() AND expires_at > now()
-  AND (model_id IS NULL OR model_id = $3)
-ORDER BY (model_id IS NOT NULL) DESC, expires_at, id
-FOR UPDATE
-`
-
-type ListApplicableEntitlementsForUpdateParams struct {
-	UserID         uuid.UUID      `json:"user_id"`
-	ResourceDomain ResourceDomain `json:"resource_domain"`
-	ModelID        *uuid.UUID     `json:"model_id"`
-}
-
-func (q *Queries) ListApplicableEntitlementsForUpdate(ctx context.Context, arg ListApplicableEntitlementsForUpdateParams) ([]Entitlement, error) {
-	rows, err := q.db.Query(ctx, listApplicableEntitlementsForUpdate, arg.UserID, arg.ResourceDomain, arg.ModelID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []Entitlement{}
-	for rows.Next() {
-		var i Entitlement
-		if err := rows.Scan(
-			&i.ID,
-			&i.UserID,
-			&i.Plan,
-			&i.ResourceDomain,
-			&i.ModelID,
-			&i.GrantedTokens,
-			&i.StartsAt,
-			&i.ExpiresAt,
-			&i.ConcurrencyLimit,
-			&i.RpmLimit,
-			&i.TpmLimit,
-			&i.CreatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listEntitlementsWithBalance = `-- name: ListEntitlementsWithBalance :many
-SELECT e.id, e.user_id, e.plan, e.resource_domain, e.model_id, e.granted_tokens, e.starts_at, e.expires_at, e.concurrency_limit, e.rpm_limit, e.tpm_limit, e.created_at, owner.display_name AS owner_name, model.public_name AS model_alias,
-       coalesce(sum(le.token_delta), 0)::bigint AS balance_tokens
-FROM entitlements e
-JOIN users owner ON owner.id = e.user_id
-LEFT JOIN models model ON model.id = e.model_id
-LEFT JOIN ledger_events le ON le.entitlement_id = e.id
-WHERE ($1::uuid IS NULL OR e.user_id = $1)
-  AND ($2::text = '' OR concat_ws(' ', owner.display_name, owner.email, model.public_name, e.plan::text, e.resource_domain::text) ILIKE '%' || $2::text || '%')
-  AND ($3::text = ''
-    OR $3::text = 'scheduled' AND e.starts_at > now()
-    OR $3::text = 'active' AND e.starts_at <= now() AND e.expires_at > now()
-    OR $3::text = 'expired' AND e.expires_at <= now())
-  AND ($4::text = '' OR e.resource_domain::text = $4::text)
-GROUP BY e.id, owner.display_name, model.public_name
-ORDER BY e.created_at DESC, e.id
-LIMIT $6 OFFSET $5
-`
-
-type ListEntitlementsWithBalanceParams struct {
-	UserID         *uuid.UUID `json:"user_id"`
-	Search         string     `json:"search"`
-	Status         string     `json:"status"`
-	ResourceDomain string     `json:"resource_domain"`
-	PageOffset     int32      `json:"page_offset"`
-	PageSize       int32      `json:"page_size"`
-}
-
-type ListEntitlementsWithBalanceRow struct {
-	ID               uuid.UUID          `json:"id"`
-	UserID           uuid.UUID          `json:"user_id"`
-	Plan             PlanKind           `json:"plan"`
-	ResourceDomain   ResourceDomain     `json:"resource_domain"`
-	ModelID          *uuid.UUID         `json:"model_id"`
-	GrantedTokens    int64              `json:"granted_tokens"`
-	StartsAt         pgtype.Timestamptz `json:"starts_at"`
-	ExpiresAt        pgtype.Timestamptz `json:"expires_at"`
-	ConcurrencyLimit int32              `json:"concurrency_limit"`
-	RpmLimit         *int32             `json:"rpm_limit"`
-	TpmLimit         *int64             `json:"tpm_limit"`
-	CreatedAt        pgtype.Timestamptz `json:"created_at"`
-	OwnerName        string             `json:"owner_name"`
-	ModelAlias       *string            `json:"model_alias"`
-	BalanceTokens    int64              `json:"balance_tokens"`
-}
-
-func (q *Queries) ListEntitlementsWithBalance(ctx context.Context, arg ListEntitlementsWithBalanceParams) ([]ListEntitlementsWithBalanceRow, error) {
-	rows, err := q.db.Query(ctx, listEntitlementsWithBalance,
-		arg.UserID,
-		arg.Search,
-		arg.Status,
-		arg.ResourceDomain,
-		arg.PageOffset,
-		arg.PageSize,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListEntitlementsWithBalanceRow{}
-	for rows.Next() {
-		var i ListEntitlementsWithBalanceRow
-		if err := rows.Scan(
-			&i.ID,
-			&i.UserID,
-			&i.Plan,
-			&i.ResourceDomain,
-			&i.ModelID,
-			&i.GrantedTokens,
-			&i.StartsAt,
-			&i.ExpiresAt,
-			&i.ConcurrencyLimit,
-			&i.RpmLimit,
-			&i.TpmLimit,
-			&i.CreatedAt,
-			&i.OwnerName,
-			&i.ModelAlias,
-			&i.BalanceTokens,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listLedgerEvents = `-- name: ListLedgerEvents :many
-SELECT event.id, event.user_id, event.entitlement_id, event.request_id, event.reservation_id, event.kind, event.token_delta, event.reserved_tokens, event.input_tokens, event.output_tokens, event.usage_source, event.source_event_id, event.note, event.created_by, event.created_at, entitlement.resource_domain, owner.display_name AS owner_name,
-       actor.display_name AS actor_name
+SELECT event.id, event.user_id, event.subscription_id, event.request_id, event.reservation_id, event.kind, event.token_delta, event.reserved_tokens, event.input_tokens, event.output_tokens, event.usage_source, event.source_event_id, event.note, event.created_by, event.created_at, plan.name AS service_plan_name, owner.display_name AS owner_name, actor.display_name AS actor_name
 FROM ledger_events event
 JOIN users owner ON owner.id = event.user_id
-JOIN entitlements entitlement ON entitlement.id = event.entitlement_id
+JOIN subscriptions subscription ON subscription.id = event.subscription_id
+JOIN service_plan_versions version ON version.id = subscription.service_plan_version_id
+JOIN service_plans plan ON plan.id = version.service_plan_id
 LEFT JOIN users actor ON actor.id = event.created_by
 WHERE ($1::uuid IS NULL OR event.user_id = $1)
-  AND ($2::uuid IS NULL OR event.entitlement_id = $2)
-  AND ($3::text = '' OR concat_ws(' ', owner.display_name, owner.email, actor.display_name, actor.email, event.note, event.request_id::text) ILIKE '%' || $3::text || '%')
-  AND ($4::text = '' OR entitlement.resource_domain::text = $4::text)
-ORDER BY event.created_at DESC, event.id LIMIT $6 OFFSET $5
+  AND ($2::uuid IS NULL OR event.subscription_id = $2)
+  AND ($3::text = '' OR concat_ws(' ', owner.display_name, owner.email, plan.name, actor.display_name, actor.email, event.note, event.request_id::text) ILIKE '%' || $3::text || '%')
+ORDER BY event.created_at DESC, event.id LIMIT $5 OFFSET $4
 `
 
 type ListLedgerEventsParams struct {
 	UserID         *uuid.UUID `json:"user_id"`
-	EntitlementID  *uuid.UUID `json:"entitlement_id"`
+	SubscriptionID *uuid.UUID `json:"subscription_id"`
 	Search         string     `json:"search"`
-	ResourceDomain string     `json:"resource_domain"`
 	PageOffset     int32      `json:"page_offset"`
 	PageSize       int32      `json:"page_size"`
 }
 
 type ListLedgerEventsRow struct {
-	ID             uuid.UUID          `json:"id"`
-	UserID         uuid.UUID          `json:"user_id"`
-	EntitlementID  uuid.UUID          `json:"entitlement_id"`
-	RequestID      *uuid.UUID         `json:"request_id"`
-	ReservationID  *uuid.UUID         `json:"reservation_id"`
-	Kind           LedgerEventKind    `json:"kind"`
-	TokenDelta     int64              `json:"token_delta"`
-	ReservedTokens int64              `json:"reserved_tokens"`
-	InputTokens    int64              `json:"input_tokens"`
-	OutputTokens   int64              `json:"output_tokens"`
-	UsageSource    UsageSource        `json:"usage_source"`
-	SourceEventID  *uuid.UUID         `json:"source_event_id"`
-	Note           *string            `json:"note"`
-	CreatedBy      *uuid.UUID         `json:"created_by"`
-	CreatedAt      pgtype.Timestamptz `json:"created_at"`
-	ResourceDomain ResourceDomain     `json:"resource_domain"`
-	OwnerName      string             `json:"owner_name"`
-	ActorName      *string            `json:"actor_name"`
+	ID              uuid.UUID          `json:"id"`
+	UserID          uuid.UUID          `json:"user_id"`
+	SubscriptionID  uuid.UUID          `json:"subscription_id"`
+	RequestID       *uuid.UUID         `json:"request_id"`
+	ReservationID   *uuid.UUID         `json:"reservation_id"`
+	Kind            LedgerEventKind    `json:"kind"`
+	TokenDelta      int64              `json:"token_delta"`
+	ReservedTokens  int64              `json:"reserved_tokens"`
+	InputTokens     int64              `json:"input_tokens"`
+	OutputTokens    int64              `json:"output_tokens"`
+	UsageSource     UsageSource        `json:"usage_source"`
+	SourceEventID   *uuid.UUID         `json:"source_event_id"`
+	Note            *string            `json:"note"`
+	CreatedBy       *uuid.UUID         `json:"created_by"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	ServicePlanName string             `json:"service_plan_name"`
+	OwnerName       string             `json:"owner_name"`
+	ActorName       *string            `json:"actor_name"`
 }
 
 func (q *Queries) ListLedgerEvents(ctx context.Context, arg ListLedgerEventsParams) ([]ListLedgerEventsRow, error) {
 	rows, err := q.db.Query(ctx, listLedgerEvents,
 		arg.UserID,
-		arg.EntitlementID,
+		arg.SubscriptionID,
 		arg.Search,
-		arg.ResourceDomain,
 		arg.PageOffset,
 		arg.PageSize,
 	)
@@ -1420,7 +1030,7 @@ func (q *Queries) ListLedgerEvents(ctx context.Context, arg ListLedgerEventsPara
 		if err := rows.Scan(
 			&i.ID,
 			&i.UserID,
-			&i.EntitlementID,
+			&i.SubscriptionID,
 			&i.RequestID,
 			&i.ReservationID,
 			&i.Kind,
@@ -1433,7 +1043,7 @@ func (q *Queries) ListLedgerEvents(ctx context.Context, arg ListLedgerEventsPara
 			&i.Note,
 			&i.CreatedBy,
 			&i.CreatedAt,
-			&i.ResourceDomain,
+			&i.ServicePlanName,
 			&i.OwnerName,
 			&i.ActorName,
 		); err != nil {
@@ -1447,12 +1057,12 @@ func (q *Queries) ListLedgerEvents(ctx context.Context, arg ListLedgerEventsPara
 	return items, nil
 }
 
-const listLedgerEventsByEntitlement = `-- name: ListLedgerEventsByEntitlement :many
-SELECT id, user_id, entitlement_id, request_id, reservation_id, kind, token_delta, reserved_tokens, input_tokens, output_tokens, usage_source, source_event_id, note, created_by, created_at FROM ledger_events WHERE entitlement_id = $1 ORDER BY created_at, id
+const listLedgerEventsBySubscription = `-- name: ListLedgerEventsBySubscription :many
+SELECT id, user_id, subscription_id, request_id, reservation_id, kind, token_delta, reserved_tokens, input_tokens, output_tokens, usage_source, source_event_id, note, created_by, created_at FROM ledger_events WHERE subscription_id = $1 ORDER BY created_at, id
 `
 
-func (q *Queries) ListLedgerEventsByEntitlement(ctx context.Context, entitlementID uuid.UUID) ([]LedgerEvent, error) {
-	rows, err := q.db.Query(ctx, listLedgerEventsByEntitlement, entitlementID)
+func (q *Queries) ListLedgerEventsBySubscription(ctx context.Context, subscriptionID uuid.UUID) ([]LedgerEvent, error) {
+	rows, err := q.db.Query(ctx, listLedgerEventsBySubscription, subscriptionID)
 	if err != nil {
 		return nil, err
 	}
@@ -1463,7 +1073,7 @@ func (q *Queries) ListLedgerEventsByEntitlement(ctx context.Context, entitlement
 		if err := rows.Scan(
 			&i.ID,
 			&i.UserID,
-			&i.EntitlementID,
+			&i.SubscriptionID,
 			&i.RequestID,
 			&i.ReservationID,
 			&i.Kind,
@@ -1609,7 +1219,8 @@ SELECT attempt.id, attempt.sequence, attempt.status, provider.name AS provider_n
        attempt.usage_source, attempt.created_at
 FROM request_attempts AS attempt
 JOIN provider_credentials AS credential ON credential.id = attempt.credential_id
-JOIN providers AS provider ON provider.id = credential.provider_id
+JOIN resource_pools AS pool ON pool.id = credential.resource_pool_id
+JOIN providers AS provider ON provider.id = pool.provider_id
 WHERE attempt.request_id = $1
 ORDER BY attempt.sequence, attempt.id
 `
@@ -1673,7 +1284,8 @@ func (q *Queries) ListRequestLogAttempts(ctx context.Context, requestID uuid.UUI
 const listRequestLogs = `-- name: ListRequestLogs :many
 SELECT request.id, request.user_id, owner.display_name AS user_name,
        request.gateway_key_id, key.prefix AS key_prefix,
-       request.model_id, model.public_name AS model_alias, request.resource_domain,
+       request.model_id, model.public_name AS model_alias,
+       request.resource_pool_id, pool.name AS resource_pool_name, pool.slug AS resource_pool_slug,
        request.status, request.stream, request.input_tokens, request.output_tokens,
        request.usage_source, request.error_kind, request.accepted_at, request.completed_at,
        request.updated_at,
@@ -1683,14 +1295,15 @@ FROM requests AS request
 JOIN users AS owner ON owner.id = request.user_id
 JOIN gateway_keys AS key ON key.id = request.gateway_key_id
 JOIN models AS model ON model.id = request.model_id
+JOIN resource_pools AS pool ON pool.id = request.resource_pool_id
 WHERE ($1::uuid IS NULL OR request.user_id = $1)
   AND ($2::uuid IS NULL OR request.gateway_key_id = $2)
   AND ($3::uuid IS NULL OR request.model_id = $3)
   AND ($4::text = '' OR request.status::text = $4::text)
   AND request.accepted_at >= $5
   AND request.accepted_at < $6
-  AND ($7::text = '' OR concat_ws(' ', owner.display_name, owner.email, key.prefix, model.public_name, request.id::text) ILIKE '%' || $7::text || '%')
-  AND ($8::text = '' OR request.resource_domain::text = $8::text)
+  AND ($7::text = '' OR concat_ws(' ', owner.display_name, owner.email, key.prefix, model.public_name, pool.name, request.id::text) ILIKE '%' || $7::text || '%')
+  AND ($8::uuid IS NULL OR request.resource_pool_id = $8)
 ORDER BY request.accepted_at DESC, request.id DESC
 LIMIT $10 OFFSET $9
 `
@@ -1703,7 +1316,7 @@ type ListRequestLogsParams struct {
 	FromTime       pgtype.Timestamptz `json:"from_time"`
 	ToTime         pgtype.Timestamptz `json:"to_time"`
 	Search         string             `json:"search"`
-	ResourceDomain string             `json:"resource_domain"`
+	ResourcePoolID *uuid.UUID         `json:"resource_pool_id"`
 	PageOffset     int32              `json:"page_offset"`
 	PageSize       int32              `json:"page_size"`
 }
@@ -1716,7 +1329,9 @@ type ListRequestLogsRow struct {
 	KeyPrefix         string             `json:"key_prefix"`
 	ModelID           uuid.UUID          `json:"model_id"`
 	ModelAlias        string             `json:"model_alias"`
-	ResourceDomain    ResourceDomain     `json:"resource_domain"`
+	ResourcePoolID    uuid.UUID          `json:"resource_pool_id"`
+	ResourcePoolName  string             `json:"resource_pool_name"`
+	ResourcePoolSlug  string             `json:"resource_pool_slug"`
 	Status            RequestStatus      `json:"status"`
 	Stream            bool               `json:"stream"`
 	InputTokens       *int64             `json:"input_tokens"`
@@ -1739,7 +1354,7 @@ func (q *Queries) ListRequestLogs(ctx context.Context, arg ListRequestLogsParams
 		arg.FromTime,
 		arg.ToTime,
 		arg.Search,
-		arg.ResourceDomain,
+		arg.ResourcePoolID,
 		arg.PageOffset,
 		arg.PageSize,
 	)
@@ -1758,7 +1373,9 @@ func (q *Queries) ListRequestLogs(ctx context.Context, arg ListRequestLogsParams
 			&i.KeyPrefix,
 			&i.ModelID,
 			&i.ModelAlias,
-			&i.ResourceDomain,
+			&i.ResourcePoolID,
+			&i.ResourcePoolName,
+			&i.ResourcePoolSlug,
 			&i.Status,
 			&i.Stream,
 			&i.InputTokens,
@@ -1782,7 +1399,7 @@ func (q *Queries) ListRequestLogs(ctx context.Context, arg ListRequestLogsParams
 }
 
 const listRequests = `-- name: ListRequests :many
-SELECT id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, input_cost_nanos, output_cost_nanos, total_cost_nanos, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at FROM requests
+SELECT id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, subscription_id, resource_pool_id, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, input_cost_nanos, output_cost_nanos, total_cost_nanos, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at FROM requests
 WHERE ($1::uuid IS NULL OR user_id = $1)
 ORDER BY accepted_at DESC, id LIMIT $3 OFFSET $2
 `
@@ -1809,9 +1426,8 @@ func (q *Queries) ListRequests(ctx context.Context, arg ListRequestsParams) ([]R
 			&i.UserID,
 			&i.GatewayKeyID,
 			&i.ModelID,
-			&i.EntitlementID,
-			&i.ConfigRevisionID,
-			&i.ResourceDomain,
+			&i.SubscriptionID,
+			&i.ResourcePoolID,
 			&i.PriceVersionID,
 			&i.CostCurrency,
 			&i.InputRateNanosPerMillion,
@@ -1889,7 +1505,7 @@ WHERE id = $1
   AND execution_id = $2
   AND execution_generation = $3
   AND status IN ('dispatching', 'streaming')
-RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, input_cost_nanos, output_cost_nanos, total_cost_nanos, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
+RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, subscription_id, resource_pool_id, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, input_cost_nanos, output_cost_nanos, total_cost_nanos, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
 `
 
 type MarkRequestExecutionStreamingParams struct {
@@ -1908,9 +1524,8 @@ func (q *Queries) MarkRequestExecutionStreaming(ctx context.Context, arg MarkReq
 		&i.UserID,
 		&i.GatewayKeyID,
 		&i.ModelID,
-		&i.EntitlementID,
-		&i.ConfigRevisionID,
-		&i.ResourceDomain,
+		&i.SubscriptionID,
+		&i.ResourcePoolID,
 		&i.PriceVersionID,
 		&i.CostCurrency,
 		&i.InputRateNanosPerMillion,
@@ -1944,7 +1559,7 @@ WHERE id = $3
   AND execution_id = $4
   AND execution_generation = $5
   AND status IN ('dispatching', 'streaming')
-RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, input_cost_nanos, output_cost_nanos, total_cost_nanos, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
+RETURNING id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, subscription_id, resource_pool_id, price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, input_cost_nanos, output_cost_nanos, total_cost_nanos, status, stream, execution_id, execution_generation, execution_claimed_at, execution_heartbeat_at, input_tokens, output_tokens, usage_source, error_kind, error_detail, accepted_at, completed_at, updated_at
 `
 
 type MarkRequestExecutionUncertainParams struct {
@@ -1971,9 +1586,8 @@ func (q *Queries) MarkRequestExecutionUncertain(ctx context.Context, arg MarkReq
 		&i.UserID,
 		&i.GatewayKeyID,
 		&i.ModelID,
-		&i.EntitlementID,
-		&i.ConfigRevisionID,
-		&i.ResourceDomain,
+		&i.SubscriptionID,
+		&i.ResourcePoolID,
 		&i.PriceVersionID,
 		&i.CostCurrency,
 		&i.InputRateNanosPerMillion,
@@ -2048,6 +1662,17 @@ type RecoverStaleRequestExecutionsParams struct {
 
 func (q *Queries) RecoverStaleRequestExecutions(ctx context.Context, arg RecoverStaleRequestExecutionsParams) (int64, error) {
 	row := q.db.QueryRow(ctx, recoverStaleRequestExecutions, arg.StaleBefore, arg.BatchSize)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const subscriptionBalance = `-- name: SubscriptionBalance :one
+SELECT coalesce(sum(token_delta), 0)::bigint FROM ledger_events WHERE subscription_id = $1
+`
+
+func (q *Queries) SubscriptionBalance(ctx context.Context, subscriptionID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, subscriptionBalance, subscriptionID)
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err

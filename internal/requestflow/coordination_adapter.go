@@ -20,7 +20,7 @@ type Capacity struct {
 
 type CoordinationConfig struct {
 	Global            Capacity
-	ResourceDomain    Capacity
+	ResourcePool      Capacity
 	User              Capacity
 	GatewayKey        Capacity
 	Model             Capacity
@@ -178,7 +178,7 @@ func NewCoordinationAdapter(coordinator *coordination.Coordinator, config Coordi
 		config.RetryInterval < 10*time.Millisecond || config.RetryInterval > time.Second {
 		return nil, errors.New("coordination adapter configuration is invalid")
 	}
-	for _, capacity := range []Capacity{config.Global, config.ResourceDomain, config.User, config.GatewayKey, config.Model, config.Provider, config.DefaultCredential} {
+	for _, capacity := range []Capacity{config.Global, config.ResourcePool, config.User, config.GatewayKey, config.Model, config.Provider, config.DefaultCredential} {
 		if capacity.RequestsPerMinute < 1 || capacity.TokensPerMinute < 1 || capacity.Concurrency < 1 {
 			return nil, errors.New("all coordination capacity defaults must be positive")
 		}
@@ -201,15 +201,15 @@ func (a *CoordinationAdapter) Acquire(ctx context.Context, request LeaseRequest)
 	if request.Concurrency != nil {
 		credentialCapacity.Concurrency = int64(*request.Concurrency)
 	}
-	capacities := []Capacity{a.config.Global, a.config.ResourceDomain, a.config.User, a.config.GatewayKey, a.config.Model, a.config.Provider, credentialCapacity}
+	capacities := []Capacity{a.config.Global, a.config.ResourcePool, a.config.User, a.config.GatewayKey, a.config.Model, a.config.Provider, credentialCapacity}
 	concurrencyLimits := make([]coordination.ConcurrencyLimit, len(dimensions), len(dimensions)+1)
 	for index := range dimensions {
 		concurrencyLimits[index] = coordination.ConcurrencyLimit{Dimension: dimensions[index], MaxInFlight: capacities[index].Concurrency}
 	}
-	if request.EntitlementID != uuid.Nil && request.EntitlementConcurrency > 0 {
+	if request.SubscriptionID != uuid.Nil && request.SubscriptionConcurrency > 0 {
 		concurrencyLimits = append(concurrencyLimits, coordination.ConcurrencyLimit{
-			Dimension:   coordination.Dimension{Scope: coordination.ScopeEntitlement, SubjectID: request.EntitlementID.String()},
-			MaxInFlight: int64(request.EntitlementConcurrency),
+			Dimension:   coordination.Dimension{Scope: coordination.ScopeSubscription, SubjectID: request.SubscriptionID.String()},
+			MaxInFlight: int64(request.SubscriptionConcurrency),
 		})
 	}
 	leaseDecision, wait, err := a.acquireConcurrency(ctx, request.ExecutionID.String(), concurrencyLimits, request.CapacityWaitDeadline)
@@ -228,13 +228,13 @@ func (a *CoordinationAdapter) Acquire(ctx context.Context, request LeaseRequest)
 			minuteBucket(dimension, coordination.MetricTokens, capacity.TokensPerMinute, request.EstimatedTokens),
 		)
 	}
-	if request.EntitlementID != uuid.Nil {
-		entitlementDimension := coordination.Dimension{Scope: coordination.ScopeEntitlement, SubjectID: request.EntitlementID.String()}
-		if request.EntitlementRPMLimit != nil {
-			rateLimits = append(rateLimits, minuteBucket(entitlementDimension, coordination.MetricRequests, int64(*request.EntitlementRPMLimit), 1))
+	if request.SubscriptionID != uuid.Nil {
+		subscriptionDimension := coordination.Dimension{Scope: coordination.ScopeSubscription, SubjectID: request.SubscriptionID.String()}
+		if request.SubscriptionRPMLimit != nil {
+			rateLimits = append(rateLimits, minuteBucket(subscriptionDimension, coordination.MetricRequests, int64(*request.SubscriptionRPMLimit), 1))
 		}
-		if request.EntitlementTPMLimit != nil {
-			rateLimits = append(rateLimits, minuteBucket(entitlementDimension, coordination.MetricTokens, *request.EntitlementTPMLimit, request.EstimatedTokens))
+		if request.SubscriptionTPMLimit != nil {
+			rateLimits = append(rateLimits, minuteBucket(subscriptionDimension, coordination.MetricTokens, *request.SubscriptionTPMLimit, request.EstimatedTokens))
 		}
 	}
 	rateDecision, err := a.coordinator.AcquireRate(ctx, rateLimits)
@@ -303,7 +303,7 @@ func admissionGateError(err error) error {
 func requestDimensions(request LeaseRequest) []coordination.Dimension {
 	return []coordination.Dimension{
 		coordination.GlobalDimension(),
-		{Scope: coordination.ScopeResourceDomain, SubjectID: string(request.ResourceDomain)},
+		{Scope: coordination.ScopeResourcePool, SubjectID: request.ResourcePoolID.String()},
 		{Scope: coordination.ScopeUser, SubjectID: request.UserID.String()},
 		{Scope: coordination.ScopeGatewayKey, SubjectID: request.GatewayKeyID.String()},
 		{Scope: coordination.ScopeModel, SubjectID: request.ModelID.String()},

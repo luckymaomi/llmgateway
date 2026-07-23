@@ -3,6 +3,7 @@ package controlapi
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -19,6 +20,7 @@ type siteProfileService interface {
 
 type SiteProfileAPI struct {
 	service siteProfileService
+	logger  *slog.Logger
 }
 
 type siteProfileView struct {
@@ -29,11 +31,14 @@ type siteProfileView struct {
 	UpdatedAt   time.Time `json:"updatedAt"`
 }
 
-func NewSiteProfileAPI(service siteProfileService) *SiteProfileAPI {
+func NewSiteProfileAPI(service siteProfileService, logger *slog.Logger) *SiteProfileAPI {
 	if service == nil {
 		panic("site profile service is required")
 	}
-	return &SiteProfileAPI{service: service}
+	if logger == nil {
+		panic("site profile logger is required")
+	}
+	return &SiteProfileAPI{service: service, logger: logger}
 }
 
 func (a *SiteProfileAPI) RegisterAuthenticatedRoutes(router chi.Router, authorizationMiddleware, mutationMiddleware func(http.Handler) http.Handler) {
@@ -43,6 +48,7 @@ func (a *SiteProfileAPI) RegisterAuthenticatedRoutes(router chi.Router, authoriz
 func (a *SiteProfileAPI) get(w http.ResponseWriter, r *http.Request) {
 	profile, err := a.service.Get(r.Context())
 	if err != nil {
+		a.logger.Error("site profile read failed", "request_id", httpserver.RequestIDFromContext(r.Context()), "error", err)
 		writeProblem(w, r, problem{Status: http.StatusServiceUnavailable, Code: "site_profile_unavailable", Message: "Site profile is unavailable.", Retryable: true})
 		return
 	}
@@ -80,6 +86,7 @@ func (a *SiteProfileAPI) writeError(w http.ResponseWriter, r *http.Request, err 
 	case errors.Is(err, siteprofile.ErrConflict):
 		writeProblem(w, r, problem{Status: http.StatusConflict, Code: "conflict", Message: "Site profile changed before this update.", Stage: "site_profile", Retryable: true})
 	default:
+		a.logger.Error("site profile update failed", "request_id", httpserver.RequestIDFromContext(r.Context()), "error", err)
 		writeProblem(w, r, problem{Status: http.StatusServiceUnavailable, Code: "site_profile_unavailable", Message: "Site profile is unavailable.", Stage: "site_profile", Retryable: true})
 	}
 }

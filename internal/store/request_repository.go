@@ -26,8 +26,8 @@ func NewRequestRepository(connections *Connections) *RequestRepository {
 	return &RequestRepository{connections: connections, queries: db.New(connections.Postgres)}
 }
 
-func (r *RequestRepository) ListPublishedModels(ctx context.Context, gatewayKeyID uuid.UUID) ([]requestflow.Model, error) {
-	rows, err := r.queries.ListPublishedModelsForKey(ctx, gatewayKeyID)
+func (r *RequestRepository) ListAvailableModels(ctx context.Context, gatewayKeyID uuid.UUID) ([]requestflow.Model, error) {
+	rows, err := r.queries.ListAvailableModelsForKey(ctx, gatewayKeyID)
 	if err != nil {
 		return nil, err
 	}
@@ -38,23 +38,23 @@ func (r *RequestRepository) ListPublishedModels(ctx context.Context, gatewayKeyI
 			return nil, fmt.Errorf("decode capabilities for model %s: %w", row.ID, err)
 		}
 		models = append(models, requestflow.Model{
-			ConfigRevisionID: row.RevisionID, ID: row.ID, PublicName: row.PublicName, UpstreamName: row.UpstreamName,
+			ID: row.ID, PublicName: row.PublicName, UpstreamName: row.UpstreamName,
 			ProviderID: row.ProviderID, ProviderSlug: row.ProviderSlug, ProviderKind: providers.Kind(row.ProviderKind), ProviderBaseURL: row.ProviderBaseUrl,
-			ResourceDomain: registry.ResourceDomain(row.ResourceDomain), Capabilities: capabilities, CreatedAt: row.CreatedAt.Time,
+			Capabilities: capabilities, CreatedAt: row.CreatedAt.Time,
 		})
 	}
 	return models, nil
 }
 
-func (r *RequestRepository) ResolvePublishedModel(ctx context.Context, gatewayKeyID uuid.UUID, publicName string) (requestflow.Model, error) {
-	row, err := r.queries.ResolvePublishedModelForKey(ctx, db.ResolvePublishedModelForKeyParams{GatewayKeyID: gatewayKeyID, PublicName: publicName})
+func (r *RequestRepository) ResolveAvailableModel(ctx context.Context, gatewayKeyID uuid.UUID, publicName string) (requestflow.Model, error) {
+	row, err := r.queries.ResolveAvailableModelForKey(ctx, db.ResolveAvailableModelForKeyParams{GatewayKeyID: gatewayKeyID, PublicName: publicName})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return requestflow.Model{}, requestflow.ErrModelNotFound
 	}
 	if err != nil {
 		return requestflow.Model{}, err
 	}
-	if !row.Authorized {
+	if !row.KeyAuthorized {
 		return requestflow.Model{}, requestflow.ErrModelNotAuthorized
 	}
 	capabilities, err := decodeCapabilities(row.Capabilities)
@@ -62,14 +62,14 @@ func (r *RequestRepository) ResolvePublishedModel(ctx context.Context, gatewayKe
 		return requestflow.Model{}, fmt.Errorf("decode model capabilities: %w", err)
 	}
 	return requestflow.Model{
-		ConfigRevisionID: row.RevisionID, ID: row.ID, PublicName: row.PublicName, UpstreamName: row.UpstreamName,
+		ID: row.ID, PublicName: row.PublicName, UpstreamName: row.UpstreamName,
 		ProviderID: row.ProviderID, ProviderSlug: row.ProviderSlug, ProviderKind: providers.Kind(row.ProviderKind), ProviderBaseURL: row.ProviderBaseUrl,
-		ResourceDomain: registry.ResourceDomain(row.ResourceDomain), Capabilities: capabilities, CreatedAt: row.CreatedAt.Time,
+		Capabilities: capabilities, CreatedAt: row.CreatedAt.Time,
 	}, nil
 }
 
-func (r *RequestRepository) ListPublishedCandidates(ctx context.Context, revisionID, modelID uuid.UUID, domain registry.ResourceDomain) ([]requestflow.Candidate, error) {
-	rows, err := r.queries.ListPublishedCandidates(ctx, db.ListPublishedCandidatesParams{RevisionID: revisionID, ModelID: modelID, ResourceDomain: db.ResourceDomain(domain)})
+func (r *RequestRepository) ListResourcePoolCandidates(ctx context.Context, resourcePoolID, modelID uuid.UUID) ([]requestflow.Candidate, error) {
+	rows, err := r.queries.ListResourcePoolCandidates(ctx, db.ListResourcePoolCandidatesParams{ResourcePoolID: resourcePoolID, ModelID: modelID})
 	if err != nil {
 		return nil, err
 	}

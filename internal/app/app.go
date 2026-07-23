@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/luckymaomi/llmgateway/internal/config"
-	"github.com/luckymaomi/llmgateway/internal/configuration"
 	"github.com/luckymaomi/llmgateway/internal/controlapi"
 	"github.com/luckymaomi/llmgateway/internal/costing"
 	"github.com/luckymaomi/llmgateway/internal/credentialprobe"
@@ -26,6 +25,7 @@ import (
 	"github.com/luckymaomi/llmgateway/internal/security"
 	"github.com/luckymaomi/llmgateway/internal/siteprofile"
 	"github.com/luckymaomi/llmgateway/internal/store"
+	"github.com/luckymaomi/llmgateway/internal/subscription"
 	webassets "github.com/luckymaomi/llmgateway/web"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
@@ -84,10 +84,14 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 		return nil, fmt.Errorf("initialize credential probe: %w", err)
 	}
 	registryService.WithCredentialProbeExecutor(probeExecutor)
-	configurationService, err := configuration.NewService(store.NewConfigurationRepository(connections))
+	if err := registryService.SyncCatalog(ctx); err != nil {
+		connections.Close()
+		return nil, fmt.Errorf("synchronize provider catalog: %w", err)
+	}
+	subscriptionService, err := subscription.NewService(store.NewSubscriptionRepository(connections))
 	if err != nil {
 		connections.Close()
-		return nil, fmt.Errorf("initialize configuration service: %w", err)
+		return nil, fmt.Errorf("initialize subscription service: %w", err)
 	}
 	loginGuard := store.NewLoginGuard(connections.Valkey, cfg.Security.LoginAccountAttempts, cfg.Security.LoginAddressAttempts, cfg.Security.LoginWindow)
 	quotaService, err := quota.NewService(store.NewQuotaRepository(connections))
@@ -95,7 +99,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 		connections.Close()
 		return nil, fmt.Errorf("initialize quota service: %w", err)
 	}
-	quotaAPI := controlapi.NewQuotaAPI(quotaService, identityService, registryService, logger)
+	quotaAPI := controlapi.NewQuotaAPI(quotaService, logger)
 	costingService, err := costing.NewService(store.NewCostRepository(connections))
 	if err != nil {
 		return nil, fmt.Errorf("costing service: %w", err)
@@ -106,10 +110,10 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 		connections.Close()
 		return nil, fmt.Errorf("initialize site profile service: %w", err)
 	}
-	controlAPI := controlapi.New(identityService, registryService, configurationService, loginGuard, cfg.Security, logger).
+	controlAPI := controlapi.New(identityService, registryService, subscriptionService, loginGuard, cfg.Security, logger).
 		WithQuotaAPI(quotaAPI).
 		WithCostingAPI(costingAPI).
-		WithSiteProfileAPI(controlapi.NewSiteProfileAPI(siteProfileService))
+		WithSiteProfileAPI(controlapi.NewSiteProfileAPI(siteProfileService, logger))
 	operationsService, err := operations.NewService(store.NewOperationsRepository(connections))
 	if err != nil {
 		connections.Close()

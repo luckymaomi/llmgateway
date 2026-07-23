@@ -37,7 +37,7 @@ def main() -> int:
         return 2
 
     print("警告：这会永久删除本项目本地 PostgreSQL/Valkey 中的所有开发数据。")
-    print("将丢失管理员、成员、Provider、模型、凭据、配置版本、Gateway Key、额度和账本。")
+    print("将丢失管理员、成员、Provider、模型、上游 API Key、配置版本、API 密钥、额度和账本。")
     print("不会删除源码、.env、Key 文件或其他 Docker 项目。启动窗口仍在运行时会拒绝重置。")
     if not args.yes:
         try:

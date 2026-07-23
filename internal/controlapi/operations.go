@@ -45,31 +45,29 @@ type errorCountView struct {
 	Count int64  `json:"count"`
 }
 
-type stepView struct {
-	ID       string `json:"id"`
-	Complete bool   `json:"complete"`
-}
-
 type administratorResourcesView struct {
-	ProviderCount          int64 `json:"providerCount"`
-	EnabledProviderCount   int64 `json:"enabledProviderCount"`
-	ModelCount             int64 `json:"modelCount"`
-	CredentialCount        int64 `json:"credentialCount"`
-	ActiveCredentialCount  int64 `json:"activeCredentialCount"`
-	CoolingCredentialCount int64 `json:"coolingCredentialCount"`
-	ActiveMemberCount      int64 `json:"activeMemberCount"`
-	PendingMemberCount     int64 `json:"pendingMemberCount"`
-	ActiveGatewayKeyCount  int64 `json:"activeGatewayKeyCount"`
-	ActiveEntitlementCount int64 `json:"activeEntitlementCount"`
-	HasActiveConfiguration bool  `json:"hasActiveConfiguration"`
-	HasModelPrice          bool  `json:"hasModelPrice"`
+	ResourcePoolCount              int64 `json:"resourcePoolCount"`
+	ActiveResourcePoolCount        int64 `json:"activeResourcePoolCount"`
+	ConnectedProviderCount         int64 `json:"connectedProviderCount"`
+	ModelCount                     int64 `json:"modelCount"`
+	CredentialCount                int64 `json:"credentialCount"`
+	ActiveCredentialCount          int64 `json:"activeCredentialCount"`
+	CoolingCredentialCount         int64 `json:"coolingCredentialCount"`
+	SuccessfulCredentialProbeCount int64 `json:"successfulCredentialProbeCount"`
+	ActiveMemberCount              int64 `json:"activeMemberCount"`
+	ActiveGatewayKeyCount          int64 `json:"activeApiKeyCount"`
+	ActiveServicePlanCount         int64 `json:"activeServicePlanCount"`
+	ActiveSubscriptionCount        int64 `json:"activeSubscriptionCount"`
+	HasActiveUpstream              bool  `json:"hasActiveUpstream"`
+	HasModelPrice                  bool  `json:"hasModelPrice"`
+	HasCompletedRequest            bool  `json:"hasCompletedRequest"`
 }
 
 type memberAccessView struct {
-	ActiveGatewayKeyCount    int64      `json:"activeGatewayKeyCount"`
-	ActiveEntitlementCount   int64      `json:"activeEntitlementCount"`
-	RemainingTokens          int64      `json:"remainingTokens"`
-	NearestEntitlementExpiry *time.Time `json:"nearestEntitlementExpiry,omitempty"`
+	ActiveGatewayKeyCount     int64      `json:"activeApiKeyCount"`
+	ActiveSubscriptionCount   int64      `json:"activeSubscriptionCount"`
+	RemainingTokens           int64      `json:"remainingTokens"`
+	NearestSubscriptionExpiry *time.Time `json:"nearestSubscriptionExpiry,omitempty"`
 }
 
 func NewOperationsAPI(service operationsService, logger *slog.Logger) *OperationsAPI {
@@ -104,11 +102,10 @@ func (a *OperationsAPI) overview(w http.ResponseWriter, r *http.Request) {
 			Requests  requestSummaryView         `json:"requests"`
 			Trend     []trendPointView           `json:"trend"`
 			Errors    []errorCountView           `json:"errors"`
-			Steps     []stepView                 `json:"steps"`
 		}{
 			Scope: "administrator", Resources: presentAdministratorResources(administrator.Resources),
 			Requests: presentRequestSummary(administrator.Requests), Trend: presentTrend(administrator.Trend),
-			Errors: presentErrors(administrator.Errors), Steps: presentSteps(administrator.Steps),
+			Errors: presentErrors(administrator.Errors),
 		})
 		return
 	}
@@ -123,27 +120,29 @@ func (a *OperationsAPI) overview(w http.ResponseWriter, r *http.Request) {
 		Requests requestSummaryView `json:"requests"`
 		Trend    []trendPointView   `json:"trend"`
 		Errors   []errorCountView   `json:"errors"`
-		Steps    []stepView         `json:"steps"`
 	}{
 		Scope: "member", Access: presentMemberAccess(member.Access), Requests: presentRequestSummary(member.Requests),
-		Trend: presentTrend(member.Trend), Errors: presentErrors(member.Errors), Steps: presentSteps(member.Steps),
+		Trend: presentTrend(member.Trend), Errors: presentErrors(member.Errors),
 	})
 }
 
 func presentAdministratorResources(resources operations.AdministratorResources) administratorResourcesView {
 	return administratorResourcesView{
-		ProviderCount: resources.ProviderCount, EnabledProviderCount: resources.EnabledProviderCount, ModelCount: resources.ModelCount,
+		ResourcePoolCount: resources.ResourcePoolCount, ActiveResourcePoolCount: resources.ActiveResourcePoolCount,
+		ConnectedProviderCount: resources.ConnectedProviderCount, ModelCount: resources.ModelCount,
 		CredentialCount: resources.CredentialCount, ActiveCredentialCount: resources.ActiveCredentialCount, CoolingCredentialCount: resources.CoolingCredentialCount,
-		ActiveMemberCount: resources.ActiveMemberCount, PendingMemberCount: resources.PendingMemberCount,
-		ActiveGatewayKeyCount: resources.ActiveGatewayKeyCount, ActiveEntitlementCount: resources.ActiveEntitlementCount,
-		HasActiveConfiguration: resources.HasActiveConfiguration, HasModelPrice: resources.HasModelPrice,
+		SuccessfulCredentialProbeCount: resources.SuccessfulCredentialProbeCount,
+		ActiveMemberCount:              resources.ActiveMemberCount,
+		ActiveGatewayKeyCount:          resources.ActiveGatewayKeyCount, ActiveServicePlanCount: resources.ActiveServicePlanCount,
+		ActiveSubscriptionCount: resources.ActiveSubscriptionCount, HasActiveUpstream: resources.HasActiveUpstream, HasModelPrice: resources.HasModelPrice,
+		HasCompletedRequest: resources.HasCompletedRequest,
 	}
 }
 
 func presentMemberAccess(access operations.MemberAccess) memberAccessView {
 	return memberAccessView{
-		ActiveGatewayKeyCount: access.ActiveGatewayKeyCount, ActiveEntitlementCount: access.ActiveEntitlementCount,
-		RemainingTokens: access.RemainingTokens, NearestEntitlementExpiry: utcTimePointer(access.NearestEntitlementExpiry),
+		ActiveGatewayKeyCount: access.ActiveGatewayKeyCount, ActiveSubscriptionCount: access.ActiveSubscriptionCount,
+		RemainingTokens: access.RemainingTokens, NearestSubscriptionExpiry: utcTimePointer(access.NearestSubscriptionExpiry),
 	}
 }
 
@@ -167,14 +166,6 @@ func presentErrors(items []operations.ErrorCount) []errorCountView {
 	views := make([]errorCountView, 0, len(items))
 	for _, item := range items {
 		views = append(views, errorCountView{Kind: item.Kind, Count: item.Count})
-	}
-	return views
-}
-
-func presentSteps(items []operations.Step) []stepView {
-	views := make([]stepView, 0, len(items))
-	for _, item := range items {
-		views = append(views, stepView{ID: item.ID, Complete: item.Complete})
 	}
 	return views
 }

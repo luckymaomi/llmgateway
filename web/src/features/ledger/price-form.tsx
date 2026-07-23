@@ -40,7 +40,7 @@ export function PriceForm({
   const queryClient = useQueryClient()
   const models = useQuery({
     queryKey: ['models', 'price-form'],
-    queryFn: ({ signal }) => catalogApi.models({ page: 1, pageSize: 100 }, signal),
+    queryFn: ({ signal }) => catalogApi.models(signal),
     enabled: open,
   })
   const form = useForm<Values>({ resolver: zodResolver(schema), defaultValues: defaultValues() })
@@ -104,9 +104,9 @@ export function PriceForm({
         <Field label="模型" htmlFor="price-model" error={form.formState.errors.modelId?.message}>
           <NativeSelect id="price-model" autoFocus {...form.register('modelId')}>
             <option value="">请选择</option>
-            {models.data?.items.map((model) => (
+            {models.data?.map((model) => (
               <option key={model.id} value={model.id}>
-                {model.alias}
+                {model.publicName}
               </option>
             ))}
           </NativeSelect>

@@ -17,25 +17,25 @@ type reservation struct {
 	TerminalEventID EventID
 }
 
-// Account is the ledger aggregate for one entitlement. A persistent repository
+// Account is the ledger aggregate for one subscription. A persistent repository
 // must load and append it under a transaction or equivalent revision check.
 type Account struct {
 	mu sync.Mutex
 
-	userID        UserID
-	entitlementID EntitlementID
-	balance       Tokens
-	entries       []Entry
-	events        map[EventID]Entry
-	reservations  map[ReservationID]*reservation
+	userID         UserID
+	subscriptionID SubscriptionID
+	balance        Tokens
+	entries        []Entry
+	events         map[EventID]Entry
+	reservations   map[ReservationID]*reservation
 }
 
-func NewAccount(userID UserID, entitlementID EntitlementID) (*Account, error) {
-	if userID == "" || entitlementID == "" {
-		return nil, newError(ErrorInvalidInput, "user and entitlement IDs are required", "", "")
+func NewAccount(userID UserID, subscriptionID SubscriptionID) (*Account, error) {
+	if userID == "" || subscriptionID == "" {
+		return nil, newError(ErrorInvalidInput, "user and subscription IDs are required", "", "")
 	}
 	return &Account{
-		userID: userID, entitlementID: entitlementID,
+		userID: userID, subscriptionID: subscriptionID,
 		events: make(map[EventID]Entry), reservations: make(map[ReservationID]*reservation),
 	}, nil
 }
@@ -50,7 +50,7 @@ func (a *Account) Grant(command GrantCommand) (Entry, error) {
 		return Entry{}, newError(ErrorInvalidInput, "grant tokens must be positive", command.EventID, "")
 	}
 	entry := Entry{
-		ID: command.EventID, Kind: EntryGrant, UserID: a.userID, EntitlementID: a.entitlementID,
+		ID: command.EventID, Kind: EntryGrant, UserID: a.userID, SubscriptionID: a.subscriptionID,
 		TokenDelta: command.Tokens, UsageSource: UsageUnknown, OccurredAt: command.OccurredAt.UTC(),
 	}
 	if existing, handled, err := a.idempotentEntryLocked(entry); handled {
@@ -72,7 +72,7 @@ func (a *Account) Reserve(command ReserveCommand) (Entry, error) {
 		return Entry{}, newError(ErrorInvalidInput, "reservation, request, and positive token count are required", command.EventID, command.ReservationID)
 	}
 	entry := Entry{
-		ID: command.EventID, Kind: EntryReserve, UserID: a.userID, EntitlementID: a.entitlementID,
+		ID: command.EventID, Kind: EntryReserve, UserID: a.userID, SubscriptionID: a.subscriptionID,
 		ReservationID: command.ReservationID, RequestID: command.RequestID,
 		TokenDelta: -command.Tokens, ReservedTokens: command.Tokens,
 		UsageSource: UsageEstimated, OccurredAt: command.OccurredAt.UTC(),
@@ -138,7 +138,7 @@ func (a *Account) Snapshot() Snapshot {
 	}
 	sort.Slice(reservations, func(i, j int) bool { return reservations[i].ID < reservations[j].ID })
 	return Snapshot{
-		UserID: a.userID, EntitlementID: a.entitlementID, Balance: a.balance,
+		UserID: a.userID, SubscriptionID: a.subscriptionID, Balance: a.balance,
 		Revision: uint64(len(a.entries)), Reservations: reservations,
 	}
 }
@@ -186,7 +186,7 @@ func (a *Account) resolve(eventID EventID, reservationID ReservationID, usage Us
 
 func terminalEntry(account *Account, eventID EventID, current *reservation, kind EntryKind, delta Tokens, usage Usage, occurredAt time.Time) Entry {
 	return Entry{
-		ID: eventID, Kind: kind, UserID: account.userID, EntitlementID: account.entitlementID,
+		ID: eventID, Kind: kind, UserID: account.userID, SubscriptionID: account.subscriptionID,
 		ReservationID: current.ID, RequestID: current.RequestID, TokenDelta: delta,
 		ReservedTokens: current.ReservedTokens, InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
 		UsageSource: usage.Source, OccurredAt: occurredAt.UTC(),

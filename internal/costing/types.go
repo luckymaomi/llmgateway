@@ -48,22 +48,24 @@ type PriceVersion struct {
 }
 
 type Summary struct {
-	UserID          uuid.UUID
-	UserName        string
-	EntitlementID   uuid.UUID
-	Plan            string
-	ModelID         uuid.UUID
-	ModelAlias      string
-	ProviderID      uuid.UUID
-	ProviderName    string
-	ResourceDomain  string
-	Currency        string
-	RequestCount    int64
-	InputTokens     int64
-	OutputTokens    int64
-	InputCostNanos  int64
-	OutputCostNanos int64
-	TotalCostNanos  int64
+	UserID           uuid.UUID
+	UserName         string
+	SubscriptionID   uuid.UUID
+	ServicePlanName  string
+	PlanKind         string
+	ModelID          uuid.UUID
+	ModelAlias       string
+	ProviderID       uuid.UUID
+	ProviderName     string
+	ResourcePoolID   uuid.UUID
+	ResourcePoolName string
+	Currency         string
+	RequestCount     int64
+	InputTokens      int64
+	OutputTokens     int64
+	InputCostNanos   int64
+	OutputCostNanos  int64
+	TotalCostNanos   int64
 }
 
 type Page struct {

@@ -13,91 +13,80 @@ import (
 	"github.com/luckymaomi/llmgateway/internal/httpserver"
 	"github.com/luckymaomi/llmgateway/internal/identity"
 	"github.com/luckymaomi/llmgateway/internal/quota"
-	"github.com/luckymaomi/llmgateway/internal/registry"
 )
 
 type quotaService interface {
-	CreateEntitlement(context.Context, identity.Principal, quota.NewEntitlement) (quota.Entitlement, error)
-	ListEntitlements(context.Context, identity.Principal, quota.EntitlementQuery) (quota.PageResult[quota.Entitlement], error)
 	ListLedger(context.Context, identity.Principal, quota.LedgerFilter) (quota.PageResult[quota.LedgerEvent], error)
 	ListRequestLogs(context.Context, identity.Principal, quota.RequestLogQuery) (quota.PageResult[quota.RequestLog], error)
 	GetRequestLog(context.Context, identity.Principal, uuid.UUID) (quota.RequestLogDetail, error)
 }
 
-type quotaIdentityResolver interface {
-	UserDisplayNames(context.Context, identity.Principal, []uuid.UUID) (map[uuid.UUID]string, error)
-}
-
-type quotaModelResolver interface {
-	ListModels(context.Context, identity.Principal) ([]registry.Model, error)
-}
-
 type QuotaAPI struct {
-	service  quotaService
-	identity quotaIdentityResolver
-	registry quotaModelResolver
-	logger   *slog.Logger
-	now      func() time.Time
+	service quotaService
+	logger  *slog.Logger
+	now     func() time.Time
 }
 
-func NewQuotaAPI(service quotaService, identityResolver quotaIdentityResolver, modelResolver quotaModelResolver, logger *slog.Logger) *QuotaAPI {
-	return &QuotaAPI{service: service, identity: identityResolver, registry: modelResolver, logger: logger, now: time.Now}
+func NewQuotaAPI(service quotaService, logger *slog.Logger) *QuotaAPI {
+	return &QuotaAPI{service: service, logger: logger, now: time.Now}
 }
 
-func (a *QuotaAPI) RegisterRoutes(router chi.Router, authorizationMiddleware, mutationMiddleware func(http.Handler) http.Handler) {
-	if authorizationMiddleware == nil || mutationMiddleware == nil {
-		panic("quota authorization and mutation middleware are required")
-	}
-	router.Get("/entitlements", a.listEntitlements)
-	router.With(authorizationMiddleware, mutationMiddleware).Post("/entitlements", a.createEntitlement)
+func (a *QuotaAPI) RegisterRoutes(router chi.Router, _, _ func(http.Handler) http.Handler) {
 	router.Get("/ledger/entries", a.listLedgerEntries)
 	router.Get("/requests", a.listRequestLogs)
 	router.Get("/requests/{requestID}", a.getRequestLog)
 }
 
-func (a *QuotaAPI) listRequestLogs(w http.ResponseWriter, r *http.Request) {
-	principal := principalFromContext(r.Context())
+func (a *QuotaAPI) listLedgerEntries(w http.ResponseWriter, r *http.Request) {
 	query := parseListQuery(r)
-	page, ok := quotaPage(query)
-	if !ok {
-		a.writeError(w, r, quota.ErrInvalidInput)
-		return
-	}
 	userID, err := optionalUUID(query.UserID)
 	if err != nil {
 		a.writeError(w, r, quota.ErrInvalidInput)
 		return
 	}
-	keyID, err := optionalUUID(query.GatewayKeyID)
+	subscriptionID, err := optionalUUID(query.SubscriptionID)
 	if err != nil {
 		a.writeError(w, r, quota.ErrInvalidInput)
 		return
 	}
-	modelID, err := optionalUUID(query.ModelID)
+	result, err := a.service.ListLedger(r.Context(), principalFromContext(r.Context()), quota.LedgerFilter{UserID: userID, SubscriptionID: subscriptionID, Search: query.Search, Page: quota.Page{Offset: query.offset(), Size: int32(query.PageSize)}})
 	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	views, err := presentLedgerEntries(principalFromContext(r.Context()), result.Items)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	writeData(w, http.StatusOK, pageView[ledgerEntryView]{Items: views, Page: query.Page, PageSize: query.PageSize, Total: result.Total})
+}
+
+func (a *QuotaAPI) listRequestLogs(w http.ResponseWriter, r *http.Request) {
+	query := parseListQuery(r)
+	userID, userErr := optionalUUID(query.UserID)
+	keyID, keyErr := optionalUUID(query.GatewayKeyID)
+	modelID, modelErr := optionalUUID(query.ModelID)
+	poolID, poolErr := optionalUUID(query.ResourcePoolID)
+	from, to, windowOK := a.requestLogWindow(query.From, query.To)
+	if userErr != nil || keyErr != nil || modelErr != nil || poolErr != nil || !windowOK {
 		a.writeError(w, r, quota.ErrInvalidInput)
 		return
 	}
-	from, to, ok := a.requestLogWindow(query.From, query.To)
-	if !ok {
-		a.writeError(w, r, quota.ErrInvalidInput)
-		return
-	}
-	result, err := a.service.ListRequestLogs(r.Context(), principal, quota.RequestLogQuery{
-		UserID: userID, GatewayKeyID: keyID, ModelID: modelID,
-		Search: query.Search, Status: quota.RequestStatus(query.Status),
-		ResourceDomain: quota.ResourceDomain(query.ResourceDomain), From: from, To: to, Page: page,
+	result, err := a.service.ListRequestLogs(r.Context(), principalFromContext(r.Context()), quota.RequestLogQuery{
+		UserID: userID, GatewayKeyID: keyID, ModelID: modelID, ResourcePoolID: poolID, Search: query.Search,
+		Status: quota.RequestStatus(query.Status), From: from, To: to, Page: quota.Page{Offset: query.offset(), Size: int32(query.PageSize)},
 	})
 	if err != nil {
 		a.writeError(w, r, err)
 		return
 	}
-	views, err := presentRequestLogs(principal, result.Items)
+	views, err := presentRequestLogs(principalFromContext(r.Context()), result.Items)
 	if err != nil {
 		a.writeError(w, r, err)
 		return
 	}
-	writeData(w, http.StatusOK, pageView[requestLogView]{Items: views, Page: query.Page, PageSize: query.PageSize, Total: int(result.Total)})
+	writeData(w, http.StatusOK, pageView[requestLogView]{Items: views, Page: query.Page, PageSize: query.PageSize, Total: result.Total})
 }
 
 func (a *QuotaAPI) getRequestLog(w http.ResponseWriter, r *http.Request) {
@@ -106,13 +95,12 @@ func (a *QuotaAPI) getRequestLog(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, r, quota.ErrInvalidInput)
 		return
 	}
-	principal := principalFromContext(r.Context())
-	detail, err := a.service.GetRequestLog(r.Context(), principal, requestID)
+	detail, err := a.service.GetRequestLog(r.Context(), principalFromContext(r.Context()), requestID)
 	if err != nil {
 		a.writeError(w, r, err)
 		return
 	}
-	view, err := presentRequestLogDetail(principal, detail)
+	view, err := presentRequestLogDetail(principalFromContext(r.Context()), detail)
 	if err != nil {
 		a.writeError(w, r, err)
 		return
@@ -152,112 +140,77 @@ func optionalUUID(value string) (*uuid.UUID, error) {
 	return &parsed, nil
 }
 
-func (a *QuotaAPI) Routes(authorizationMiddleware, mutationMiddleware func(http.Handler) http.Handler) http.Handler {
-	router := chi.NewRouter()
-	a.RegisterRoutes(router, authorizationMiddleware, mutationMiddleware)
-	return router
-}
-
-func (a *QuotaAPI) createEntitlement(w http.ResponseWriter, r *http.Request) {
-	idempotencyKey, err := uuid.Parse(strings.TrimSpace(r.Header.Get("Idempotency-Key")))
-	if err != nil {
-		writeDecodeError(w, r, err)
-		return
-	}
-	var input entitlementInput
-	if err := decodeJSON(w, r, &input); err != nil {
-		writeDecodeError(w, r, err)
-		return
-	}
-	principal := principalFromContext(r.Context())
-	ownerName, err := a.resolveOwnerName(r.Context(), principal, input.OwnerID)
-	if err != nil {
-		a.writeError(w, r, err)
-		return
-	}
-	modelAlias, err := a.resolveModelAlias(r.Context(), principal, input.ModelID)
-	if err != nil {
-		a.writeError(w, r, err)
-		return
-	}
-	created, err := a.service.CreateEntitlement(r.Context(), principal, quota.NewEntitlement{
-		IdempotencyKey:   idempotencyKey,
-		RequestID:        httpserver.RequestIDFromContext(r.Context()),
-		UserID:           input.OwnerID,
-		Plan:             input.Plan,
-		ResourceDomain:   input.ResourceDomain,
-		ModelID:          input.ModelID,
-		GrantedTokens:    input.GrantedTokens,
-		StartsAt:         input.StartsAt,
-		ExpiresAt:        input.ExpiresAt,
-		ConcurrencyLimit: input.ConcurrencyLimit,
-		RPMLimit:         input.RPMLimit,
-		TPMLimit:         input.TPMLimit,
-		Note:             input.Reason,
-	})
-	if err != nil {
-		a.writeError(w, r, err)
-		return
-	}
-	writeData(w, http.StatusCreated, presentEntitlement(created, ownerName, modelAlias, a.now().UTC()))
-}
-
-func (a *QuotaAPI) listEntitlements(w http.ResponseWriter, r *http.Request) {
-	principal := principalFromContext(r.Context())
-	query := parseListQuery(r)
-	page, ok := quotaPage(query)
-	if !ok {
-		a.writeError(w, r, quota.ErrInvalidInput)
-		return
-	}
-	userID, err := optionalUUID(query.UserID)
-	if err != nil {
-		a.writeError(w, r, quota.ErrInvalidInput)
-		return
-	}
-	result, err := a.service.ListEntitlements(r.Context(), principal, quota.EntitlementQuery{
-		UserID: userID, Search: query.Search, Status: query.Status,
-		ResourceDomain: quota.ResourceDomain(query.ResourceDomain), Page: page,
-	})
-	if err != nil {
-		a.writeError(w, r, err)
-		return
-	}
-	views, err := a.presentEntitlements(r.Context(), principal, result.Items)
-	if err != nil {
-		a.writeError(w, r, err)
-		return
-	}
-	writeData(w, http.StatusOK, pageView[entitlementView]{Items: views, Page: query.Page, PageSize: query.PageSize, Total: int(result.Total)})
-}
-
-func quotaPage(query listQuery) (quota.Page, bool) {
-	offset := int64(query.Page-1) * int64(query.PageSize)
-	if offset > int64(^uint32(0)>>1) {
-		return quota.Page{}, false
-	}
-	return quota.Page{Offset: int32(offset), Size: int32(query.PageSize)}, true
-}
-
 func (a *QuotaAPI) writeError(w http.ResponseWriter, r *http.Request, err error) {
-	value := problem{Status: http.StatusInternalServerError, Code: "internal_error", Message: "Quota operation failed.", Retryable: true, Stage: "quota"}
+	value := problem{Status: http.StatusInternalServerError, Code: "internal_error", Message: "Usage operation failed.", Retryable: true, Stage: "quota"}
 	switch {
 	case errors.Is(err, quota.ErrInvalidInput):
-		value.Status, value.Code, value.Message, value.Retryable = http.StatusBadRequest, "invalid_request", "Quota input is invalid.", false
+		value.Status, value.Code, value.Message, value.Retryable = http.StatusBadRequest, "invalid_request", "Usage query is invalid.", false
 	case errors.Is(err, quota.ErrForbidden):
-		value.Status, value.Code, value.Message, value.Retryable = http.StatusForbidden, "forbidden", "The current session cannot manage quota.", false
+		value.Status, value.Code, value.Message, value.Retryable = http.StatusForbidden, "forbidden", "The current session cannot read these usage facts.", false
 	case errors.Is(err, quota.ErrNotFound):
-		value.Status, value.Code, value.Message, value.Retryable = http.StatusNotFound, "not_found", "Quota input references a missing record.", false
-	case errors.Is(err, quota.ErrResourceDomainMismatch):
-		value.Status, value.Code, value.Message, value.Retryable = http.StatusConflict, "resource_domain_mismatch", "The model and entitlement resource domains differ.", false
-	case errors.Is(err, quota.ErrConflict), errors.Is(err, quota.ErrTerminalConflict):
-		value.Status, value.Code, value.Message, value.Retryable = http.StatusConflict, "idempotency_conflict", "Idempotency-Key was already used for different quota input.", false
-	case errors.Is(err, quota.ErrOutcomeUnknown):
-		value.Status, value.Code, value.Message, value.Retryable = http.StatusServiceUnavailable, "operation_outcome_unknown", "The quota operation may have committed. Retry with the same Idempotency-Key.", true
+		value.Status, value.Code, value.Message, value.Retryable = http.StatusNotFound, "not_found", "Usage record was not found.", false
 	default:
 		if a.logger != nil {
-			a.logger.Error("quota operation failed", "request_id", httpserver.RequestIDFromContext(r.Context()), "error", err)
+			a.logger.Error("usage operation failed", "request_id", httpserver.RequestIDFromContext(r.Context()), "error", err)
 		}
 	}
 	writeProblem(w, r, value)
+}
+
+type ledgerEntryView struct {
+	ID              string           `json:"id"`
+	OccurredAt      time.Time        `json:"occurredAt"`
+	OwnerName       string           `json:"ownerName"`
+	SubscriptionID  string           `json:"subscriptionId"`
+	ServicePlanName string           `json:"servicePlanName"`
+	Kind            quota.LedgerKind `json:"kind"`
+	TokenDelta      int64            `json:"tokenDelta"`
+	Reason          string           `json:"reason"`
+	RequestID       *string          `json:"requestId,omitempty"`
+	ActorName       string           `json:"actorName"`
+}
+
+func presentLedgerEntries(principal identity.Principal, items []quota.LedgerEvent) ([]ledgerEntryView, error) {
+	views := make([]ledgerEntryView, 0, len(items))
+	for _, item := range items {
+		if principal.Role == identity.RoleMember && item.UserID != principal.UserID {
+			return nil, errors.New("member ledger scope invariant violated")
+		}
+		actorName := "系统"
+		if item.CreatedBy != nil {
+			actorName = "管理员"
+			if principal.Role == identity.RoleAdministrator && item.ActorName != nil {
+				actorName = *item.ActorName
+			}
+		}
+		var requestID *string
+		if item.RequestID != nil {
+			value := item.RequestID.String()
+			requestID = &value
+		}
+		views = append(views, ledgerEntryView{ID: item.ID.String(), OccurredAt: item.CreatedAt.UTC(), OwnerName: item.OwnerName,
+			SubscriptionID: item.SubscriptionID.String(), ServicePlanName: item.ServicePlanName, Kind: item.Kind,
+			TokenDelta: item.TokenDelta, Reason: ledgerReason(item), RequestID: requestID, ActorName: actorName})
+	}
+	return views, nil
+}
+
+func ledgerReason(item quota.LedgerEvent) string {
+	if item.Note != nil && strings.TrimSpace(*item.Note) != "" {
+		return strings.TrimSpace(*item.Note)
+	}
+	switch item.Kind {
+	case quota.LedgerGrant:
+		return "分配额度"
+	case quota.LedgerReservation:
+		return "请求预留"
+	case quota.LedgerSettlement:
+		return "用量结算"
+	case quota.LedgerRelease:
+		return "释放预留"
+	case quota.LedgerCompensation:
+		return "失败补偿"
+	default:
+		return "额度调整"
+	}
 }

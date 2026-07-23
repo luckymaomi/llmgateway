@@ -62,7 +62,7 @@ func newRequestWorkflow(cfg config.Config, connections *store.Connections, regis
 		return nil, fmt.Errorf("initialize request admission adapter: %w", err)
 	}
 	coordinationAdapter, err := requestflow.NewCoordinationAdapter(coordinator, requestflow.CoordinationConfig{
-		Global: capacity(cfg.RequestFlow.Global), ResourceDomain: capacity(cfg.RequestFlow.ResourceDomain), User: capacity(cfg.RequestFlow.User),
+		Global: capacity(cfg.RequestFlow.Global), ResourcePool: capacity(cfg.RequestFlow.ResourcePool), User: capacity(cfg.RequestFlow.User),
 		GatewayKey: capacity(cfg.RequestFlow.GatewayKey), Model: capacity(cfg.RequestFlow.Model),
 		Provider: capacity(cfg.RequestFlow.Provider), DefaultCredential: capacity(cfg.RequestFlow.Credential),
 		LeaseTTL: cfg.RequestFlow.LeaseTTL, RetryInterval: cfg.RequestFlow.AdmissionRetryInterval,

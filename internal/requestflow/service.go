@@ -84,11 +84,11 @@ func (s *Service) observeAttempt(kind providers.Kind, err *canonical.Error) {
 }
 
 func (s *Service) Models(ctx context.Context, gatewayKeyID uuid.UUID) ([]Model, error) {
-	return s.repository.ListPublishedModels(ctx, gatewayKeyID)
+	return s.repository.ListAvailableModels(ctx, gatewayKeyID)
 }
 
 func (s *Service) prepare(ctx context.Context, command ChatCommand) (workflowRun, *canonical.Error) {
-	model, err := s.repository.ResolvePublishedModel(ctx, command.Principal.KeyID, command.Request.Model)
+	model, err := s.repository.ResolveAvailableModel(ctx, command.Principal.KeyID, command.Request.Model)
 	if err != nil {
 		return workflowRun{}, workflowError(err)
 	}
@@ -99,20 +99,9 @@ func (s *Service) prepare(ctx context.Context, command ChatCommand) (workflowRun
 	if estimatedTokens > model.Capabilities.ContextTokens {
 		return workflowRun{}, &canonical.Error{Kind: canonical.ErrorInvalidRequest, Code: "context_length_exceeded", Message: "request exceeds the configured model context", Parameter: "messages", HTTPStatus: http.StatusBadRequest}
 	}
-	candidates, err := s.repository.ListPublishedCandidates(ctx, model.ConfigRevisionID, model.ID, model.ResourceDomain)
-	if err != nil {
-		return workflowRun{}, &canonical.Error{Kind: canonical.ErrorStorageUnavailable, Code: "candidate_lookup_failed", Message: "upstream candidates could not be read", Cause: err}
-	}
-	if len(candidates) == 0 {
-		return workflowRun{}, &canonical.Error{Kind: canonical.ErrorProviderTemporary, Code: domainUnavailableCode(model), Message: "no eligible upstream credential is available"}
-	}
 	upstreamRequest := command.Request
 	upstreamRequest.Model = model.UpstreamName
-	run := workflowRun{command: command, model: model, request: upstreamRequest, candidates: candidates, estimatedTokens: estimatedTokens}
-	candidate, selectionError := s.selectCandidate(run, nil)
-	if selectionError != nil {
-		return workflowRun{}, selectionError
-	}
+	run := workflowRun{command: command, model: model, request: upstreamRequest, estimatedTokens: estimatedTokens}
 	requestID := command.RequestID
 	if requestID == uuid.Nil {
 		requestID = uuid.New()
@@ -128,11 +117,10 @@ func (s *Service) prepare(ctx context.Context, command ChatCommand) (workflowRun
 			admissionPermit = nil
 		}
 	}
-	revisionID := model.ConfigRevisionID
 	accepted, err := s.accounting.AcceptRequest(ctx, AcceptCommand{
 		RequestID: requestID, UserID: command.Principal.UserID, GatewayKeyID: command.Principal.KeyID, ModelID: model.ID,
-		ResourceDomain: model.ResourceDomain, ConfigRevisionID: &revisionID, IdempotencyKey: command.IdempotencyKey,
-		RequestDigest: command.RequestDigest, Stream: command.Request.Stream, ReservedTokens: estimatedTokens,
+		IdempotencyKey: command.IdempotencyKey,
+		RequestDigest:  command.RequestDigest, Stream: command.Request.Stream, ReservedTokens: estimatedTokens,
 	})
 	if err != nil {
 		releaseAdmission()
@@ -142,12 +130,30 @@ func (s *Service) prepare(ctx context.Context, command ChatCommand) (workflowRun
 		releaseAdmission()
 		return workflowRun{}, &canonical.Error{Kind: canonical.ErrorInvalidRequest, Code: "request_already_accepted", Message: "idempotent request already exists", HTTPStatus: http.StatusConflict}
 	}
-	if accepted.RequestID != requestID || accepted.ReservationID == uuid.Nil || accepted.EntitlementID == uuid.Nil || accepted.EntitlementConcurrency < 1 {
+	if accepted.RequestID != requestID || accepted.ReservationID == uuid.Nil || accepted.SubscriptionID == uuid.Nil || accepted.ResourcePoolID == uuid.Nil || accepted.SubscriptionConcurrency < 1 {
 		releaseAdmission()
 		if accepted.RequestID != uuid.Nil {
 			_ = s.accounting.ReleaseAccepted(context.WithoutCancel(ctx), accepted.RequestID, "invalid_acceptance", "accepted request is missing its coordination capacity")
 		}
 		return workflowRun{}, &canonical.Error{Kind: canonical.ErrorInternalInvariant, Code: "invalid_acceptance", Message: "accepted request is missing required execution capacity"}
+	}
+	candidates, err := s.repository.ListResourcePoolCandidates(ctx, accepted.ResourcePoolID, model.ID)
+	if err != nil {
+		releaseAdmission()
+		_ = s.accounting.ReleaseAccepted(context.WithoutCancel(ctx), accepted.RequestID, "candidate_lookup_failed", "upstream candidates could not be read")
+		return workflowRun{}, &canonical.Error{Kind: canonical.ErrorStorageUnavailable, Code: "candidate_lookup_failed", Message: "upstream candidates could not be read", Cause: err}
+	}
+	run.accepted, run.candidates = accepted, candidates
+	if len(candidates) == 0 {
+		releaseAdmission()
+		_ = s.accounting.ReleaseAccepted(context.WithoutCancel(ctx), accepted.RequestID, "resource_pool_unavailable", "no eligible upstream credential is available")
+		return workflowRun{}, &canonical.Error{Kind: canonical.ErrorProviderTemporary, Code: poolUnavailableCode(), Message: "no eligible upstream credential is available"}
+	}
+	candidate, selectionError := s.selectCandidate(run, nil)
+	if selectionError != nil {
+		releaseAdmission()
+		_ = s.accounting.ReleaseAccepted(context.WithoutCancel(ctx), accepted.RequestID, "resource_pool_unavailable", "no eligible upstream credential is available")
+		return workflowRun{}, selectionError
 	}
 	if command.AcceptedSink != nil {
 		if err := command.AcceptedSink(context.WithoutCancel(ctx), accepted.RequestID); err != nil {
@@ -162,7 +168,6 @@ func (s *Service) prepare(ctx context.Context, command ChatCommand) (workflowRun
 		_ = s.accounting.ReleaseAccepted(context.WithoutCancel(ctx), accepted.RequestID, "execution_claim_failed", "request execution could not be claimed")
 		return workflowRun{}, storageError("execution_claim_failed", err)
 	}
-	run.accepted = accepted
 	run.claim = claim
 	run.context, run.stopHeartbeat = s.executionContext(ctx, claim)
 	lease, _, err := s.coordinator.Acquire(run.context, s.leaseRequest(claim, run, candidate))
@@ -322,21 +327,21 @@ func (s *Service) selectCandidate(run workflowRun, excluded []routing.CandidateI
 		id := routing.CandidateID(candidate.ID.String())
 		byID[id] = candidate
 		routeCandidates = append(routeCandidates, routing.Candidate{
-			ID: id, ModelID: routing.ModelID(run.model.ID.String()), ResourceDomain: routing.ResourceDomain(run.model.ResourceDomain),
+			ID: id, ModelID: routing.ModelID(run.model.ID.String()), ResourcePoolID: routing.ResourcePoolID(run.accepted.ResourcePoolID.String()),
 			ModelPublished: true, CredentialAuthorized: true, CredentialActive: true,
 			Capabilities: required, CooldownUntil: timeOrZero(candidate.CooldownUntil),
 			AdminPriority: candidate.Priority, Weight: candidate.Weight,
 		})
 	}
 	decision, err := s.router.Select(routing.Requirements{
-		ModelID: routing.ModelID(run.model.ID.String()), ResourceDomain: routing.ResourceDomain(run.model.ResourceDomain),
+		ModelID: routing.ModelID(run.model.ID.String()), ResourcePoolID: routing.ResourcePoolID(run.accepted.ResourcePoolID.String()),
 		Capabilities: required, ExcludedCandidates: excluded, At: now,
 	}, routeCandidates)
 	if err != nil {
 		return Candidate{}, &canonical.Error{Kind: canonical.ErrorInternalInvariant, Code: "routing_failed", Message: "upstream routing failed", Cause: err}
 	}
 	if decision.SelectedCandidateID == "" {
-		providerError := &canonical.Error{Kind: canonical.ErrorProviderTemporary, Code: domainUnavailableCode(run.model), Message: "no eligible upstream credential is available"}
+		providerError := &canonical.Error{Kind: canonical.ErrorProviderTemporary, Code: poolUnavailableCode(), Message: "no eligible upstream credential is available"}
 		if !decision.NextAvailableAt.IsZero() {
 			retryAt := decision.NextAvailableAt.UTC()
 			providerError.RetryAfter = &canonical.RetryAfter{At: &retryAt}
@@ -367,13 +372,13 @@ func (s *Service) acquireCircuit(candidateID uuid.UUID) (*resilience.Permit, *ca
 func (s *Service) leaseRequest(claim execution.Claim, run workflowRun, candidate Candidate) LeaseRequest {
 	return LeaseRequest{RequestID: claim.RequestID, ExecutionID: claim.ExecutionID, UserID: run.command.Principal.UserID, GatewayKeyID: run.command.Principal.KeyID,
 		ModelID: run.model.ID, ProviderID: run.model.ProviderID, CredentialID: candidate.ID,
-		EntitlementID: run.accepted.EntitlementID, ResourceDomain: run.model.ResourceDomain,
+		SubscriptionID: run.accepted.SubscriptionID, ResourcePoolID: run.accepted.ResourcePoolID,
 		EstimatedTokens: run.estimatedTokens,
 		RPMLimit:        candidate.RPMLimit, TPMLimit: candidate.TPMLimit, Concurrency: candidate.ConcurrencyLimit,
-		EntitlementConcurrency: run.accepted.EntitlementConcurrency,
-		EntitlementRPMLimit:    run.accepted.EntitlementRPMLimit,
-		EntitlementTPMLimit:    run.accepted.EntitlementTPMLimit,
-		CapacityWaitDeadline:   run.capacityWaitDeadline}
+		SubscriptionConcurrency: run.accepted.SubscriptionConcurrency,
+		SubscriptionRPMLimit:    run.accepted.SubscriptionRPMLimit,
+		SubscriptionTPMLimit:    run.accepted.SubscriptionTPMLimit,
+		CapacityWaitDeadline:    run.capacityWaitDeadline}
 }
 
 func admissionError(err error) *canonical.Error {
@@ -432,11 +437,8 @@ func timeOrZero(value *time.Time) time.Time {
 	return *value
 }
 
-func domainUnavailableCode(model Model) string {
-	if model.ResourceDomain == "free" {
-		return "free_pool_unavailable"
-	}
-	return "professional_pool_unavailable"
+func poolUnavailableCode() string {
+	return "resource_pool_unavailable"
 }
 
 func workflowError(err error) *canonical.Error {
@@ -448,7 +450,7 @@ func workflowError(err error) *canonical.Error {
 	case errors.Is(err, ErrIdempotencyConflict):
 		return &canonical.Error{Kind: canonical.ErrorInvalidRequest, Code: "idempotency_conflict", Message: "idempotency key was reused with a different request", HTTPStatus: http.StatusConflict}
 	case errors.Is(err, ErrQuotaExhausted):
-		return &canonical.Error{Kind: canonical.ErrorQuota, Code: "quota_exhausted", Message: "no applicable entitlement has enough remaining tokens", HTTPStatus: http.StatusPaymentRequired}
+		return &canonical.Error{Kind: canonical.ErrorQuota, Code: "quota_exhausted", Message: "no active subscription has enough remaining tokens", HTTPStatus: http.StatusPaymentRequired}
 	case errors.Is(err, ErrCostConfigurationMissing):
 		return &canonical.Error{Kind: canonical.ErrorInvalidRequest, Code: "cost_configuration_missing", Message: "the model has no effective cost configuration", Parameter: "model", HTTPStatus: http.StatusConflict}
 	case errors.Is(err, ErrInvalidAccounting):

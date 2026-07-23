@@ -1,12 +1,5 @@
-import {
-  flexRender,
-  getCoreRowModel,
-  useReactTable,
-  type ColumnDef,
-  type Row,
-} from '@tanstack/react-table'
+import { flexRender, getCoreRowModel, useReactTable, type ColumnDef } from '@tanstack/react-table'
 import { ChevronLeft, ChevronRight, LoaderCircle } from 'lucide-react'
-import type { ReactNode } from 'react'
 
 import { cn } from '@/lib/cn'
 
@@ -29,7 +22,6 @@ interface DataTableProps<T> {
   total: number
   onPageChange: (page: number) => void
   onRowClick?: ((row: T) => void) | undefined
-  renderMobile?: ((row: T) => ReactNode) | undefined
   ariaLabel: string
 }
 
@@ -47,7 +39,6 @@ export function DataTable<T>({
   total,
   onPageChange,
   onRowClick,
-  renderMobile,
   ariaLabel,
 }: DataTableProps<T>) {
   // TanStack Table intentionally owns a mutable table instance.
@@ -80,7 +71,11 @@ export function DataTable<T>({
               {table.getHeaderGroups().map((headerGroup) => (
                 <tr key={headerGroup.id}>
                   {headerGroup.headers.map((header) => (
-                    <th key={header.id} scope="col">
+                    <th
+                      key={header.id}
+                      scope="col"
+                      className={alignmentClass(header.column.columnDef.meta)}
+                    >
                       {header.isPlaceholder
                         ? null
                         : flexRender(header.column.columnDef.header, header.getContext())}
@@ -107,7 +102,7 @@ export function DataTable<T>({
                     }}
                   >
                     {row.getVisibleCells().map((cell) => (
-                      <td key={cell.id}>
+                      <td key={cell.id} className={alignmentClass(cell.column.columnDef.meta)}>
                         {flexRender(cell.column.columnDef.cell, cell.getContext())}
                       </td>
                     ))}
@@ -122,31 +117,6 @@ export function DataTable<T>({
               )}
             </tbody>
           </table>
-        </div>
-
-        <div className="data-table-mobile" role="list" aria-label={ariaLabel}>
-          {loading ? (
-            Array.from({ length: 4 }, (_, index) => (
-              <div className="mobile-row mobile-row--skeleton" key={index} aria-hidden="true">
-                <span />
-                <span />
-                <span />
-              </div>
-            ))
-          ) : table.getRowModel().rows.length > 0 ? (
-            table.getRowModel().rows.map((row) => (
-              <MobileRow
-                key={row.id}
-                interactive={Boolean(onRowClick)}
-                onClick={() => onRowClick?.(row.original)}
-                {...mobileActions(row)}
-              >
-                {renderMobile ? renderMobile(row.original) : <DefaultMobileRow row={row} />}
-              </MobileRow>
-            ))
-          ) : (
-            <EmptyState title={emptyLabel} />
-          )}
         </div>
       </div>
 
@@ -181,6 +151,12 @@ export function DataTable<T>({
   )
 }
 
+function alignmentClass(meta: unknown): string | undefined {
+  if (!meta || typeof meta !== 'object' || !('align' in meta)) return undefined
+  const align = (meta as { align?: unknown }).align
+  return align === 'right' || align === 'center' ? `table-align-${align}` : undefined
+}
+
 function TableSkeleton({ columnCount }: { columnCount: number }) {
   return Array.from({ length: 6 }, (_, row) => (
     <tr key={row} aria-hidden="true">
@@ -191,47 +167,4 @@ function TableSkeleton({ columnCount }: { columnCount: number }) {
       ))}
     </tr>
   ))
-}
-
-function DefaultMobileRow<T>({ row }: { row: Row<T> }) {
-  return (
-    <dl className="mobile-row__facts">
-      {row.getVisibleCells().map((cell) => (
-        <div key={cell.id}>
-          <dt>{String(cell.column.columnDef.header ?? '')}</dt>
-          <dd>{flexRender(cell.column.columnDef.cell, cell.getContext())}</dd>
-        </div>
-      ))}
-    </dl>
-  )
-}
-
-function MobileRow({
-  children,
-  interactive,
-  onClick,
-  actions,
-}: {
-  children: ReactNode
-  interactive: boolean
-  onClick: () => void
-  actions?: ReactNode | undefined
-}) {
-  return (
-    <div role="listitem" className="mobile-row">
-      {interactive ? (
-        <button type="button" className="mobile-row__primary" onClick={onClick}>
-          {children}
-        </button>
-      ) : (
-        <div className="mobile-row__primary">{children}</div>
-      )}
-      {actions ? <div className="mobile-row__actions">{actions}</div> : null}
-    </div>
-  )
-}
-
-function mobileActions<T>(row: Row<T>): { actions: ReactNode } | Record<string, never> {
-  const cell = row.getVisibleCells().find((candidate) => candidate.column.id === 'actions')
-  return cell ? { actions: flexRender(cell.column.columnDef.cell, cell.getContext()) } : {}
 }

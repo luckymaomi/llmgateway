@@ -1,13 +1,5 @@
 import { apiClient, listQuery } from './client'
-import type {
-  Entitlement,
-  EntitlementInput,
-  LedgerEntry,
-  ListQuery,
-  Page,
-  RequestLog,
-  RequestLogDetail,
-} from './types'
+import type { LedgerEntry, ListQuery, Page, RequestLog, RequestLogDetail } from './types'
 
 const base = '/api/control'
 
@@ -25,16 +17,5 @@ export const ledgerApi = {
     apiClient.request<Page<LedgerEntry>>(`${base}/ledger/entries`, {
       query: listQuery(query),
       ...(signal ? { signal } : {}),
-    }),
-  entitlements: (query: ListQuery, signal?: AbortSignal) =>
-    apiClient.request<Page<Entitlement>>(`${base}/entitlements`, {
-      query: listQuery(query),
-      ...(signal ? { signal } : {}),
-    }),
-  createEntitlement: (input: EntitlementInput, idempotencyKey: string) =>
-    apiClient.request<Entitlement, EntitlementInput>(`${base}/entitlements`, {
-      method: 'POST',
-      body: input,
-      headers: { 'Idempotency-Key': idempotencyKey },
     }),
 }

@@ -78,7 +78,7 @@ sudo /srv/llmgateway-release/deploy/restore-postgres-linux.sh \
 
 `llmgateway-restored-database-url` 必须由 secret 管理设施创建为 `root:root 0400/0600`、单个 canonical PostgreSQL URI 且数据库名与目标一致；恢复配置目标必须不存在。数据库恢复时除 PostgreSQL 外，同一 Compose project 的所有已存在服务都必须处于 `exited`，paused/restarting/running 等状态会在创建目标数据库前失败。目标库已存在时默认拒绝；只有上次恢复留下的不完整库才能在额外确认开关下删除重建。
 
-数据库恢复通过 manifest migration 核对后，把 `/etc/llmgateway/deployment.env` 复制成 `/root` 下的 root-only 安装源，执行同版本 `install-linux.sh`，成功后删除安装源和临时 database URL 文件。随后按 PostgreSQL、Valkey、Gateway、Caddy 顺序核对启动结果，完成管理员与成员登录、成员管理 API 403、revision、Key、Provider 解密、额度和账本核对。确认新站点证书与 readiness 后才切 DNS/TLS；回切仍指向已验证的新数据库并逐实例替换，不能覆盖原库或把旧应用直接接到已变化的 schema。正式切流前记录 manifest 恢复点和端到端恢复时长。
+数据库恢复通过 manifest migration 核对后，把 `/etc/llmgateway/deployment.env` 复制成 `/root` 下的 root-only 安装源，执行同版本 `install-linux.sh`，成功后删除安装源和临时 database URL 文件。随后按 PostgreSQL、Valkey、Gateway、Caddy 顺序核对启动结果，完成管理员与成员登录、成员管理 API 403、资源池、套餐版本、订阅、API 密钥、上游 API Key 解密、额度和账本核对。确认新站点证书与 readiness 后才切 DNS/TLS；回切仍指向已验证的新数据库并逐实例替换，不能覆盖原库或把旧应用直接接到已变化的 schema。正式切流前记录 manifest 恢复点和端到端恢复时长。
 
 ## Windows 服务
 
@@ -100,10 +100,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-windows-se
 - 八个 secret 文件不在仓库/镜像/environment/日志；主密钥 ring 同时包含回滚所需版本并有异地密文备份。
 - 独立 migration 成功后才替换应用；升级前 dump 已通过 `pg_restore --list`，恢复目标库名从未覆盖当前库。
 - 两个 Gateway、PostgreSQL、Valkey 和 Caddy 均健康；Caddy 只代理 readiness 通过的实例，SSE 首字节和 30 秒流不被缓冲。
-- 有头浏览器完成管理员初始化/重登、邀请/审核成员、成员直接访问管理员 URL/API 被拒绝；标准 SDK 通过 Models/Chat/Responses/stream/tools/reasoning/cancel/error。
-- 宿主按依赖顺序重启后配置 revision、用户、Key、额度和账本仍在；Valkey 丢失只影响短期协调，不伪造持久事实。
+- 有头桌面浏览器完成管理员初始化/重登、管理员创建成员并分配订阅、成员直接访问管理员 URL/API 被拒绝；标准 SDK 通过 Models/Chat/Responses/stream/tools/reasoning/cancel/error。
+- 宿主按依赖顺序重启后资源池、套餐版本、订阅、成员、API 密钥、额度和账本仍在；Valkey 丢失只影响短期协调，不伪造持久事实。
 - 外部 Prometheus 从 backend 网络分别抓取两个 Gateway 的 `/metrics`，Grafana 导入 `observability/grafana-dashboard.json`，Prometheus 加载 `observability/prometheus-rules.yaml`；公网 Caddy 的 `/metrics` 必须保持 404。正式监控主机、通知渠道和证书告警属于部署环境依赖，未配置时不得声称已接入值班。
-- 账号恢复、Key 更换和指标告警按 `observability/runbook.md` 执行；只有目标环境的备份 timer 最近一次成功、远端仓库完整 check 和恢复演练均有现场证据，才能把该部署标记为灾备就绪。
+- 账号恢复、API 密钥更换和指标告警按 `observability/runbook.md` 执行；只有目标环境的备份 timer 最近一次成功、远端仓库完整 check 和恢复演练均有现场证据，才能把该部署标记为灾备就绪。
 
 固定版本验证规则可被 Prometheus 加载、看板可被 Grafana 导入：
 

@@ -13,14 +13,14 @@ func (r fixedRandom) Intn(limit int) int { return int(r) % limit }
 
 func testCandidate(id CandidateID) Candidate {
 	return Candidate{
-		ID: id, ModelID: "chat", ResourceDomain: ResourceFree,
+		ID: id, ModelID: "chat", ResourcePoolID: ResourcePoolID("pool-default"),
 		ModelPublished: true, CredentialAuthorized: true, CredentialActive: true,
 		Capabilities: []Capability{"chat", "stream", "tools"}, AdminPriority: 100, Weight: 1,
 	}
 }
 
 func testRequirements() Requirements {
-	return Requirements{ModelID: "chat", ResourceDomain: ResourceFree, Capabilities: []Capability{"chat", "tools"}, At: routingTestTime}
+	return Requirements{ModelID: "chat", ResourcePoolID: ResourcePoolID("pool-default"), Capabilities: []Capability{"chat", "tools"}, At: routingTestTime}
 }
 
 func TestRouterFiltersHardEligibilityBeforePriorityAndWeight(t *testing.T) {
@@ -75,25 +75,25 @@ func TestRouterUsesOnlyTheBestPriorityAndHonorsWeight(t *testing.T) {
 	}
 }
 
-func TestRouterExcludesPreviousAttemptAndResourceDomain(t *testing.T) {
+func TestRouterExcludesPreviousAttemptAndResourcePool(t *testing.T) {
 	router, err := NewRouter(fixedRandom(0))
 	if err != nil {
 		t.Fatal(err)
 	}
 	previous := testCandidate("previous")
-	professional := testCandidate("professional")
-	professional.ResourceDomain = ResourceProfessional
+	priority := testCandidate("priority")
+	priority.ResourcePoolID = ResourcePoolID("pool-priority")
 	requirements := testRequirements()
 	requirements.ExcludedCandidates = []CandidateID{previous.ID}
 
-	decision, err := router.Select(requirements, []Candidate{previous, professional})
+	decision, err := router.Select(requirements, []Candidate{previous, priority})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if decision.SelectedCandidateID != "" || decision.Mode != SelectionNone {
 		t.Fatalf("decision = %#v", decision)
 	}
-	if !hasReason(evaluationFor(t, decision, previous.ID).Exclusions, ExcludeAttempt) || !hasReason(evaluationFor(t, decision, professional.ID).Exclusions, ExcludeResourceDomainMismatch) {
+	if !hasReason(evaluationFor(t, decision, previous.ID).Exclusions, ExcludeAttempt) || !hasReason(evaluationFor(t, decision, priority.ID).Exclusions, ExcludeResourcePoolMismatch) {
 		t.Fatalf("evaluations = %#v", decision.Evaluations)
 	}
 }

@@ -31,7 +31,7 @@ func TestProviderCredentialMasterKeyRotationIsAtomicAndIdempotent(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	providerID, credentialID := uuid.New(), uuid.New()
+	providerID, resourcePoolID, credentialID := uuid.New(), uuid.New(), uuid.New()
 	oldKey := []byte("0123456789abcdef0123456789abcdef")
 	newKey := []byte("fedcba9876543210fedcba9876543210")
 	oldEnvelope, err := security.NewEnvelopeCipher(1, map[uint32][]byte{1: oldKey})
@@ -42,10 +42,13 @@ func TestProviderCredentialMasterKeyRotationIsAtomicAndIdempotent(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.ExecContext(ctx, `INSERT INTO providers (id, slug, name, kind, base_url, enabled) VALUES ($1, $2, 'Rotation Provider', 'openai-compatible', 'https://provider.example.test/v1', true)`, providerID, "rotation-"+providerID.String()); err != nil {
+	if _, err := database.ExecContext(ctx, `INSERT INTO providers (id, catalog_id, slug, name, kind, base_url, source_url, verified_at) VALUES ($1, $2, $3, 'Rotation Provider', 'openai-compatible', 'https://provider.example.test/v1', 'https://provider.example.test/docs', now())`, providerID, "rotation-catalog-"+providerID.String(), "rotation-"+providerID.String()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.ExecContext(ctx, `INSERT INTO provider_credentials (id, provider_id, name, encrypted_secret, resource_domain, status) VALUES ($1, $2, 'Rotation Credential', $3, 'free', 'active')`, credentialID, providerID, encrypted); err != nil {
+	if _, err := database.ExecContext(ctx, `INSERT INTO resource_pools (id, provider_id, slug, name) VALUES ($1, $2, $3, 'Rotation Pool')`, resourcePoolID, providerID, "rotation-pool-"+resourcePoolID.String()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx, `INSERT INTO provider_credentials (id, resource_pool_id, name, encrypted_secret, status) VALUES ($1, $2, 'Rotation Credential', $3, 'active')`, credentialID, resourcePoolID, encrypted); err != nil {
 		t.Fatal(err)
 	}
 

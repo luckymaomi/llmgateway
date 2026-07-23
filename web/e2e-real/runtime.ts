@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { closeSync, existsSync, mkdirSync, openSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -56,6 +56,7 @@ class GatewayProcess implements GatewayRuntime {
       if (!this.child.pid) throw new Error('gateway process did not expose a PID')
       writeFileSync(this.pidFile, String(this.child.pid), { encoding: 'utf8', mode: 0o600 })
       await this.waitUntilReady()
+      this.redirectCatalogToFixture()
     } catch (error) {
       await this.stop(true)
       throw error
@@ -106,6 +107,33 @@ class GatewayProcess implements GatewayRuntime {
       await delay(100)
     }
     throw new Error(`gateway did not become ready; inspect ${this.logDirectory}`)
+  }
+
+  private redirectCatalogToFixture(): void {
+    const docker = requiredEnvironment('LLMGATEWAY_REAL_DOCKER_COMMAND')
+    const container = requiredEnvironment('LLMGATEWAY_REAL_POSTGRES_CONTAINER')
+    const providerBaseURL = requiredEnvironment('LLMGATEWAY_REAL_PROVIDER_BASE_URL')
+    const sql = `UPDATE providers SET base_url = '${providerBaseURL}' WHERE catalog_id = 'siliconflow'; UPDATE models SET upstream_name = 'fixture-chat' WHERE provider_id = (SELECT id FROM providers WHERE catalog_id = 'siliconflow');`
+    const result = spawnSync(
+      docker,
+      [
+        'exec',
+        container,
+        'psql',
+        '-v',
+        'ON_ERROR_STOP=1',
+        '-U',
+        'llmgateway',
+        '-d',
+        'llmgateway_browser',
+        '-c',
+        sql,
+      ],
+      { encoding: 'utf8', windowsHide: true },
+    )
+    if (result.status !== 0) {
+      throw new Error(`could not redirect the isolated Provider catalog: ${result.stderr}`)
+    }
   }
 }
 

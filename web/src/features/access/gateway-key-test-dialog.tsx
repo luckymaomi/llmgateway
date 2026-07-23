@@ -34,7 +34,7 @@ export function GatewayKeyTestDialog({
   const start = () => {
     if (!canRun) return
     void test.run({
-      gatewayKeyId: gatewayKey.id,
+      apiKeyId: gatewayKey.id,
       model: selectedModel,
       message: message.trim(),
     })
@@ -46,7 +46,7 @@ export function GatewayKeyTestDialog({
       onOpenChange={(open) => {
         if (!running || open) onOpenChange(open)
       }}
-      title="测试 Gateway Key"
+      title="测试 API 密钥"
       dismissible={!running}
       width="sm"
       footer={
@@ -94,7 +94,7 @@ export function GatewayKeyTestDialog({
               onChange={(event) => setMessage(event.target.value)}
             />
           </Field>
-          <span>请求会计入这把 Key 所属成员的额度和用量。</span>
+          <span>请求会计入这把 API 密钥所属成员的额度和用量。</span>
           {test.facts.phase !== 'idle' ? <GatewayKeyTestResult facts={test.facts} /> : null}
         </div>
       )}

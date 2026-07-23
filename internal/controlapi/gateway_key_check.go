@@ -25,20 +25,20 @@ type gatewayKeyTestModelView struct {
 }
 
 type gatewayKeyTestRunInput struct {
-	GatewayKeyID uuid.UUID `json:"gatewayKeyId"`
+	GatewayKeyID uuid.UUID `json:"apiKeyId"`
 	Model        string    `json:"model"`
 	Message      string    `json:"message"`
 }
 
 func (a *API) registerGatewayKeyTestRoutes(router chi.Router) {
-	router.Get("/gateway-key-test/models", a.gatewayKeyTestModels)
-	router.With(a.requireCSRF).Post("/gateway-key-test/runs", a.gatewayKeyTestRun)
+	router.Get("/api-key-test/models", a.gatewayKeyTestModels)
+	router.With(a.requireCSRF).Post("/api-key-test/runs", a.gatewayKeyTestRun)
 }
 
 func (a *API) gatewayKeyTestModels(w http.ResponseWriter, r *http.Request) {
-	keyID, err := uuid.Parse(r.URL.Query().Get("gatewayKeyId"))
+	keyID, err := uuid.Parse(r.URL.Query().Get("apiKeyId"))
 	if err != nil || keyID == uuid.Nil {
-		writeProblem(w, r, problem{Status: http.StatusBadRequest, Code: "invalid_gateway_key", Message: "Select an active Gateway Key.", Stage: "gateway_key_test"})
+		writeProblem(w, r, problem{Status: http.StatusBadRequest, Code: "invalid_api_key", Message: "Select an active API key.", Stage: "api_key_test"})
 		return
 	}
 	if _, err := a.gatewayKeyTestPrincipal(r, keyID); err != nil {
@@ -47,8 +47,8 @@ func (a *API) gatewayKeyTestModels(w http.ResponseWriter, r *http.Request) {
 	}
 	models, err := a.gatewayKeyTest.Models(r.Context(), keyID)
 	if err != nil {
-		a.logFailure("Gateway Key test model catalog failed", r, err)
-		writeProblem(w, r, problem{Status: http.StatusServiceUnavailable, Code: "model_catalog_unavailable", Message: "The selected Key model catalog is unavailable.", Retryable: true, Stage: "gateway_key_test"})
+		a.logFailure("API key test model catalog failed", r, err)
+		writeProblem(w, r, problem{Status: http.StatusServiceUnavailable, Code: "model_catalog_unavailable", Message: "The selected API key model catalog is unavailable.", Retryable: true, Stage: "api_key_test"})
 		return
 	}
 	views := make([]gatewayKeyTestModelView, 0, len(models))
@@ -71,7 +71,7 @@ func (a *API) gatewayKeyTestRun(w http.ResponseWriter, r *http.Request) {
 	}
 	idempotencyKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
 	if _, err := uuid.Parse(idempotencyKey); err != nil {
-		writeProblem(w, r, problem{Status: http.StatusBadRequest, Code: "invalid_idempotency_key", Message: "Idempotency-Key must be a UUID.", Stage: "gateway_key_test"})
+		writeProblem(w, r, problem{Status: http.StatusBadRequest, Code: "invalid_idempotency_key", Message: "Idempotency-Key must be a UUID.", Stage: "api_key_test"})
 		return
 	}
 	command, parseError := gatewayKeyTestCommand(r, principal, input, idempotencyKey)
@@ -81,7 +81,7 @@ func (a *API) gatewayKeyTestRun(w http.ResponseWriter, r *http.Request) {
 	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		writeProblem(w, r, problem{Status: http.StatusInternalServerError, Code: "streaming_unavailable", Message: "HTTP streaming is unavailable.", Stage: "gateway_key_test"})
+		writeProblem(w, r, problem{Status: http.StatusInternalServerError, Code: "streaming_unavailable", Message: "HTTP streaming is unavailable.", Stage: "api_key_test"})
 		return
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -151,7 +151,7 @@ func (a *API) logGatewayKeyTestWorkflowError(r *http.Request, workflowError *can
 	if workflowError.Cause != nil {
 		attributes = append(attributes, "cause", workflowError.Cause)
 	}
-	a.logger.Error("Gateway Key test workflow failed",
+	a.logger.Error("API key test workflow failed",
 		attributes...,
 	)
 }
@@ -183,7 +183,7 @@ func gatewayKeyTestCommand(r *http.Request, principal identity.GatewayPrincipal,
 	}
 	encoded, err := json.Marshal(wire)
 	if err != nil {
-		return requestflow.ChatCommand{}, &canonical.Error{Kind: canonical.ErrorInvalidRequest, Code: "invalid_gateway_key_test_request", Message: "Gateway Key test request could not be encoded.", Cause: err}
+		return requestflow.ChatCommand{}, &canonical.Error{Kind: canonical.ErrorInvalidRequest, Code: "invalid_api_key_test_request", Message: "API key test request could not be encoded.", Cause: err}
 	}
 	request, parseError := protocol.ParseChatRequest(bytes.NewReader(encoded), httpserver.RequestIDFromContext(r.Context()))
 	if parseError != nil {
@@ -230,5 +230,5 @@ func gatewayKeyTestProblem(providerError *canonical.Error, requestID string) pro
 	if errors.Is(providerError, context.Canceled) {
 		retryable = false
 	}
-	return problem{Status: status, Code: providerError.Code, Message: providerError.Message, Retryable: retryable, Stage: "gateway_key_test", RequestID: requestID}
+	return problem{Status: status, Code: providerError.Code, Message: providerError.Message, Retryable: retryable, Stage: "api_key_test", RequestID: requestID}
 }

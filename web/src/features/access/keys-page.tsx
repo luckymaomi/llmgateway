@@ -1,5 +1,5 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { CirclePlay, KeyRound, Plus, RotateCw, XCircle } from 'lucide-react'
+import { CirclePlay, Plus, RotateCw, XCircle } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
 import { accessApi, type GatewayKey } from '@/api'
@@ -20,8 +20,8 @@ import { KeyReplacementDialog } from './key-replacement-dialog'
 
 export function KeysPage() {
   const session = useSession()
-  const canRevoke = session.role === 'member' || hasCapability(session, 'access:write')
-  const canTest = hasCapability(session, 'gateway-key:test')
+  const canRevoke = hasCapability(session, 'keys:write')
+  const canTest = hasCapability(session, 'api-key:test')
   const { state, setPage, setSearch, setStatus } = useListSearch()
   const [creating, setCreating] = useState(false)
   const [replacementKey, setReplacementKey] = useState<GatewayKey | null>(null)
@@ -89,6 +89,7 @@ export function KeysPage() {
                   size="sm"
                   variant="quiet"
                   icon={<CirclePlay size={15} />}
+                  data-onboarding="test-api-key"
                   disabled={revoke.isPending}
                   onClick={() => setTestKey(row.original)}
                 >
@@ -126,11 +127,15 @@ export function KeysPage() {
   return (
     <Page>
       <PageHeader
-        title={session.role === 'member' ? 'Key 管理' : 'Gateway Key'}
+        title="API 密钥"
         actions={
-          session.role === 'administrator' ? (
-            <Button icon={<Plus size={16} />} onClick={() => setCreating(true)}>
-              创建 Key
+          canRevoke ? (
+            <Button
+              icon={<Plus size={16} />}
+              data-onboarding="create-api-key"
+              onClick={() => setCreating(true)}
+            >
+              创建 API 密钥
             </Button>
           ) : null
         }
@@ -150,7 +155,7 @@ export function KeysPage() {
           ]}
         />
         <DataTable
-          ariaLabel="Gateway Key 列表"
+          ariaLabel="API 密钥列表"
           data={query.data?.items ?? []}
           columns={columns}
           getRowId={(key) => key.id}
@@ -158,31 +163,14 @@ export function KeysPage() {
           fetching={query.isFetching}
           error={query.error}
           onRetry={() => void query.refetch()}
-          emptyLabel="还没有 Gateway Key"
+          emptyLabel="还没有 API 密钥"
           page={query.data?.page ?? state.page}
           pageSize={query.data?.pageSize ?? state.pageSize}
           total={query.data?.total ?? 0}
           onPageChange={setPage}
-          renderMobile={(key) => (
-            <div className="mobile-summary">
-              <div>
-                <strong>
-                  <KeyRound size={15} />
-                  {key.name}
-                </strong>
-                <StatusBadge status={key.status} />
-              </div>
-              <span>
-                <code>{key.prefix}…</code> · {key.authorizedModels.length} 个模型
-              </span>
-              <span>{formatDateTime(key.lastUsedAt)}</span>
-            </div>
-          )}
         />
       </PageSection>
-      {session.role === 'administrator' ? (
-        <KeyForm open={creating} onOpenChange={setCreating} />
-      ) : null}
+      {canRevoke ? <KeyForm open={creating} onOpenChange={setCreating} /> : null}
       <KeyReplacementDialog
         gatewayKey={replacementKey}
         onOpenChange={(open) => !open && setReplacementKey(null)}
@@ -196,8 +184,8 @@ export function KeysPage() {
       <ConfirmDialog
         open={revokeKey !== null}
         onOpenChange={(open) => !open && setRevokeKey(null)}
-        title="撤销 Gateway Key"
-        description={`撤销 ${revokeKey?.name ?? ''} 后，使用该 Key 的请求将立即失败。`}
+        title="撤销 API 密钥"
+        description={`撤销 ${revokeKey?.name ?? ''} 后，使用该 API 密钥的请求将立即失败。`}
         confirmLabel="确认撤销"
         onConfirm={() => revokeKey && revoke.mutate(revokeKey.id)}
         pending={revoke.isPending}

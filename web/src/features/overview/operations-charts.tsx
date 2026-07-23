@@ -27,7 +27,6 @@ const chartColors = {
 } as const
 
 export function RequestTrendChart({ overview }: { overview: OperationsOverview }) {
-  if (overview.requests.requestCount === 0) return <ChartEmpty label="24 小时内没有请求" />
   const data = overview.trend.map((point) => ({
     ...point,
     tokens: point.inputTokens + point.outputTokens,
@@ -144,16 +143,12 @@ export function CredentialStatusChart({
 }
 
 export function RequestErrorChart({ overview }: { overview: OperationsOverview }) {
-  if (overview.errors.length === 0) return <ChartEmpty label="24 小时内没有失败请求" />
-  const height = Math.max(190, overview.errors.length * 38)
+  const data = overview.errors.length > 0 ? overview.errors : [{ kind: '无错误', count: 0 }]
+  const height = Math.max(190, data.length * 38)
   return (
     <div className="chart chart--errors" style={{ height }} role="img" aria-label="请求错误分布">
       <ResponsiveContainer width="100%" height="100%">
-        <BarChart
-          data={overview.errors}
-          layout="vertical"
-          margin={{ top: 4, right: 24, bottom: 0, left: 4 }}
-        >
+        <BarChart data={data} layout="vertical" margin={{ top: 4, right: 24, bottom: 0, left: 4 }}>
           <CartesianGrid horizontal={false} stroke="var(--border)" />
           <XAxis type="number" allowDecimals={false} stroke="var(--muted)" fontSize={11} />
           <YAxis
@@ -187,8 +182,10 @@ function DistributionChart({
   ariaLabel: string
   data: DistributionDatum[]
 }) {
-  if (total === 0) return <ChartEmpty label={emptyLabel} />
-  const visible = data.filter((item) => item.value > 0)
+  const visible =
+    total === 0
+      ? [{ name: emptyLabel, value: 1, color: chartColors.muted }]
+      : data.filter((item) => item.value > 0)
   return (
     <div className="distribution" role="img" aria-label={ariaLabel}>
       <div className="distribution__plot">
@@ -208,7 +205,9 @@ function DistributionChart({
                 <Cell key={item.name} fill={item.color} />
               ))}
             </Pie>
-            <Tooltip formatter={(value) => [formatNumber(Number(value)), '数量']} />
+            {total > 0 ? (
+              <Tooltip formatter={(value) => [formatNumber(Number(value)), '数量']} />
+            ) : null}
           </PieChart>
         </ResponsiveContainer>
         <div className="distribution__total" aria-hidden="true">
@@ -227,8 +226,4 @@ function DistributionChart({
       </div>
     </div>
   )
-}
-
-function ChartEmpty({ label }: { label: string }) {
-  return <div className="chart-empty">{label}</div>
 }

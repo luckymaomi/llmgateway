@@ -171,8 +171,8 @@ func insertGatewayKeyRevocationUser(t *testing.T, pool *pgxpool.Pool, role ident
 	t.Helper()
 	id := uuid.New()
 	email := "gateway-key-revocation-" + id.String() + "@example.test"
-	if _, err := pool.Exec(context.Background(), `INSERT INTO users (id, email, display_name, password_hash, role, status, approved_at)
-VALUES ($1, $2, 'Gateway Key Revocation Fixture', 'fixture-hash', $3, 'active', now())`, id, email, role); err != nil {
+	if _, err := pool.Exec(context.Background(), `INSERT INTO users (id, email, display_name, password_hash, role, status)
+VALUES ($1, $2, 'Gateway Key Revocation Fixture', 'fixture-hash', $3, 'active')`, id, email, role); err != nil {
 		t.Fatalf("insert gateway key revocation user: %v", err)
 	}
 	t.Cleanup(func() {

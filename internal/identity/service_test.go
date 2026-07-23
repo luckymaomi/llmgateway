@@ -3,7 +3,6 @@ package identity
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/base64"
 	"slices"
 	"sort"
@@ -89,138 +88,47 @@ func TestChangePasswordVerifiesCurrentPasswordAndPreservesCurrentSession(t *test
 	}
 }
 
-func TestRegisterCreatesPendingUserFromInvitation(t *testing.T) {
-	repository := &repositoryStub{}
-	repository.register = func(_ context.Context, digest []byte, input NewUser) (User, error) {
-		if len(digest) != 32 || input.Status != StatusPending || input.Role != RoleMember {
-			t.Fatal("registration did not preserve invitation boundary")
-		}
-		return User{ID: uuid.New(), Email: input.Email, DisplayName: input.DisplayName, Role: input.Role, Status: input.Status}, nil
-	}
-
-	service := newTestService(t, repository)
-	user, err := service.Register(context.Background(), "invite_valid-code", "member@example.com", "Member", "correct horse battery staple")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if user.Status != StatusPending {
-		t.Fatalf("registration status = %s", user.Status)
-	}
-}
-
-func TestInvitationCreationPersistsNoSecretAndReplaysBeforeExpiryValidation(t *testing.T) {
-	actorID := uuid.New()
-	idempotencyKey := uuid.New()
-	now := time.Date(2026, time.July, 20, 7, 0, 0, 123456789, time.UTC)
-	expiresAt := now.Add(48 * time.Hour).In(time.FixedZone("request", 8*60*60))
-	var persisted Invitation
-	var firstMutation InvitationMutation
-	createCalls := 0
-	repository := &repositoryStub{}
-	repository.replayInvitation = func(_ context.Context, persistedActorID uuid.UUID, mutation InvitationMutation) (Invitation, bool, error) {
-		if persistedActorID != actorID || mutation.IdempotencyKey != idempotencyKey || len(mutation.RequestFingerprint) != sha256.Size {
-			t.Fatal("invitation replay received incomplete mutation identity")
-		}
-		if persisted.ID == uuid.Nil {
-			return Invitation{}, false, nil
-		}
-		if !bytes.Equal(mutation.RequestFingerprint, firstMutation.RequestFingerprint) {
-			t.Fatal("timezone-equivalent invitation replay changed its request fingerprint")
-		}
-		return persisted, true, nil
-	}
-	repository.createInvitation = func(_ context.Context, input NewInvitation, persistedActorID uuid.UUID, mutation InvitationMutation) (Invitation, error) {
-		createCalls++
-		if persistedActorID != actorID || len(input.CodeDigest) != sha256.Size || len(input.CodePrefix) != credentialPrefixBytes {
-			t.Fatal("invitation persistence received incomplete non-secret facts")
-		}
-		if !input.ExpiresAt.Equal(expiresAt.UTC().Truncate(time.Microsecond)) || input.ExpiresAt.Location() != time.UTC {
-			t.Fatalf("invitation expiry = %v, want normalized absolute time", input.ExpiresAt)
-		}
-		firstMutation = mutation
-		persisted = Invitation{
-			ID: uuid.New(), CreatedBy: actorID, ExpiresAt: input.ExpiresAt,
-			CodePrefix: input.CodePrefix, CreatedAt: now,
-		}
-		return persisted, nil
-	}
-
-	service := newTestService(t, repository)
-	service.now = func() time.Time { return now }
-	request := MutationRequest{IdempotencyKey: idempotencyKey, RequestID: "invitation-create"}
-	created, err := service.CreateInvitation(context.Background(), Principal{UserID: actorID, Role: RoleAdministrator, Status: StatusActive}, expiresAt, request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(created.Code) <= credentialPrefixBytes || created.Code[:credentialPrefixBytes] != created.CodePrefix || !strings.HasPrefix(created.CodePrefix, "invite_") {
-		t.Fatal("invitation creation did not return a valid recoverable code and display prefix")
-	}
-
-	service.now = func() time.Time { return now.Add(72 * time.Hour) }
-	replayed, err := service.CreateInvitation(
-		context.Background(),
-		Principal{UserID: actorID, Role: RoleAdministrator, Status: StatusActive},
-		expiresAt.UTC(),
-		MutationRequest{IdempotencyKey: idempotencyKey, RequestID: "invitation-reconcile"},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if replayed.ID != created.ID || replayed.Code != created.Code || createCalls != 1 {
-		t.Fatal("expired invitation mutation replay did not converge on the original entity and code")
-	}
-}
-
-func TestInvitationCreationRequiresAnActiveAdministrator(t *testing.T) {
+func TestAdministratorCreatesMemberWithRecoverableInitialPassword(t *testing.T) {
+	administratorID, memberID, idempotencyKey := uuid.New(), uuid.New(), uuid.New()
+	var passwordHashes []string
+	var firstFingerprint []byte
 	repository := &repositoryStub{
-		replayInvitation: func(context.Context, uuid.UUID, InvitationMutation) (Invitation, bool, error) {
-			t.Fatal("forbidden invitation creation reached persistence")
-			return Invitation{}, false, nil
+		createMember: func(_ context.Context, input NewUser, actorID uuid.UUID, mutation MemberMutation) (User, error) {
+			if actorID != administratorID || input.Email != "member@example.com" || input.DisplayName != "Member" || input.Role != RoleMember || input.Status != StatusActive {
+				t.Fatalf("member creation facts = actor %s input %+v", actorID, input)
+			}
+			verification, err := security.VerifyPassword("", input.PasswordHash, security.RecommendedPasswordParameters())
+			if err != nil || verification.Match {
+				t.Fatal("member password was not stored as a one-way hash")
+			}
+			passwordHashes = append(passwordHashes, input.PasswordHash)
+			if firstFingerprint == nil {
+				firstFingerprint = append([]byte(nil), mutation.RequestFingerprint...)
+			} else if !bytes.Equal(firstFingerprint, mutation.RequestFingerprint) {
+				t.Fatal("idempotent member replay changed its request fingerprint")
+			}
+			return User{ID: memberID, Email: input.Email, DisplayName: input.DisplayName, Role: input.Role, Status: input.Status}, nil
 		},
 	}
 	service := newTestService(t, repository)
-	for _, actor := range []Principal{
-		{UserID: uuid.New(), Role: RoleMember, Status: StatusActive},
-		{UserID: uuid.New(), Role: RoleAdministrator, Status: StatusDisabled},
-	} {
-		_, err := service.CreateInvitation(
-			context.Background(), actor, time.Now().UTC().Add(24*time.Hour),
-			MutationRequest{IdempotencyKey: uuid.New(), RequestID: "invitation-forbidden"},
-		)
-		if err != ErrForbidden {
-			t.Fatalf("CreateInvitation(%s/%s) error = %v, want ErrForbidden", actor.Role, actor.Status, err)
+	actor := Principal{UserID: administratorID, Role: RoleAdministrator, Status: StatusActive}
+	request := MutationRequest{IdempotencyKey: idempotencyKey, RequestID: "member-create"}
+	first, err := service.CreateMember(context.Background(), actor, "MEMBER@example.com", " Member ", request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.CreateMember(context.Background(), actor, "member@example.com", "Member", request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.User.ID != memberID || first.InitialPassword == "" || second.InitialPassword != first.InitialPassword {
+		t.Fatalf("member creation replay = first %+v second %+v", first, second)
+	}
+	for _, passwordHash := range passwordHashes {
+		verification, err := security.VerifyPassword(first.InitialPassword, passwordHash, security.RecommendedPasswordParameters())
+		if err != nil || !verification.Match {
+			t.Fatal("returned initial password does not match persisted hash")
 		}
-	}
-}
-
-func TestInvitationCodeDerivationIsScopedToTheAdministrator(t *testing.T) {
-	now := time.Date(2026, time.July, 20, 7, 0, 0, 0, time.UTC)
-	idempotencyKey := uuid.New()
-	repository := &repositoryStub{
-		createInvitation: func(_ context.Context, input NewInvitation, actorID uuid.UUID, _ InvitationMutation) (Invitation, error) {
-			return Invitation{
-				ID: uuid.New(), CreatedBy: actorID, ExpiresAt: input.ExpiresAt,
-				CodePrefix: input.CodePrefix, CreatedAt: now,
-			}, nil
-		},
-	}
-	service := newTestService(t, repository)
-	service.now = func() time.Time { return now }
-	codes := make([]string, 0, 2)
-	for _, actorID := range []uuid.UUID{uuid.New(), uuid.New()} {
-		created, err := service.CreateInvitation(
-			context.Background(),
-			Principal{UserID: actorID, Role: RoleAdministrator, Status: StatusActive},
-			now.Add(24*time.Hour),
-			MutationRequest{IdempotencyKey: idempotencyKey, RequestID: "actor-scoped-invitation"},
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		codes = append(codes, created.Code)
-	}
-	if codes[0] == codes[1] {
-		t.Fatal("two administrators derived the same invitation code from one idempotency key")
 	}
 }
 
@@ -332,25 +240,38 @@ func TestAdministratorCreatesAnIdempotentGatewayKeyAndMemberRevokesWithinOwnerBo
 	}
 }
 
-func TestGatewayKeyCreationRequiresAnActiveAdministrator(t *testing.T) {
+func TestMemberCreatesOnlyTheirOwnGatewayKey(t *testing.T) {
+	memberID := uuid.New()
+	persisted := false
 	repository := &repositoryStub{
-		createGatewayKey: func(context.Context, NewGatewayKey, uuid.UUID, GatewayKeyMutation) (GatewayKey, error) {
-			t.Fatal("member gateway key creation reached persistence")
-			return GatewayKey{}, nil
+		createGatewayKey: func(_ context.Context, input NewGatewayKey, actorID uuid.UUID, _ GatewayKeyMutation) (GatewayKey, error) {
+			if input.UserID != memberID || actorID != memberID {
+				t.Fatalf("member key owner = %s, actor = %s", input.UserID, actorID)
+			}
+			persisted = true
+			return GatewayKey{ID: uuid.New(), UserID: memberID}, nil
 		},
 	}
 	service := newTestService(t, repository)
+	actor := Principal{UserID: memberID, Role: RoleMember, Status: StatusActive}
 	_, err := service.CreateGatewayKey(
 		context.Background(),
-		Principal{UserID: uuid.New(), Role: RoleMember, Status: StatusActive},
-		uuid.New(),
+		actor,
+		memberID,
 		"Automation",
 		[]uuid.UUID{uuid.New()},
 		nil,
 		MutationRequest{IdempotencyKey: uuid.New(), RequestID: "request-create-key"},
 	)
+	if err != nil || !persisted {
+		t.Fatalf("CreateGatewayKey() error = %v, persisted = %v", err, persisted)
+	}
+	_, err = service.CreateGatewayKey(
+		context.Background(), actor, uuid.New(), "Cross member", []uuid.UUID{uuid.New()}, nil,
+		MutationRequest{IdempotencyKey: uuid.New(), RequestID: "request-cross-member-key"},
+	)
 	if err != ErrForbidden {
-		t.Fatalf("CreateGatewayKey() error = %v, want ErrForbidden", err)
+		t.Fatalf("cross-member CreateGatewayKey() error = %v, want ErrForbidden", err)
 	}
 }
 
@@ -359,7 +280,7 @@ func TestAdministratorResetsMemberPasswordWithStablePepperedMutationIdentity(t *
 	var firstFingerprint []byte
 	calls := 0
 	repository := &repositoryStub{
-		resetMemberPassword: func(_ context.Context, userID uuid.UUID, passwordHash string, actorID uuid.UUID, mutation PasswordResetMutation) (SessionRevocation, error) {
+		resetMemberPassword: func(_ context.Context, userID uuid.UUID, passwordHash string, actorID uuid.UUID, mutation MemberMutation) (SessionRevocation, error) {
 			calls++
 			if userID != memberID || actorID != administratorID || mutation.IdempotencyKey != idempotencyKey || mutation.RequestID != "password-reset" {
 				t.Fatalf("password reset command = user %s actor %s mutation %+v", userID, actorID, mutation)
@@ -450,15 +371,13 @@ func newTestService(t *testing.T, repository Repository) *Service {
 
 type repositoryStub struct {
 	bootstrap                func(context.Context, NewUser, SessionCreation) (Principal, error)
-	register                 func(context.Context, []byte, NewUser) (User, error)
 	findUserByEmail          func(context.Context, string) (User, error)
 	userDisplayNames         func(context.Context, []uuid.UUID) (map[uuid.UUID]string, error)
+	createMember             func(context.Context, NewUser, uuid.UUID, MemberMutation) (User, error)
 	createSession            func(context.Context, uuid.UUID, []byte, []byte, time.Time) (Principal, error)
-	replayInvitation         func(context.Context, uuid.UUID, InvitationMutation) (Invitation, bool, error)
-	createInvitation         func(context.Context, NewInvitation, uuid.UUID, InvitationMutation) (Invitation, error)
 	createGatewayKey         func(context.Context, NewGatewayKey, uuid.UUID, GatewayKeyMutation) (GatewayKey, error)
 	gatewayKeyForReplacement func(context.Context, uuid.UUID) (GatewayKey, error)
-	resetMemberPassword      func(context.Context, uuid.UUID, string, uuid.UUID, PasswordResetMutation) (SessionRevocation, error)
+	resetMemberPassword      func(context.Context, uuid.UUID, string, uuid.UUID, MemberMutation) (SessionRevocation, error)
 	changeOwnPassword        func(context.Context, uuid.UUID, uuid.UUID, string, string, string) (SessionRevocation, error)
 	revokeUserSessions       func(context.Context, uuid.UUID, uuid.UUID, *uuid.UUID, string) (SessionRevocation, error)
 	revokeGatewayKey         func(context.Context, uuid.UUID, uuid.UUID, bool) error
@@ -467,9 +386,6 @@ type repositoryStub struct {
 func (r *repositoryStub) IsBootstrapped(context.Context) (bool, error) { return false, nil }
 func (r *repositoryStub) Bootstrap(ctx context.Context, input NewUser, session SessionCreation) (Principal, error) {
 	return r.bootstrap(ctx, input, session)
-}
-func (r *repositoryStub) Register(ctx context.Context, digest []byte, input NewUser) (User, error) {
-	return r.register(ctx, digest, input)
 }
 func (r *repositoryStub) FindUserByEmail(ctx context.Context, email string) (User, error) {
 	if r.findUserByEmail != nil {
@@ -483,13 +399,22 @@ func (r *repositoryStub) UserDisplayNames(ctx context.Context, userIDs []uuid.UU
 	}
 	return r.userDisplayNames(ctx, userIDs)
 }
-func (r *repositoryStub) ListUsers(context.Context, *Status, Page) (UserPage, error) {
+func (r *repositoryStub) ListUsers(context.Context, *Status, string, Page) (UserPage, error) {
 	return UserPage{}, nil
 }
-func (r *repositoryStub) SetUserStatus(context.Context, uuid.UUID, Status, uuid.UUID) (User, error) {
+func (r *repositoryStub) CreateMember(ctx context.Context, input NewUser, actorID uuid.UUID, mutation MemberMutation) (User, error) {
+	return r.createMember(ctx, input, actorID, mutation)
+}
+func (r *repositoryStub) UpdateMember(context.Context, MemberChange, uuid.UUID, MemberMutation) (User, error) {
 	return User{}, nil
 }
-func (r *repositoryStub) ResetMemberPassword(ctx context.Context, userID uuid.UUID, passwordHash string, actorID uuid.UUID, mutation PasswordResetMutation) (SessionRevocation, error) {
+func (r *repositoryStub) SetUserStatus(context.Context, uuid.UUID, Status, uuid.UUID, MemberMutation) (User, error) {
+	return User{}, nil
+}
+func (r *repositoryStub) DeleteMember(context.Context, uuid.UUID, uuid.UUID, MemberMutation) (User, error) {
+	return User{}, nil
+}
+func (r *repositoryStub) ResetMemberPassword(ctx context.Context, userID uuid.UUID, passwordHash string, actorID uuid.UUID, mutation MemberMutation) (SessionRevocation, error) {
 	if r.resetMemberPassword == nil {
 		return SessionRevocation{}, nil
 	}
@@ -515,24 +440,6 @@ func (r *repositoryStub) FindSession(context.Context, []byte) (Principal, error)
 }
 func (r *repositoryStub) TouchSession(context.Context, uuid.UUID) error  { return nil }
 func (r *repositoryStub) RevokeSession(context.Context, uuid.UUID) error { return nil }
-func (r *repositoryStub) ReplayInvitationMutation(ctx context.Context, actorID uuid.UUID, mutation InvitationMutation) (Invitation, bool, error) {
-	if r.replayInvitation == nil {
-		return Invitation{}, false, nil
-	}
-	return r.replayInvitation(ctx, actorID, mutation)
-}
-func (r *repositoryStub) CreateInvitation(ctx context.Context, input NewInvitation, actorID uuid.UUID, mutation InvitationMutation) (Invitation, error) {
-	if r.createInvitation == nil {
-		return Invitation{}, nil
-	}
-	return r.createInvitation(ctx, input, actorID, mutation)
-}
-func (r *repositoryStub) ListInvitations(context.Context, Page) ([]Invitation, error) {
-	return []Invitation{}, nil
-}
-func (r *repositoryStub) RevokeInvitation(context.Context, uuid.UUID, uuid.UUID) error {
-	return nil
-}
 func (r *repositoryStub) CreateGatewayKey(ctx context.Context, input NewGatewayKey, actorID uuid.UUID, mutation GatewayKeyMutation) (GatewayKey, error) {
 	return r.createGatewayKey(ctx, input, actorID, mutation)
 }

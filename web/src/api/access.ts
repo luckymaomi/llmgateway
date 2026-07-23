@@ -1,8 +1,8 @@
 import { apiClient, listQuery } from './client'
 import type {
   CreatedGatewayKey,
+  CreatedMember,
   GatewayKey,
-  Invitation,
   ListQuery,
   Page,
   SessionRevocation,
@@ -11,15 +11,7 @@ import type {
 
 const base = '/api/control'
 const item = (path: string, id: string) => `${base}/${path}/${encodeURIComponent(id)}`
-
-export interface InvitationInput {
-  expiresAt: string
-}
-
-export interface CreatedInvitation {
-  invitation: Invitation
-  code: string
-}
+const mutationHeaders = (idempotencyKey: string) => ({ 'Idempotency-Key': idempotencyKey })
 
 export interface GatewayKeyInput {
   ownerId: string
@@ -28,42 +20,50 @@ export interface GatewayKeyInput {
   expiresAt?: string
 }
 
-export const accessApi = {
-  users: (query: ListQuery, signal?: AbortSignal) =>
-    apiClient.request<Page<UserAccount>>(`${base}/users`, {
-      query: listQuery(query),
-      ...(signal ? { signal } : {}),
-    }),
-  reviewUser: (id: string, decision: 'approve' | 'suspend' | 'activate') =>
-    apiClient.request<UserAccount, { decision: string }>(`${item('users', id)}/review`, {
-      method: 'POST',
-      body: { decision },
-    }),
-  resetMemberPassword: (id: string, newPassword: string, idempotencyKey: string) =>
-    apiClient.request<SessionRevocation, { newPassword: string }>(`${item('users', id)}/password`, {
-      method: 'POST',
-      body: { newPassword },
-      headers: { 'Idempotency-Key': idempotencyKey },
-    }),
-  revokeUserSessions: (id: string) =>
-    apiClient.request<SessionRevocation>(`${item('users', id)}/sessions/revoke`, {
-      method: 'POST',
-    }),
+export interface MemberInput {
+  email: string
+  displayName: string
+}
 
-  invitations: (query: ListQuery, signal?: AbortSignal) =>
-    apiClient.request<Page<Invitation>>(`${base}/invitations`, {
+export const accessApi = {
+  members: (query: ListQuery, signal?: AbortSignal) =>
+    apiClient.request<Page<UserAccount>>(`${base}/members`, {
       query: listQuery(query),
       ...(signal ? { signal } : {}),
     }),
-  createInvitation: (input: InvitationInput, idempotencyKey: string) =>
-    apiClient.request<CreatedInvitation, InvitationInput>(`${base}/invitations`, {
+  createMember: (input: MemberInput, idempotencyKey: string) =>
+    apiClient.request<CreatedMember, MemberInput>(`${base}/members`, {
       method: 'POST',
       body: input,
-      headers: { 'Idempotency-Key': idempotencyKey },
+      headers: mutationHeaders(idempotencyKey),
     }),
-  revokeInvitation: (id: string) =>
-    apiClient.request<Invitation>(`${item('invitations', id)}/revoke`, { method: 'POST' }),
-
+  updateMember: (
+    id: string,
+    input: MemberInput & { expectedUpdatedAt: string },
+    idempotencyKey: string,
+  ) =>
+    apiClient.request<UserAccount>(item('members', id), {
+      method: 'PUT',
+      body: input,
+      headers: mutationHeaders(idempotencyKey),
+    }),
+  setMemberStatus: (id: string, status: 'active' | 'disabled', idempotencyKey: string) =>
+    apiClient.request<UserAccount>(`${item('members', id)}/status`, {
+      method: 'PUT',
+      body: { status },
+      headers: mutationHeaders(idempotencyKey),
+    }),
+  deleteMember: (id: string, idempotencyKey: string) =>
+    apiClient.request<UserAccount>(item('members', id), {
+      method: 'DELETE',
+      headers: mutationHeaders(idempotencyKey),
+    }),
+  resetMemberPassword: (id: string, newPassword: string, idempotencyKey: string) =>
+    apiClient.request<SessionRevocation>(`${item('members', id)}/password`, {
+      method: 'POST',
+      body: { newPassword },
+      headers: mutationHeaders(idempotencyKey),
+    }),
   keys: (query: ListQuery, signal?: AbortSignal) =>
     apiClient.request<Page<GatewayKey>>(`${base}/keys`, {
       query: listQuery(query),
@@ -73,13 +73,13 @@ export const accessApi = {
     apiClient.request<CreatedGatewayKey, GatewayKeyInput>(`${base}/keys`, {
       method: 'POST',
       body: input,
-      headers: { 'Idempotency-Key': idempotencyKey },
+      headers: mutationHeaders(idempotencyKey),
     }),
   revokeKey: (id: string) =>
     apiClient.request<GatewayKey>(`${item('keys', id)}/revoke`, { method: 'POST' }),
   replaceKey: (id: string, idempotencyKey: string) =>
     apiClient.request<CreatedGatewayKey>(`${item('keys', id)}/replacement`, {
       method: 'POST',
-      headers: { 'Idempotency-Key': idempotencyKey },
+      headers: mutationHeaders(idempotencyKey),
     }),
 }

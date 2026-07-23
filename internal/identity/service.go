@@ -84,21 +84,6 @@ func (s *Service) Bootstrap(ctx context.Context, email string) (BootstrapCredent
 	}, nil
 }
 
-func (s *Service) Register(ctx context.Context, invitationCode, email, displayName, password string) (User, error) {
-	if !strings.HasPrefix(invitationCode, "invite_") {
-		return User{}, ErrInvalidInvitation
-	}
-	digest, err := security.HMACSHA256(s.sessionPepper, []byte(invitationCode))
-	if err != nil {
-		return User{}, err
-	}
-	newUser, err := s.prepareUser(email, displayName, password, RoleMember, StatusPending)
-	if err != nil {
-		return User{}, err
-	}
-	return s.repository.Register(ctx, digest[:], newUser)
-}
-
 func (s *Service) Login(ctx context.Context, email, password string) (SessionCredentials, error) {
 	normalizedEmail, err := normalizeEmail(email)
 	if err != nil {
@@ -114,8 +99,6 @@ func (s *Service) Login(ctx context.Context, email, password string) (SessionCre
 		return SessionCredentials{}, ErrInvalidCredential
 	}
 	switch user.Status {
-	case StatusPending:
-		return SessionCredentials{}, ErrApprovalRequired
 	case StatusDisabled:
 		return SessionCredentials{}, ErrDisabled
 	case StatusActive:
@@ -195,62 +178,8 @@ func (s *Service) UserDisplayNames(ctx context.Context, actor Principal, userIDs
 	return s.repository.UserDisplayNames(ctx, uniqueUserIDs)
 }
 
-func (s *Service) CreateInvitation(ctx context.Context, actor Principal, expiresAt time.Time, request MutationRequest) (Invitation, error) {
-	if actor.UserID == uuid.Nil || actor.Status != StatusActive || !actor.CanManageUsers() {
-		return Invitation{}, ErrForbidden
-	}
-	normalizedExpiresAt := expiresAt.UTC().Truncate(time.Microsecond)
-	mutation, err := newInvitationMutation(request, normalizedExpiresAt)
-	if err != nil {
-		return Invitation{}, err
-	}
-	code, err := s.deriveInvitationCode(actor.UserID, request.IdempotencyKey)
-	if err != nil {
-		return Invitation{}, err
-	}
-	replayed, found, err := s.repository.ReplayInvitationMutation(ctx, actor.UserID, mutation)
-	if err != nil {
-		return Invitation{}, err
-	}
-	if found {
-		return attachInvitationCode(replayed, actor.UserID, code)
-	}
-	now := s.now().UTC()
-	if normalizedExpiresAt.Sub(now) < time.Hour || normalizedExpiresAt.Sub(now) > 30*24*time.Hour {
-		return Invitation{}, ErrInvalidInput
-	}
-	digest, err := security.HMACSHA256(s.sessionPepper, []byte(code))
-	if err != nil {
-		return Invitation{}, err
-	}
-	invitation, err := s.repository.CreateInvitation(ctx, NewInvitation{
-		CodeDigest: digest[:], CodePrefix: credentialPrefix(code), ExpiresAt: normalizedExpiresAt,
-	}, actor.UserID, mutation)
-	if err != nil {
-		return Invitation{}, err
-	}
-	return attachInvitationCode(invitation, actor.UserID, code)
-}
-
-func (s *Service) deriveInvitationCode(actorID, idempotencyKey uuid.UUID) (string, error) {
-	material := "llmgateway:invitation-code:" + actorID.String() + ":" + idempotencyKey.String()
-	derived, err := security.HMACSHA256(s.sessionPepper, []byte(material))
-	if err != nil {
-		return "", err
-	}
-	return "invite_" + base64.RawURLEncoding.EncodeToString(derived[:]), nil
-}
-
-func attachInvitationCode(invitation Invitation, actorID uuid.UUID, code string) (Invitation, error) {
-	if invitation.ID == uuid.Nil || invitation.CreatedBy != actorID || invitation.Code != "" || invitation.CodePrefix != credentialPrefix(code) {
-		return Invitation{}, fmt.Errorf("identity: invalid invitation mutation result")
-	}
-	invitation.Code = code
-	return invitation, nil
-}
-
 func (s *Service) CreateGatewayKey(ctx context.Context, actor Principal, userID uuid.UUID, name string, authorizedModelIDs []uuid.UUID, expiresAt *time.Time, request MutationRequest) (GatewayKey, error) {
-	if actor.Status != StatusActive || actor.Role != RoleAdministrator {
+	if actor.Status != StatusActive || actor.Role != RoleAdministrator && (actor.Role != RoleMember || actor.UserID != userID) {
 		return GatewayKey{}, ErrForbidden
 	}
 	name = strings.TrimSpace(name)
@@ -366,22 +295,97 @@ func (s *Service) GatewayPrincipalByID(ctx context.Context, keyID uuid.UUID) (Ga
 	return principal, nil
 }
 
-func (s *Service) ListUsers(ctx context.Context, actor Principal, status *Status, page Page) (UserPage, error) {
-	if !actor.CanManageUsers() {
+func (s *Service) ListUsers(ctx context.Context, actor Principal, status *Status, search string, page Page) (UserPage, error) {
+	search = strings.TrimSpace(search)
+	if actor.Status != StatusActive || !actor.CanManageUsers() {
 		return UserPage{}, ErrForbidden
 	}
+	if status != nil && *status != StatusActive && *status != StatusDisabled || utf8.RuneCountInString(search) > 200 {
+		return UserPage{}, ErrInvalidInput
+	}
 	page = normalizePage(page)
-	return s.repository.ListUsers(ctx, status, page)
+	return s.repository.ListUsers(ctx, status, search, page)
 }
 
-func (s *Service) SetUserStatus(ctx context.Context, actor Principal, userID uuid.UUID, status Status) (User, error) {
-	if !actor.CanManageUsers() || actor.UserID == userID {
+func (s *Service) CreateMember(ctx context.Context, actor Principal, email, displayName string, request MutationRequest) (MemberCredentials, error) {
+	if actor.Status != StatusActive || !actor.CanManageUsers() {
+		return MemberCredentials{}, ErrForbidden
+	}
+	password, err := s.deriveMemberPassword(actor.UserID, request.IdempotencyKey)
+	if err != nil {
+		return MemberCredentials{}, err
+	}
+	member, err := s.prepareUser(email, displayName, password, RoleMember, StatusActive)
+	if err != nil {
+		return MemberCredentials{}, err
+	}
+	mutation, err := newMemberMutation(MemberMutationCreate, request, map[string]any{"email": member.Email, "display_name": member.DisplayName})
+	if err != nil {
+		return MemberCredentials{}, err
+	}
+	created, err := s.repository.CreateMember(ctx, member, actor.UserID, mutation)
+	if err != nil {
+		return MemberCredentials{}, err
+	}
+	return MemberCredentials{User: created, InitialPassword: password}, nil
+}
+
+func (s *Service) deriveMemberPassword(actorID, idempotencyKey uuid.UUID) (string, error) {
+	if actorID == uuid.Nil || idempotencyKey == uuid.Nil {
+		return "", ErrInvalidInput
+	}
+	material := "llmgateway:member-initial-password:" + actorID.String() + ":" + idempotencyKey.String()
+	derived, err := security.HMACSHA256(s.sessionPepper, []byte(material))
+	if err != nil {
+		return "", err
+	}
+	return "Lm!" + base64.RawURLEncoding.EncodeToString(derived[:]), nil
+}
+
+func (s *Service) UpdateMember(ctx context.Context, actor Principal, change MemberChange, request MutationRequest) (User, error) {
+	if actor.Status != StatusActive || !actor.CanManageUsers() || actor.UserID == change.ID {
+		return User{}, ErrForbidden
+	}
+	email, err := normalizeEmail(change.Email)
+	if err != nil {
+		return User{}, ErrInvalidInput
+	}
+	change.Email = email
+	change.DisplayName = strings.TrimSpace(change.DisplayName)
+	change.ExpectedUpdatedAt = change.ExpectedUpdatedAt.UTC()
+	if change.ID == uuid.Nil || change.DisplayName == "" || utf8.RuneCountInString(change.DisplayName) > maximumNameRunes || change.ExpectedUpdatedAt.IsZero() {
+		return User{}, ErrInvalidInput
+	}
+	mutation, err := newMemberMutation(MemberMutationUpdate, request, change)
+	if err != nil {
+		return User{}, err
+	}
+	return s.repository.UpdateMember(ctx, change, actor.UserID, mutation)
+}
+
+func (s *Service) SetUserStatus(ctx context.Context, actor Principal, userID uuid.UUID, status Status, request MutationRequest) (User, error) {
+	if actor.Status != StatusActive || !actor.CanManageUsers() || actor.UserID == userID {
 		return User{}, ErrForbidden
 	}
 	if status != StatusActive && status != StatusDisabled {
 		return User{}, ErrInvalidInput
 	}
-	return s.repository.SetUserStatus(ctx, userID, status, actor.UserID)
+	mutation, err := newMemberMutation(MemberMutationStatus, request, map[string]any{"user_id": userID, "status": status})
+	if err != nil {
+		return User{}, err
+	}
+	return s.repository.SetUserStatus(ctx, userID, status, actor.UserID, mutation)
+}
+
+func (s *Service) DeleteMember(ctx context.Context, actor Principal, userID uuid.UUID, request MutationRequest) (User, error) {
+	if actor.Status != StatusActive || !actor.CanManageUsers() || actor.UserID == userID || userID == uuid.Nil {
+		return User{}, ErrForbidden
+	}
+	mutation, err := newMemberMutation(MemberMutationDelete, request, map[string]any{"user_id": userID})
+	if err != nil {
+		return User{}, err
+	}
+	return s.repository.DeleteMember(ctx, userID, actor.UserID, mutation)
 }
 
 func (s *Service) ResetMemberPassword(ctx context.Context, actor Principal, userID uuid.UUID, password string, request MutationRequest) (SessionRevocation, error) {
@@ -400,9 +404,8 @@ func (s *Service) ResetMemberPassword(ctx context.Context, actor Principal, user
 	if err != nil {
 		return SessionRevocation{}, err
 	}
-	return s.repository.ResetMemberPassword(ctx, userID, passwordHash, actor.UserID, PasswordResetMutation{
-		IdempotencyKey: request.IdempotencyKey, RequestFingerprint: fingerprint[:], RequestID: request.RequestID,
-	})
+	mutation := MemberMutation{Action: MemberMutationPassword, IdempotencyKey: request.IdempotencyKey, RequestFingerprint: fingerprint[:], RequestID: request.RequestID}
+	return s.repository.ResetMemberPassword(ctx, userID, passwordHash, actor.UserID, mutation)
 }
 
 func (s *Service) RevokeUserSessions(ctx context.Context, actor Principal, userID uuid.UUID, requestID string) (SessionRevocation, error) {
@@ -420,20 +423,6 @@ func (s *Service) RevokeUserSessions(ctx context.Context, actor Principal, userI
 		preservedSessionID = &actor.SessionID
 	}
 	return s.repository.RevokeUserSessions(ctx, userID, actor.UserID, preservedSessionID, requestID)
-}
-
-func (s *Service) ListInvitations(ctx context.Context, actor Principal, page Page) ([]Invitation, error) {
-	if !actor.CanManageUsers() {
-		return nil, ErrForbidden
-	}
-	return s.repository.ListInvitations(ctx, normalizePage(page))
-}
-
-func (s *Service) RevokeInvitation(ctx context.Context, actor Principal, invitationID uuid.UUID) error {
-	if !actor.CanManageUsers() {
-		return ErrForbidden
-	}
-	return s.repository.RevokeInvitation(ctx, invitationID, actor.UserID)
 }
 
 func (s *Service) ListGatewayKeys(ctx context.Context, actor Principal, userID uuid.UUID) ([]GatewayKey, error) {
@@ -531,5 +520,5 @@ func normalizePage(page Page) Page {
 }
 
 func IsExpectedError(err error) bool {
-	return errors.Is(err, ErrConflict) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrInvalidCredential) || errors.Is(err, ErrInvalidInvitation) || errors.Is(err, ErrApprovalRequired) || errors.Is(err, ErrDisabled) || errors.Is(err, ErrForbidden) || errors.Is(err, ErrInvalidInput) || errors.Is(err, ErrIdempotencyConflict) || errors.Is(err, ErrOutcomeUnknown)
+	return errors.Is(err, ErrConflict) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrInvalidCredential) || errors.Is(err, ErrDisabled) || errors.Is(err, ErrForbidden) || errors.Is(err, ErrInvalidInput) || errors.Is(err, ErrIdempotencyConflict) || errors.Is(err, ErrOutcomeUnknown)
 }

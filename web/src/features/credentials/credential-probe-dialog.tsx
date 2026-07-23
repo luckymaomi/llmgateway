@@ -124,7 +124,6 @@ function ProbeResult({ result }: { result: CredentialProbeResult }) {
         <StatusBadge status={result.status} />
       </div>
       <span>模型：{result.modelName}</span>
-      {result.responseText ? <span>上游回复：{result.responseText}</span> : null}
       <span>耗时：{formatNumber(result.latencyMillis)} ms</span>
       <span>
         Token：{formatTokenCount(result.inputTokens)} 输入 / {formatTokenCount(result.outputTokens)}{' '}

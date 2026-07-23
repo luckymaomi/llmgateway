@@ -26,7 +26,6 @@ const (
 	kindShortStream    requestKind = "short_stream"
 	kindLongStream     requestKind = "long_stream"
 	kindExtendedStream requestKind = "extended_stream"
-	kindToolReason     requestKind = "tool_reasoning"
 	kindBackground     requestKind = "background_response"
 )
 
@@ -72,18 +71,11 @@ func (c *loadClient) execute(ctx context.Context, phase string, kind requestKind
 	}
 	prompt := map[requestKind]string{
 		kindShort: "capacity short", kindShortStream: "capacity short stream",
-		kindLongStream: "capacity long stream", kindExtendedStream: "capacity extended stream", kindToolReason: "capacity tool reasoning",
+		kindLongStream: "capacity long stream", kindExtendedStream: "capacity extended stream",
 	}[kind]
 	body := map[string]any{
 		"model": c.model, "messages": []map[string]string{{"role": "user", "content": prompt}},
 		"max_tokens": 16, "stream": kind == kindShortStream || kind == kindLongStream || kind == kindExtendedStream,
-	}
-	if kind == kindToolReason {
-		body["thinking"] = map[string]string{"type": "enabled"}
-		body["tools"] = []any{map[string]any{"type": "function", "function": map[string]any{
-			"name": "capacity_probe", "description": "Return a stable capacity probe value",
-			"parameters": map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false},
-		}}}
 	}
 	return c.send(ctx, phase, kind, user, "/v1/chat/completions", body, kind == kindShortStream || kind == kindLongStream || kind == kindExtendedStream)
 }
@@ -250,8 +242,6 @@ func mixedKind(sequence int) requestKind {
 		return kindLongStream
 	case 3, 4, 5:
 		return kindShortStream
-	case 6:
-		return kindToolReason
 	default:
 		return kindShort
 	}

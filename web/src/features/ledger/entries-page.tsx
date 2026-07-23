@@ -5,7 +5,6 @@ import { ledgerApi, type LedgerEntry } from '@/api'
 import { DataTable, type ColumnDef } from '@/components/data-table/data-table'
 import { TableToolbar } from '@/components/data-table/table-toolbar'
 import { Page, PageHeader, PageSection } from '@/components/layout'
-import { Badge } from '@/components/ui/badge'
 import { useListSearch } from '@/hooks/use-list-search'
 import { formatDateTime, formatSignedTokens } from '@/lib/format'
 
@@ -24,6 +23,7 @@ export function EntriesPage() {
         cell: ({ row }) => formatDateTime(row.original.occurredAt),
       },
       { accessorKey: 'ownerName', header: '用户' },
+      { accessorKey: 'servicePlanName', header: '套餐' },
       { accessorKey: 'kind', header: '事件', cell: ({ row }) => entryLabel[row.original.kind] },
       {
         accessorKey: 'tokenDelta',
@@ -33,15 +33,7 @@ export function EntriesPage() {
             {formatSignedTokens(row.original.tokenDelta)}
           </strong>
         ),
-      },
-      {
-        accessorKey: 'resourceDomain',
-        header: '资源域',
-        cell: ({ row }) => (
-          <Badge tone={row.original.resourceDomain === 'free' ? 'positive' : 'info'}>
-            {row.original.resourceDomain === 'free' ? '免费' : '专业'}
-          </Badge>
-        ),
+        meta: { align: 'right' },
       },
       { accessorKey: 'reason', header: '原因' },
       { accessorKey: 'actorName', header: '操作者' },
@@ -76,22 +68,6 @@ export function EntriesPage() {
           pageSize={query.data?.pageSize ?? state.pageSize}
           total={query.data?.total ?? 0}
           onPageChange={setPage}
-          renderMobile={(entry) => (
-            <div className="mobile-summary">
-              <div>
-                <strong>{entry.ownerName}</strong>
-                <span className={entry.tokenDelta >= 0 ? 'number-positive' : 'number-negative'}>
-                  {formatSignedTokens(entry.tokenDelta)}
-                </span>
-              </div>
-              <span>
-                {entryLabel[entry.kind]} · {entry.reason}
-              </span>
-              <span>
-                {formatDateTime(entry.occurredAt)} · {entry.actorName}
-              </span>
-            </div>
-          )}
         />
       </PageSection>
     </Page>

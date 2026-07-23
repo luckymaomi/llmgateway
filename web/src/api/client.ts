@@ -93,7 +93,7 @@ class SameOriginApiClient {
     this.csrfToken = token
   }
 
-  async request<TResponse, TBody = never>(
+  async request<TResponse, TBody = unknown>(
     path: string,
     options: RequestOptions<TBody> = {},
   ): Promise<TResponse> {

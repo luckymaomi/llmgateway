@@ -23,10 +23,14 @@ func (r *OperationsRepository) AdministratorResources(ctx context.Context, obser
 		return operations.AdministratorResources{}, err
 	}
 	return operations.AdministratorResources{
-		ProviderCount: row.ProviderCount, EnabledProviderCount: row.EnabledProviderCount, ModelCount: row.ModelCount,
+		ResourcePoolCount: row.ResourcePoolCount, ActiveResourcePoolCount: row.ActiveResourcePoolCount,
+		ConnectedProviderCount: row.ConnectedProviderCount, ModelCount: row.ModelCount,
 		CredentialCount: row.CredentialCount, ActiveCredentialCount: row.ActiveCredentialCount, CoolingCredentialCount: row.CoolingCredentialCount,
-		ActiveMemberCount: row.ActiveMemberCount, PendingMemberCount: row.PendingMemberCount, ActiveGatewayKeyCount: row.ActiveGatewayKeyCount,
-		ActiveEntitlementCount: row.ActiveEntitlementCount, HasActiveConfiguration: row.HasActiveConfiguration, HasModelPrice: row.HasModelPrice,
+		SuccessfulCredentialProbeCount: row.SuccessfulCredentialProbeCount,
+		ActiveMemberCount:              row.ActiveMemberCount, ActiveGatewayKeyCount: row.ActiveGatewayKeyCount,
+		ActiveServicePlanCount: row.ActiveServicePlanCount, ActiveSubscriptionCount: row.ActiveSubscriptionCount,
+		HasActiveUpstream: row.HasActiveUpstream, HasModelPrice: row.HasModelPrice,
+		HasCompletedRequest: row.HasCompletedRequest,
 	}, nil
 }
 
@@ -36,8 +40,8 @@ func (r *OperationsRepository) MemberAccess(ctx context.Context, userID uuid.UUI
 		return operations.MemberAccess{}, err
 	}
 	return operations.MemberAccess{
-		ActiveGatewayKeyCount: row.ActiveGatewayKeyCount, ActiveEntitlementCount: row.ActiveEntitlementCount,
-		RemainingTokens: row.RemainingTokens, NearestEntitlementExpiry: timePointer(row.NearestEntitlementExpiry),
+		ActiveGatewayKeyCount: row.ActiveGatewayKeyCount, ActiveSubscriptionCount: row.ActiveSubscriptionCount,
+		RemainingTokens: row.RemainingTokens, NearestSubscriptionExpiry: timePointer(row.NearestSubscriptionExpiry),
 	}, nil
 }
 

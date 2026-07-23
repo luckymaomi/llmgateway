@@ -1,51 +1,50 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Check, KeyRound, LogOut, Pause, Play } from 'lucide-react'
+import { KeyRound, Pencil, Play, Plus, Power, Trash2 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
 import { accessApi, type UserAccount } from '@/api'
-import { hasCapability, useSession } from '@/app/session'
 import { DataTable, type ColumnDef } from '@/components/data-table/data-table'
 import { TableToolbar } from '@/components/data-table/table-toolbar'
 import { Page, PageHeader, PageSection } from '@/components/layout'
 import { StatusBadge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { FormProblem } from '@/features/auth/form-problem'
 import { useListSearch } from '@/hooks/use-list-search'
-import { formatDateTime, formatTokens } from '@/lib/format'
+import { formatDateTime } from '@/lib/format'
 
+import { MemberForm } from './member-form'
 import { MemberPasswordDialog } from './member-password-dialog'
 
 export function UsersPage() {
-  const session = useSession()
-  const canWrite = hasCapability(session, 'access:write')
-  const { state, setPage, setSearch, setStatus } = useListSearch()
-  const [passwordUser, setPasswordUser] = useState<UserAccount | null>(null)
-  const [sessionUser, setSessionUser] = useState<UserAccount | null>(null)
   const queryClient = useQueryClient()
+  const { state, setPage, setSearch, setStatus } = useListSearch()
+  const [creating, setCreating] = useState(false)
+  const [editing, setEditing] = useState<UserAccount | null>(null)
+  const [passwordMember, setPasswordMember] = useState<UserAccount | null>(null)
+  const [deleting, setDeleting] = useState<UserAccount | null>(null)
   const query = useQuery({
-    queryKey: ['users', state],
-    queryFn: ({ signal }) => accessApi.users(state, signal),
+    queryKey: ['members', state],
+    queryFn: ({ signal }) => accessApi.members(state, signal),
     placeholderData: keepPreviousData,
   })
-  const review = useMutation({
-    mutationFn: ({
-      user,
-      decision,
-    }: {
-      user: UserAccount
-      decision: 'approve' | 'suspend' | 'activate'
-    }) => accessApi.reviewUser(user.id, decision),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['users'] }),
+  const statusMutation = useMutation({
+    mutationFn: ({ member, status }: { member: UserAccount; status: 'active' | 'disabled' }) =>
+      accessApi.setMemberStatus(member.id, status, crypto.randomUUID()),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['members'] }),
   })
-  const revokeSessions = useMutation({
-    mutationFn: (user: UserAccount) => accessApi.revokeUserSessions(user.id),
-    onSuccess: () => setSessionUser(null),
+  const deleteMutation = useMutation({
+    mutationFn: (member: UserAccount) => accessApi.deleteMember(member.id, crypto.randomUUID()),
+    async onSuccess() {
+      setDeleting(null)
+      await queryClient.invalidateQueries({ queryKey: ['members'] })
+    },
   })
   const columns = useMemo<ColumnDef<UserAccount, unknown>[]>(
     () => [
       {
         accessorKey: 'displayName',
-        header: '用户',
+        header: '成员',
         cell: ({ row }) => (
           <div>
             <strong>{row.original.displayName}</strong>
@@ -53,156 +52,138 @@ export function UsersPage() {
           </div>
         ),
       },
-      { accessorKey: 'role', header: '角色', cell: ({ row }) => roleLabel[row.original.role] },
+      { accessorKey: 'keyCount', header: 'API 密钥', meta: { align: 'right' } },
       {
         accessorKey: 'status',
         header: '状态',
         cell: ({ row }) => <StatusBadge status={row.original.status} />,
-      },
-      { accessorKey: 'modelCount', header: '模型授权' },
-      { accessorKey: 'keyCount', header: 'Key' },
-      {
-        accessorKey: 'quotaRemainingTokens',
-        header: '剩余额度',
-        cell: ({ row }) => formatTokens(row.original.quotaRemainingTokens),
+        meta: { align: 'center' },
       },
       {
-        accessorKey: 'lastActiveAt',
-        header: '最近活动',
-        cell: ({ row }) => formatDateTime(row.original.lastActiveAt),
+        accessorKey: 'createdAt',
+        header: '创建时间',
+        cell: ({ row }) => formatDateTime(row.original.createdAt),
       },
       {
         id: 'actions',
         header: '操作',
+        meta: { align: 'center' },
         cell: ({ row }) =>
-          canWrite ? (
-            <div className="row-actions">
-              {row.original.status === 'pending_review' ? (
-                <Button
-                  size="sm"
-                  variant="quiet"
-                  icon={<Check size={15} />}
-                  disabled={review.isPending}
-                  onClick={() => review.mutate({ user: row.original, decision: 'approve' })}
-                >
-                  批准
-                </Button>
-              ) : null}
+          row.original.role === 'member' && row.original.status !== 'deleted' ? (
+            <div className="row-actions row-actions--center">
+              <Button
+                size="sm"
+                variant="quiet"
+                icon={<Pencil size={14} />}
+                onClick={() => setEditing(row.original)}
+              >
+                编辑
+              </Button>
+              <Button
+                size="sm"
+                variant="quiet"
+                icon={<KeyRound size={14} />}
+                onClick={() => setPasswordMember(row.original)}
+              >
+                重置密码
+              </Button>
               {row.original.status === 'active' ? (
                 <Button
                   size="sm"
                   variant="quiet"
-                  icon={<Pause size={15} />}
-                  disabled={review.isPending}
-                  onClick={() => review.mutate({ user: row.original, decision: 'suspend' })}
+                  icon={<Power size={14} />}
+                  onClick={() =>
+                    statusMutation.mutate({ member: row.original, status: 'disabled' })
+                  }
                 >
                   停用
                 </Button>
-              ) : null}
-              {row.original.status === 'suspended' ? (
+              ) : (
                 <Button
                   size="sm"
                   variant="quiet"
-                  icon={<Play size={15} />}
-                  disabled={review.isPending}
-                  onClick={() => review.mutate({ user: row.original, decision: 'activate' })}
+                  icon={<Play size={14} />}
+                  onClick={() => statusMutation.mutate({ member: row.original, status: 'active' })}
                 >
                   启用
                 </Button>
-              ) : null}
-              {row.original.role === 'member' && row.original.status !== 'pending_review' ? (
-                <Button
-                  size="sm"
-                  variant="quiet"
-                  icon={<KeyRound size={15} />}
-                  onClick={() => setPasswordUser(row.original)}
-                >
-                  重置密码
-                </Button>
-              ) : null}
-              {row.original.status === 'active' ? (
-                <Button
-                  size="sm"
-                  variant="quiet"
-                  icon={<LogOut size={15} />}
-                  disabled={revokeSessions.isPending}
-                  onClick={() => setSessionUser(row.original)}
-                >
-                  撤销会话
-                </Button>
-              ) : null}
+              )}
+              <Button
+                size="sm"
+                variant="quiet"
+                icon={<Trash2 size={14} />}
+                onClick={() => setDeleting(row.original)}
+              >
+                删除
+              </Button>
             </div>
           ) : null,
       },
     ],
-    [canWrite, review, revokeSessions.isPending],
+    [statusMutation],
   )
 
   return (
     <Page>
-      <PageHeader title="成员" />
+      <PageHeader
+        title="成员"
+        actions={
+          <Button
+            icon={<Plus size={16} />}
+            data-onboarding="create-member"
+            onClick={() => setCreating(true)}
+          >
+            创建成员
+          </Button>
+        }
+      />
       <PageSection>
+        <FormProblem error={statusMutation.error ?? deleteMutation.error} />
         <TableToolbar
           search={state.search}
           onSearchChange={setSearch}
-          searchLabel="搜索用户"
+          searchLabel="搜索成员"
           status={state.status}
           onStatusChange={setStatus}
           statusOptions={[
-            { value: 'pending_review', label: '待审核' },
             { value: 'active', label: '可用' },
-            { value: 'suspended', label: '已停用' },
+            { value: 'disabled', label: '已停用' },
           ]}
         />
         <DataTable
-          ariaLabel="用户列表"
+          ariaLabel="成员列表"
           data={query.data?.items ?? []}
           columns={columns}
-          getRowId={(user) => user.id}
+          getRowId={(member) => member.id}
           loading={query.isLoading}
           fetching={query.isFetching}
-          error={query.error ?? review.error ?? revokeSessions.error}
+          error={query.error}
           onRetry={() => void query.refetch()}
-          emptyLabel="没有符合条件的用户"
+          emptyLabel="没有符合条件的成员"
           page={query.data?.page ?? state.page}
           pageSize={query.data?.pageSize ?? state.pageSize}
           total={query.data?.total ?? 0}
           onPageChange={setPage}
-          renderMobile={(user) => (
-            <div className="mobile-summary">
-              <div>
-                <strong>{user.displayName}</strong>
-                <StatusBadge status={user.status} />
-              </div>
-              <span>{user.email}</span>
-              <span>
-                {user.modelCount} 个模型 · {user.keyCount} 个 Key ·{' '}
-                {formatTokens(user.quotaRemainingTokens)}
-              </span>
-            </div>
-          )}
         />
       </PageSection>
+      {creating ? <MemberForm member={null} open onOpenChange={setCreating} /> : null}
+      {editing ? (
+        <MemberForm member={editing} open onOpenChange={(open) => !open && setEditing(null)} />
+      ) : null}
       <MemberPasswordDialog
-        user={passwordUser}
-        onOpenChange={(open) => !open && setPasswordUser(null)}
+        user={passwordMember}
+        onOpenChange={(open) => !open && setPasswordMember(null)}
       />
       <ConfirmDialog
-        open={sessionUser !== null}
-        onOpenChange={(open) => !open && setSessionUser(null)}
-        title="撤销活动会话"
-        description={
-          sessionUser?.id === session.userId
-            ? '保留当前会话并撤销其他活动会话。'
-            : `撤销 ${sessionUser?.displayName ?? ''} 的全部活动会话。`
-        }
-        confirmLabel="确认撤销"
-        onConfirm={() => sessionUser && revokeSessions.mutate(sessionUser)}
-        pending={revokeSessions.isPending}
+        open={deleting !== null}
+        onOpenChange={(open) => !open && setDeleting(null)}
+        title="删除成员"
+        description="删除后成员将无法登录或发起新请求，历史订阅、请求和账本记录继续保留。"
+        confirmLabel="确认删除"
+        pending={deleteMutation.isPending}
         danger
+        onConfirm={() => deleting && deleteMutation.mutate(deleting)}
       />
     </Page>
   )
 }
-
-const roleLabel = { administrator: '管理员', member: '成员' } as const

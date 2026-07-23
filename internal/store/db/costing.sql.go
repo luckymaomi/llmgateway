@@ -195,10 +195,10 @@ func (q *Queries) GetModelPriceVersion(ctx context.Context, id uuid.UUID) (GetMo
 
 const listCostSummaries = `-- name: ListCostSummaries :many
 SELECT request.user_id, user_record.display_name AS user_name,
-       request.entitlement_id, entitlement.plan::text AS plan,
+       request.subscription_id, plan.name AS service_plan_name, plan.kind::text AS plan_kind,
        request.model_id, model.public_name AS model_alias,
        model.provider_id, provider.name AS provider_name,
-       request.resource_domain::text AS resource_domain, request.cost_currency AS currency,
+       request.resource_pool_id, pool.name AS resource_pool_name, request.cost_currency AS currency,
        count(*)::bigint AS request_count,
        sum(request.input_tokens)::bigint AS input_tokens,
        sum(request.output_tokens)::bigint AS output_tokens,
@@ -207,14 +207,17 @@ SELECT request.user_id, user_record.display_name AS user_name,
        sum(request.total_cost_nanos)::bigint AS total_cost_nanos
 FROM requests request
 JOIN users user_record ON user_record.id = request.user_id
-JOIN entitlements entitlement ON entitlement.id = request.entitlement_id
+JOIN subscriptions subscription ON subscription.id = request.subscription_id
+JOIN service_plan_versions version ON version.id = subscription.service_plan_version_id
+JOIN service_plans plan ON plan.id = version.service_plan_id
 JOIN models model ON model.id = request.model_id
 JOIN providers provider ON provider.id = model.provider_id
+JOIN resource_pools pool ON pool.id = request.resource_pool_id
 WHERE request.total_cost_nanos IS NOT NULL
-GROUP BY request.user_id, user_record.display_name, request.entitlement_id, entitlement.plan,
+GROUP BY request.user_id, user_record.display_name, request.subscription_id, plan.name, plan.kind,
          request.model_id, model.public_name, model.provider_id, provider.name,
-         request.resource_domain, request.cost_currency
-ORDER BY max(request.completed_at) DESC NULLS LAST, request.user_id, request.entitlement_id, request.model_id
+         request.resource_pool_id, pool.name, request.cost_currency
+ORDER BY max(request.completed_at) DESC NULLS LAST, request.user_id, request.subscription_id, request.model_id
 LIMIT $2 OFFSET $1
 `
 
@@ -224,22 +227,24 @@ type ListCostSummariesParams struct {
 }
 
 type ListCostSummariesRow struct {
-	UserID          uuid.UUID `json:"user_id"`
-	UserName        string    `json:"user_name"`
-	EntitlementID   uuid.UUID `json:"entitlement_id"`
-	Plan            string    `json:"plan"`
-	ModelID         uuid.UUID `json:"model_id"`
-	ModelAlias      string    `json:"model_alias"`
-	ProviderID      uuid.UUID `json:"provider_id"`
-	ProviderName    string    `json:"provider_name"`
-	ResourceDomain  string    `json:"resource_domain"`
-	Currency        string    `json:"currency"`
-	RequestCount    int64     `json:"request_count"`
-	InputTokens     int64     `json:"input_tokens"`
-	OutputTokens    int64     `json:"output_tokens"`
-	InputCostNanos  int64     `json:"input_cost_nanos"`
-	OutputCostNanos int64     `json:"output_cost_nanos"`
-	TotalCostNanos  int64     `json:"total_cost_nanos"`
+	UserID           uuid.UUID `json:"user_id"`
+	UserName         string    `json:"user_name"`
+	SubscriptionID   uuid.UUID `json:"subscription_id"`
+	ServicePlanName  string    `json:"service_plan_name"`
+	PlanKind         string    `json:"plan_kind"`
+	ModelID          uuid.UUID `json:"model_id"`
+	ModelAlias       string    `json:"model_alias"`
+	ProviderID       uuid.UUID `json:"provider_id"`
+	ProviderName     string    `json:"provider_name"`
+	ResourcePoolID   uuid.UUID `json:"resource_pool_id"`
+	ResourcePoolName string    `json:"resource_pool_name"`
+	Currency         string    `json:"currency"`
+	RequestCount     int64     `json:"request_count"`
+	InputTokens      int64     `json:"input_tokens"`
+	OutputTokens     int64     `json:"output_tokens"`
+	InputCostNanos   int64     `json:"input_cost_nanos"`
+	OutputCostNanos  int64     `json:"output_cost_nanos"`
+	TotalCostNanos   int64     `json:"total_cost_nanos"`
 }
 
 func (q *Queries) ListCostSummaries(ctx context.Context, arg ListCostSummariesParams) ([]ListCostSummariesRow, error) {
@@ -254,13 +259,15 @@ func (q *Queries) ListCostSummaries(ctx context.Context, arg ListCostSummariesPa
 		if err := rows.Scan(
 			&i.UserID,
 			&i.UserName,
-			&i.EntitlementID,
-			&i.Plan,
+			&i.SubscriptionID,
+			&i.ServicePlanName,
+			&i.PlanKind,
 			&i.ModelID,
 			&i.ModelAlias,
 			&i.ProviderID,
 			&i.ProviderName,
-			&i.ResourceDomain,
+			&i.ResourcePoolID,
+			&i.ResourcePoolName,
 			&i.Currency,
 			&i.RequestCount,
 			&i.InputTokens,

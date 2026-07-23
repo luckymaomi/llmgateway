@@ -21,18 +21,23 @@ export function UsagePage() {
   const { state, setPage, setSearch, setStatus } = useListSearch()
   const [range, setRange] = useState<Range>('24h')
   const [userId, setUserId] = useState('')
-  const [gatewayKeyId, setGatewayKeyId] = useState('')
+  const [apiKeyId, setApiKeyId] = useState('')
   const [modelId, setModelId] = useState('')
-  const [resourceDomain, setResourceDomain] = useState('')
+  const [resourcePoolId, setResourcePoolId] = useState('')
   const [selected, setSelected] = useState<RequestLog | null>(null)
+  const pools = useQuery({
+    queryKey: ['resource-pools', 'request-log-filter'],
+    queryFn: ({ signal }) => catalogApi.resourcePools(true, signal),
+    enabled: session.role === 'administrator',
+  })
   const window = useMemo(() => requestWindow(range), [range])
   const filters: ListQuery = {
     ...state,
     ...window,
     ...(userId ? { userId } : {}),
-    ...(gatewayKeyId ? { gatewayKeyId } : {}),
+    ...(apiKeyId ? { apiKeyId } : {}),
     ...(modelId ? { modelId } : {}),
-    ...(resourceDomain ? { resourceDomain: resourceDomain as 'free' | 'professional' } : {}),
+    ...(resourcePoolId ? { resourcePoolId } : {}),
   }
   const query = useQuery({
     queryKey: ['request-logs', filters],
@@ -41,8 +46,8 @@ export function UsagePage() {
     refetchInterval: 15_000,
   })
   const users = useQuery({
-    queryKey: ['users', 'request-log-filter'],
-    queryFn: ({ signal }) => accessApi.users({ page: 1, pageSize: 100 }, signal),
+    queryKey: ['members', 'request-log-filter'],
+    queryFn: ({ signal }) => accessApi.members({ page: 1, pageSize: 100 }, signal),
     enabled: session.role === 'administrator',
   })
   const keys = useQuery({
@@ -51,12 +56,12 @@ export function UsagePage() {
   })
   const models = useQuery({
     queryKey: ['models', 'request-log-filter'],
-    queryFn: ({ signal }) => catalogApi.models({ page: 1, pageSize: 100 }, signal),
+    queryFn: ({ signal }) => catalogApi.models(signal),
     enabled: session.role === 'administrator',
   })
   const modelOptions = useMemo(() => {
     if (session.role === 'administrator') {
-      return (models.data?.items ?? []).map((model) => ({ id: model.id, name: model.alias }))
+      return (models.data ?? []).map((model) => ({ id: model.id, name: model.publicName }))
     }
     const result = new Map<string, string>()
     for (const key of keys.data?.items ?? []) {
@@ -65,7 +70,7 @@ export function UsagePage() {
       })
     }
     return Array.from(result, ([id, name]) => ({ id, name }))
-  }, [keys.data?.items, models.data?.items, session.role])
+  }, [keys.data?.items, models.data, session.role])
   const columns = useMemo<ColumnDef<RequestLog, unknown>[]>(
     () => [
       {
@@ -78,10 +83,14 @@ export function UsagePage() {
         : [{ accessorKey: 'userName', header: '成员' } as ColumnDef<RequestLog, unknown>]),
       {
         accessorKey: 'keyPrefix',
-        header: 'Gateway Key',
+        header: 'API 密钥',
         cell: ({ row }) => <code>{row.original.keyPrefix}…</code>,
       },
       { accessorKey: 'modelAlias', header: '模型' },
+      {
+        accessorKey: 'resourcePoolName',
+        header: '资源池',
+      },
       {
         id: 'tokens',
         header: 'Token',
@@ -156,11 +165,11 @@ export function UsagePage() {
                 </NativeSelect>
               ) : null}
               <NativeSelect
-                aria-label="Gateway Key 筛选"
-                value={gatewayKeyId}
-                onChange={(event) => resetPage(() => setGatewayKeyId(event.target.value))}
+                aria-label="API 密钥筛选"
+                value={apiKeyId}
+                onChange={(event) => resetPage(() => setApiKeyId(event.target.value))}
               >
-                <option value="">全部 Gateway Key</option>
+                <option value="">全部 API 密钥</option>
                 {(keys.data?.items ?? []).map((key) => (
                   <option key={key.id} value={key.id}>
                     {key.name} · {key.prefix}…
@@ -180,13 +189,16 @@ export function UsagePage() {
                 ))}
               </NativeSelect>
               <NativeSelect
-                aria-label="资源域筛选"
-                value={resourceDomain}
-                onChange={(event) => resetPage(() => setResourceDomain(event.target.value))}
+                aria-label="资源池筛选"
+                value={resourcePoolId}
+                onChange={(event) => resetPage(() => setResourcePoolId(event.target.value))}
               >
-                <option value="">全部资源域</option>
-                <option value="free">免费</option>
-                <option value="professional">专业</option>
+                <option value="">全部资源池</option>
+                {(pools.data ?? []).map((pool) => (
+                  <option key={pool.id} value={pool.id}>
+                    {pool.name}
+                  </option>
+                ))}
               </NativeSelect>
             </>
           }
@@ -195,7 +207,7 @@ export function UsagePage() {
           ariaLabel="API 日志列表"
           data={query.data?.items ?? []}
           columns={columns}
-          getRowId={(record) => record.id}
+          getRowId={(record) => record.requestId}
           loading={query.isLoading}
           fetching={query.isFetching}
           error={query.error}
@@ -206,20 +218,6 @@ export function UsagePage() {
           total={query.data?.total ?? 0}
           onPageChange={setPage}
           onRowClick={setSelected}
-          renderMobile={(record) => (
-            <div className="mobile-summary">
-              <div>
-                <strong>{record.modelAlias}</strong>
-                <StatusBadge status={record.status} />
-              </div>
-              <span>
-                {formatDateTime(record.acceptedAt)} · {record.keyPrefix}…
-              </span>
-              <span>
-                {tokenSummary(record)} · {formatDuration(requestDuration(record))}
-              </span>
-            </div>
-          )}
         />
       </PageSection>
       <RequestDetail request={selected} onOpenChange={(open) => !open && setSelected(null)} />
@@ -262,7 +260,8 @@ function RequestDetail({
             </header>
             <dl className="fact-grid">
               <Fact label="模型" value={detail.data.request.modelAlias} />
-              <Fact label="Gateway Key" value={`${detail.data.request.keyPrefix}…`} mono />
+              <Fact label="资源池" value={detail.data.request.resourcePoolName} />
+              <Fact label="API 密钥" value={`${detail.data.request.keyPrefix}…`} mono />
               <Fact label="接受时间" value={formatDateTime(detail.data.request.acceptedAt)} />
               <Fact label="耗时" value={formatDuration(requestDuration(detail.data.request))} />
               <Fact label="输入 Token" value={tokenValue(detail.data.request.inputTokens)} />

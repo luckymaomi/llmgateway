@@ -33,18 +33,18 @@ type workflowRepository struct {
 	heartbeatErr   error
 }
 
-func (r *workflowRepository) ListPublishedModels(context.Context, uuid.UUID) ([]Model, error) {
+func (r *workflowRepository) ListAvailableModels(context.Context, uuid.UUID) ([]Model, error) {
 	return []Model{r.model}, nil
 }
 
-func (r *workflowRepository) ResolvePublishedModel(_ context.Context, _ uuid.UUID, name string) (Model, error) {
+func (r *workflowRepository) ResolveAvailableModel(_ context.Context, _ uuid.UUID, name string) (Model, error) {
 	if name != r.model.PublicName {
 		return Model{}, ErrModelNotFound
 	}
 	return r.model, nil
 }
 
-func (r *workflowRepository) ListPublishedCandidates(context.Context, uuid.UUID, uuid.UUID, registry.ResourceDomain) ([]Candidate, error) {
+func (r *workflowRepository) ListResourcePoolCandidates(context.Context, uuid.UUID, uuid.UUID) ([]Candidate, error) {
 	return r.candidates, nil
 }
 
@@ -346,7 +346,7 @@ func TestCandidateSelectionPreservesEarliestCredentialCooldown(t *testing.T) {
 	_, providerError := service.selectCandidate(workflowRun{
 		model: repository.model, candidates: repository.candidates, request: chatCommand(false).Request,
 	}, nil)
-	if providerError == nil || providerError.Code != "free_pool_unavailable" || providerError.RetryAfter == nil ||
+	if providerError == nil || providerError.Code != "resource_pool_unavailable" || providerError.RetryAfter == nil ||
 		providerError.RetryAfter.At == nil || !providerError.RetryAfter.At.Equal(retryAt) {
 		t.Fatalf("selection error = %#v", providerError)
 	}
@@ -691,8 +691,8 @@ func TestCoordinationLeaseUsesTheClaimedExecutionIdentity(t *testing.T) {
 	service, repository, accounting := newWorkflowForTest(t, "https://provider.example/v1", &http.Client{Transport: roundTripFunc(successfulRoundTrip)})
 	rpmLimit := int32(7)
 	tpmLimit := int64(700)
-	accounting.accepted.EntitlementRPMLimit = &rpmLimit
-	accounting.accepted.EntitlementTPMLimit = &tpmLimit
+	accounting.accepted.SubscriptionRPMLimit = &rpmLimit
+	accounting.accepted.SubscriptionTPMLimit = &tpmLimit
 	requests := []LeaseRequest{}
 	service.coordinator = workflowCoordinator{requests: &requests}
 	if _, providerError := service.Chat(context.Background(), chatCommand(false)); providerError != nil {
@@ -701,8 +701,8 @@ func TestCoordinationLeaseUsesTheClaimedExecutionIdentity(t *testing.T) {
 	if len(requests) != 1 || requests[0].RequestID != repository.lastClaim.RequestID || requests[0].ExecutionID != repository.lastClaim.ExecutionID || requests[0].ExecutionID == requests[0].RequestID {
 		t.Fatalf("lease request = %#v, claim = %#v", requests, repository.lastClaim)
 	}
-	if requests[0].ResourceDomain != registry.ResourceFree || requests[0].EntitlementID != accounting.accepted.EntitlementID || requests[0].EntitlementConcurrency != accounting.accepted.EntitlementConcurrency || requests[0].EntitlementRPMLimit == nil || *requests[0].EntitlementRPMLimit != rpmLimit || requests[0].EntitlementTPMLimit == nil || *requests[0].EntitlementTPMLimit != tpmLimit {
-		t.Fatalf("lease request omitted accepted entitlement capacity: %#v", requests[0])
+	if requests[0].ResourcePoolID != accounting.accepted.ResourcePoolID || requests[0].SubscriptionID != accounting.accepted.SubscriptionID || requests[0].SubscriptionConcurrency != accounting.accepted.SubscriptionConcurrency || requests[0].SubscriptionRPMLimit == nil || *requests[0].SubscriptionRPMLimit != rpmLimit || requests[0].SubscriptionTPMLimit == nil || *requests[0].SubscriptionTPMLimit != tpmLimit {
+		t.Fatalf("lease request omitted accepted subscription capacity: %#v", requests[0])
 	}
 }
 
@@ -750,18 +750,18 @@ func newWorkflowForTest(t *testing.T, baseURL string, client *http.Client) (*Ser
 		t.Fatal(err)
 	}
 	modelID := uuid.New()
-	revisionID := uuid.New()
+	resourcePoolID := uuid.New()
 	repository := &workflowRepository{
 		model: Model{
-			ConfigRevisionID: revisionID, ID: modelID, PublicName: "public-glm", UpstreamName: "upstream-glm", ProviderID: uuid.New(),
-			ProviderKind: providers.KindOpenAICompatible, ProviderBaseURL: baseURL, ResourceDomain: registry.ResourceFree,
+			ID: modelID, PublicName: "public-glm", UpstreamName: "upstream-glm", ProviderID: uuid.New(),
+			ProviderKind: providers.KindOpenAICompatible, ProviderBaseURL: baseURL,
 			Capabilities: registry.ModelCapabilities{Chat: true, Streaming: true, Tools: true, Reasoning: true, ReasoningMode: registry.ReasoningHybrid, StructuredOutput: true, ContextTokens: 8192, OutputTokens: 2048},
 		},
 		candidates: []Candidate{{ID: uuid.New(), Priority: 10, Weight: 100}},
 	}
 	events := []string{}
 	accounting := &workflowAccounting{accepted: Accepted{
-		ReservationID: uuid.New(), EntitlementID: uuid.New(), EntitlementConcurrency: 2,
+		ReservationID: uuid.New(), SubscriptionID: uuid.New(), ResourcePoolID: resourcePoolID, SubscriptionConcurrency: 2,
 	}, events: &events}
 	clock := &fixedClock{now: time.Unix(100, 0).UTC()}
 	router, err := routing.NewRouter(zeroRandom{})

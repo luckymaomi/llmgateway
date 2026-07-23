@@ -70,8 +70,11 @@ export function SetupPage() {
             浏览器无法访问剪贴板，请手动保存密码。
           </span>
         ) : null}
-        <Button type="button" onClick={() => void navigate({ to: '/', replace: true })}>
-          我已保存，进入控制面
+        <Button
+          type="button"
+          onClick={() => void navigate({ to: '/getting-started', replace: true })}
+        >
+          我已保存，开始配置
         </Button>
       </AuthPanel>
     )

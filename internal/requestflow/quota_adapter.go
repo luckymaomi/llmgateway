@@ -25,7 +25,6 @@ func (a *QuotaAdapter) AcceptRequest(ctx context.Context, command AcceptCommand)
 	accepted, err := a.service.AcceptRequest(ctx, quota.AcceptInput{
 		RequestID: command.RequestID,
 		UserID:    command.UserID, GatewayKeyID: command.GatewayKeyID, ModelID: command.ModelID,
-		ConfigRevisionID: command.ConfigRevisionID, ResourceDomain: quota.ResourceDomain(command.ResourceDomain),
 		Stream: command.Stream, RequestDigest: command.RequestDigest, IdempotencyKey: command.IdempotencyKey,
 		ReservedTokens: command.ReservedTokens,
 	})
@@ -34,11 +33,12 @@ func (a *QuotaAdapter) AcceptRequest(ctx context.Context, command AcceptCommand)
 	}
 	return Accepted{
 		RequestID: accepted.Request.ID, ReservationID: accepted.Reservation.ID,
-		EntitlementID:          accepted.EntitlementCapacity.ID,
-		EntitlementConcurrency: accepted.EntitlementCapacity.ConcurrencyLimit,
-		EntitlementRPMLimit:    accepted.EntitlementCapacity.RPMLimit,
-		EntitlementTPMLimit:    accepted.EntitlementCapacity.TPMLimit,
-		Existing:               accepted.Replayed,
+		SubscriptionID:          accepted.SubscriptionCapacity.ID,
+		ResourcePoolID:          accepted.Request.ResourcePoolID,
+		SubscriptionConcurrency: accepted.SubscriptionCapacity.ConcurrencyLimit,
+		SubscriptionRPMLimit:    accepted.SubscriptionCapacity.RPMLimit,
+		SubscriptionTPMLimit:    accepted.SubscriptionCapacity.TPMLimit,
+		Existing:                accepted.Replayed,
 	}, nil
 }
 

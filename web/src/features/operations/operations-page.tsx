@@ -7,7 +7,7 @@ import { Page, PageHeader, PageSection } from '@/components/layout'
 import { StatusBadge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ErrorState, LoadingState } from '@/components/ui/state'
-import { formatDuration, formatNumber, formatPercent } from '@/lib/format'
+import { formatDateTime, formatDuration, formatNumber, formatPercent } from '@/lib/format'
 
 import {
   CredentialStatusChart,
@@ -24,19 +24,22 @@ export function OperationsPage() {
   })
   const credentials = useQuery({
     queryKey: ['credentials', 'operations'],
-    queryFn: ({ signal }) => catalogApi.credentials({ page: 1, pageSize: 100 }, signal),
+    queryFn: ({ signal }) => catalogApi.credentials(true, signal),
     refetchInterval: 30_000,
   })
   if (overview.isLoading)
     return (
       <Page>
-        <LoadingState label="正在读取运维状态" />
+        <LoadingState label="正在读取运行状态" />
       </Page>
     )
   if (overview.error || !overview.data || overview.data.scope !== 'administrator')
     return (
       <Page>
-        <ErrorState error={overview.error} onRetry={() => void overview.refetch()} />
+        <ErrorState
+          error={overview.error ?? new Error('运行状态不可用')}
+          onRetry={() => void overview.refetch()}
+        />
       </Page>
     )
 
@@ -44,18 +47,16 @@ export function OperationsPage() {
   const successRate = requestCount
     ? overview.data.requests.completedCount / requestCount
     : undefined
-  const attention = (credentials.data?.items ?? []).filter(
+  const attention = (credentials.data ?? []).filter(
     (credential) =>
       credential.status !== 'active' ||
       credential.cooldownUntil !== undefined ||
-      credential.lastProbeStatus === 'failed' ||
-      credential.lastProbeStatus === 'unavailable',
+      ['failed', 'unavailable'].includes(credential.lastProbeStatus ?? ''),
   )
-
   return (
     <Page>
       <PageHeader
-        title="运维监控"
+        title="运行状态"
         actions={
           <Button asChild variant="secondary" size="sm">
             <Link to="/api-logs">查看 API 日志</Link>
@@ -80,11 +81,9 @@ export function OperationsPage() {
           value={`${overview.data.resources.activeCredentialCount} / ${overview.data.resources.credentialCount}`}
         />
       </div>
-
       <PageSection title="24 小时趋势">
         <RequestTrendChart overview={overview.data} />
       </PageSection>
-
       <div className="chart-grid">
         <PageSection title="请求终态">
           <RequestOutcomeChart overview={overview.data} />
@@ -93,11 +92,9 @@ export function OperationsPage() {
           <CredentialStatusChart overview={overview.data} />
         </PageSection>
       </div>
-
       <PageSection title="24 小时错误分布">
         <RequestErrorChart overview={overview.data} />
       </PageSection>
-
       <PageSection
         title="需要处理的上游 API Key"
         actions={
@@ -122,17 +119,19 @@ export function OperationsPage() {
                 <AlertTriangle size={17} aria-hidden="true" />
                 <div>
                   <div className="alert-row__title">
-                    <strong>{credential.label}</strong>
+                    <strong>{credential.name}</strong>
                     <StatusBadge status={credential.status} />
                   </div>
                   <p>
-                    {credential.providerName}
+                    {credential.resourcePoolName} · {credential.providerName}
                     {credential.lastProbeErrorKind ? ` · ${credential.lastProbeErrorKind}` : ''}
                   </p>
                   <small>
                     {credential.cooldownUntil
-                      ? `冷却至 ${new Date(credential.cooldownUntil).toLocaleString('zh-CN')}`
-                      : '可在上游 API Key 页面重新测试或停用'}
+                      ? `冷却至 ${formatDateTime(credential.cooldownUntil)}`
+                      : credential.lastProbeAt
+                        ? `最近探测 ${formatDateTime(credential.lastProbeAt)}`
+                        : '尚未探测'}
                   </small>
                 </div>
               </div>

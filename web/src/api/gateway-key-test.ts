@@ -3,12 +3,12 @@ import { createParser } from 'eventsource-parser'
 import { ApiProblem, apiClient } from './client'
 import type { GatewayKeyTestEvent, GatewayKeyTestInput, GatewayKeyTestModel } from './types'
 
-const base = '/api/control/gateway-key-test'
+const base = '/api/control/api-key-test'
 
 export const gatewayKeyTestApi = {
-  models: (gatewayKeyId: string, signal?: AbortSignal) =>
+  models: (apiKeyId: string, signal?: AbortSignal) =>
     apiClient.request<GatewayKeyTestModel[]>(`${base}/models`, {
-      query: { gatewayKeyId },
+      query: { apiKeyId },
       ...(signal ? { signal } : {}),
     }),
 }

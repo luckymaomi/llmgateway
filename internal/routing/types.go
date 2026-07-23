@@ -4,18 +4,13 @@ import "time"
 
 type CandidateID string
 type ModelID string
-type ResourceDomain string
+type ResourcePoolID string
 type Capability string
-
-const (
-	ResourceFree         ResourceDomain = "free"
-	ResourceProfessional ResourceDomain = "professional"
-)
 
 type Candidate struct {
 	ID                   CandidateID
 	ModelID              ModelID
-	ResourceDomain       ResourceDomain
+	ResourcePoolID       ResourcePoolID
 	ModelPublished       bool
 	CredentialAuthorized bool
 	CredentialActive     bool
@@ -27,7 +22,7 @@ type Candidate struct {
 
 type Requirements struct {
 	ModelID            ModelID
-	ResourceDomain     ResourceDomain
+	ResourcePoolID     ResourcePoolID
 	Capabilities       []Capability
 	ExcludedCandidates []CandidateID
 	At                 time.Time
@@ -42,7 +37,7 @@ type ExclusionReason string
 const (
 	ExcludeModelNotPublished      ExclusionReason = "model_not_published"
 	ExcludeModelMismatch          ExclusionReason = "model_mismatch"
-	ExcludeResourceDomainMismatch ExclusionReason = "resource_domain_mismatch"
+	ExcludeResourcePoolMismatch   ExclusionReason = "resource_pool_mismatch"
 	ExcludeMissingCapability      ExclusionReason = "missing_capability"
 	ExcludeCredentialUnauthorized ExclusionReason = "credential_unauthorized"
 	ExcludeCredentialInactive     ExclusionReason = "credential_inactive"

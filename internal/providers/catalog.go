@@ -174,7 +174,7 @@ var defaultCatalog = mustCatalog([]Definition{
 			SourceURL: "https://api-docs.siliconflow.cn/docs/api/chat-completions-post", VerifiedAt: "2026-07-22",
 			Models: []ModelPreset{{
 				PublicName: "qwen3.5-9b", UpstreamName: "Qwen/Qwen3.5-9B", DisplayName: "Qwen3.5 9B",
-				ResourceDomain: "free", Capabilities: []string{"streaming", "tools", "reasoning"}, ReasoningMode: "toggle", ContextTokens: 131072,
+				Capabilities: []string{"streaming", "tools", "reasoning"}, ReasoningMode: "toggle", ContextTokens: 131072,
 			}},
 		}},
 		Build: func(options AdapterOptions) (Adapter, error) {
@@ -193,7 +193,7 @@ var defaultCatalog = mustCatalog([]Definition{
 			SourceURL: "https://docs.bigmodel.cn/cn/guide/develop/http/introduction", VerifiedAt: "2026-07-22",
 			Models: []ModelPreset{{
 				PublicName: "glm-5.2", UpstreamName: "glm-5.2", DisplayName: "GLM-5.2",
-				ResourceDomain: "free", Capabilities: []string{"streaming", "tools", "reasoning"}, ReasoningMode: "hybrid", ContextTokens: 131072,
+				Capabilities: []string{"streaming", "tools", "reasoning"}, ReasoningMode: "hybrid", ContextTokens: 131072,
 			}},
 		}},
 		Build: func(options AdapterOptions) (Adapter, error) { return NewZhipuWithBaseURL(options.BaseURL) },
@@ -210,7 +210,7 @@ var defaultCatalog = mustCatalog([]Definition{
 			SourceURL: "https://apihub.agnes-ai.com/v1", VerifiedAt: "2026-07-22",
 			Models: []ModelPreset{{
 				PublicName: "agnes-2.0-flash", UpstreamName: "agnes-2.0-flash", DisplayName: "Agnes 2.0 Flash",
-				ResourceDomain: "free", Capabilities: []string{"streaming", "tools", "reasoning"}, ReasoningMode: "toggle", ContextTokens: 131072,
+				Capabilities: []string{"streaming", "tools", "reasoning"}, ReasoningMode: "toggle", ContextTokens: 131072,
 			}},
 		}},
 		Build: func(options AdapterOptions) (Adapter, error) { return NewAgnesWithBaseURL(options.BaseURL) },
@@ -227,7 +227,7 @@ var defaultCatalog = mustCatalog([]Definition{
 			SourceURL: "https://ai.google.dev/gemini-api/docs/openai", VerifiedAt: "2026-07-22",
 			Models: []ModelPreset{{
 				PublicName: "gemini-3.5-flash", UpstreamName: "gemini-3.5-flash", DisplayName: "Gemini 3.5 Flash",
-				ResourceDomain: "free", Capabilities: []string{"streaming", "tools", "reasoning"}, ReasoningMode: "effort", ContextTokens: 131072,
+				Capabilities: []string{"streaming", "tools", "reasoning"}, ReasoningMode: "effort", ContextTokens: 131072,
 			}},
 		}},
 		Build: func(options AdapterOptions) (Adapter, error) { return NewGeminiWithBaseURL(options.BaseURL) },

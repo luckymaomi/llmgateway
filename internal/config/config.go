@@ -112,7 +112,7 @@ type RequestFlow struct {
 	CircuitOpenDuration        time.Duration
 	CircuitHalfOpenMaxInFlight int
 	Global                     Capacity
-	ResourceDomain             Capacity
+	ResourcePool               Capacity
 	User                       Capacity
 	GatewayKey                 Capacity
 	Model                      Capacity
@@ -212,7 +212,7 @@ func Load() (Config, error) {
 			CircuitOpenDuration:        durationEnv("LLMGATEWAY_REQUEST_CIRCUIT_OPEN_DURATION", 30*time.Second),
 			CircuitHalfOpenMaxInFlight: intEnv("LLMGATEWAY_REQUEST_CIRCUIT_HALF_OPEN_MAX_IN_FLIGHT", 1),
 			Global:                     capacityEnv("GLOBAL", Capacity{RequestsPerMinute: 12_000, TokensPerMinute: 6_000_000, Concurrency: 256}),
-			ResourceDomain:             capacityEnv("RESOURCE_DOMAIN", Capacity{RequestsPerMinute: 9_000, TokensPerMinute: 3_000_000, Concurrency: 128}),
+			ResourcePool:               capacityEnv("RESOURCE_POOL", Capacity{RequestsPerMinute: 9_000, TokensPerMinute: 3_000_000, Concurrency: 128}),
 			User:                       capacityEnv("USER", Capacity{RequestsPerMinute: 600, TokensPerMinute: 600_000, Concurrency: 16}),
 			GatewayKey:                 capacityEnv("GATEWAY_KEY", Capacity{RequestsPerMinute: 300, TokensPerMinute: 300_000, Concurrency: 8}),
 			Model:                      capacityEnv("MODEL", Capacity{RequestsPerMinute: 9_000, TokensPerMinute: 3_000_000, Concurrency: 128}),
@@ -309,7 +309,7 @@ func (c Config) Validate() error {
 		c.RequestFlow.CircuitOpenDuration <= 0 || c.RequestFlow.CircuitHalfOpenMaxInFlight < 1 {
 		problems = append(problems, errors.New("request workflow timing and resilience settings are invalid"))
 	}
-	for _, capacity := range []Capacity{c.RequestFlow.Global, c.RequestFlow.ResourceDomain, c.RequestFlow.User, c.RequestFlow.GatewayKey, c.RequestFlow.Model, c.RequestFlow.Provider, c.RequestFlow.Credential} {
+	for _, capacity := range []Capacity{c.RequestFlow.Global, c.RequestFlow.ResourcePool, c.RequestFlow.User, c.RequestFlow.GatewayKey, c.RequestFlow.Model, c.RequestFlow.Provider, c.RequestFlow.Credential} {
 		if capacity.RequestsPerMinute < 1 || capacity.TokensPerMinute < 1 || capacity.Concurrency < 1 {
 			problems = append(problems, errors.New("request workflow capacities must be positive"))
 			break

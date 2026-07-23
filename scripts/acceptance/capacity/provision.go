@@ -34,7 +34,7 @@ type faultDatabaseFact struct {
 	Attempts    int64  `json:"attempts"`
 }
 
-func provisionUsers(ctx context.Context, pool *pgxpool.Pool, pepper []byte, modelID uuid.UUID, count int, runID string) ([]virtualUser, error) {
+func provisionUsers(ctx context.Context, pool *pgxpool.Pool, pepper []byte, modelID, planVersionID uuid.UUID, count int, runID string) ([]virtualUser, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -42,15 +42,15 @@ func provisionUsers(ctx context.Context, pool *pgxpool.Pool, pepper []byte, mode
 	defer tx.Rollback(ctx)
 	users := make([]virtualUser, 0, count)
 	for index := 0; index < count; index++ {
-		userID, keyID, entitlementID := uuid.New(), uuid.New(), uuid.New()
+		userID, keyID, subscriptionID := uuid.New(), uuid.New(), uuid.New()
 		secret := fmt.Sprintf("llmg_capacity_%s_%03d", runID, index)
 		digest, err := security.HMACSHA256(pepper, []byte(secret))
 		if err != nil {
 			return nil, err
 		}
 		email := fmt.Sprintf("capacity-%s-%03d@example.test", runID, index)
-		if _, err := tx.Exec(ctx, `INSERT INTO users (id, email, display_name, password_hash, role, status, approved_at)
-VALUES ($1, $2, $3, 'capacity-fixture-cannot-login', 'member', 'active', now())`, userID, email, fmt.Sprintf("Capacity User %03d", index)); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO users (id, email, display_name, password_hash, role, status)
+VALUES ($1, $2, $3, 'capacity-fixture-cannot-login', 'member', 'active')`, userID, email, fmt.Sprintf("Capacity User %03d", index)); err != nil {
 			return nil, fmt.Errorf("insert capacity user %d: %w", index, err)
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO gateway_keys (id, user_id, name, prefix, secret_digest)
@@ -60,15 +60,16 @@ VALUES ($1, $2, 'Capacity acceptance', $3, $4)`, keyID, userID, secret[:13], dig
 		if _, err := tx.Exec(ctx, `INSERT INTO gateway_key_models (gateway_key_id, model_id) VALUES ($1, $2)`, keyID, modelID); err != nil {
 			return nil, fmt.Errorf("bind capacity key %d: %w", index, err)
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO entitlements
-(id, user_id, plan, resource_domain, model_id, granted_tokens, starts_at, expires_at, concurrency_limit, rpm_limit, tpm_limit)
-VALUES ($1, $2, 'token', 'free', $3, 100000000, $4, $5, 16, 600, 1000000)`, entitlementID, userID, modelID, time.Now().UTC().Add(-time.Hour), time.Now().UTC().Add(24*time.Hour)); err != nil {
-			return nil, fmt.Errorf("insert capacity entitlement %d: %w", index, err)
+		if _, err := tx.Exec(ctx, `INSERT INTO subscriptions
+(id, user_id, service_plan_version_id, status, granted_tokens, starts_at, expires_at, assigned_by)
+SELECT $1, $2, version.id, 'active', 100000000, $4, $5, version.created_by
+FROM service_plan_versions version WHERE version.id = $3`, subscriptionID, userID, planVersionID, time.Now().UTC().Add(-time.Hour), time.Now().UTC().Add(24*time.Hour)); err != nil {
+			return nil, fmt.Errorf("insert capacity subscription %d: %w", index, err)
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO ledger_events
-(user_id, entitlement_id, kind, token_delta, usage_source, source_event_id, note)
-VALUES ($1, $2, 'grant', 100000000, 'unknown', $3, 'isolated capacity acceptance')`, userID, entitlementID, uuid.New()); err != nil {
-			return nil, fmt.Errorf("grant capacity entitlement %d: %w", index, err)
+(user_id, subscription_id, kind, token_delta, usage_source, source_event_id, note)
+VALUES ($1, $2, 'grant', 100000000, 'unknown', $3, 'isolated capacity acceptance')`, userID, subscriptionID, uuid.New()); err != nil {
+			return nil, fmt.Errorf("grant capacity subscription %d: %w", index, err)
 		}
 		users = append(users, virtualUser{ID: userID, KeyID: keyID, Secret: secret})
 	}

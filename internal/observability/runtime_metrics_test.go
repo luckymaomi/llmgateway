@@ -51,11 +51,12 @@ func TestObservedBoundariesPreserveBehaviorAndReleaseGaugeOnce(t *testing.T) {
 	}
 
 	coordinator := metrics.ObserveCoordinator(coordinatorStub{lease: leaseStub{ctx: context.Background()}})
-	lease, _, err := coordinator.Acquire(context.Background(), requestflow.LeaseRequest{ResourceDomain: "free"})
+	resourcePoolID := uuid.New()
+	lease, _, err := coordinator.Acquire(context.Background(), requestflow.LeaseRequest{ResourcePoolID: resourcePoolID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := testutil.ToFloat64(metrics.coordinationActive.WithLabelValues("free")); got != 1 {
+	if got := testutil.ToFloat64(metrics.coordinationActive.WithLabelValues(resourcePoolID.String())); got != 1 {
 		t.Fatalf("active leases before release = %v", got)
 	}
 	if err := lease.Release(context.Background()); err != nil {
@@ -64,7 +65,7 @@ func TestObservedBoundariesPreserveBehaviorAndReleaseGaugeOnce(t *testing.T) {
 	if err := lease.Release(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got := testutil.ToFloat64(metrics.coordinationActive.WithLabelValues("free")); got != 0 {
+	if got := testutil.ToFloat64(metrics.coordinationActive.WithLabelValues(resourcePoolID.String())); got != 0 {
 		t.Fatalf("active leases after repeated release = %v", got)
 	}
 }

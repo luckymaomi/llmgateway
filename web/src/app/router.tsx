@@ -21,39 +21,28 @@ import { sessionQuery } from './session'
 
 const SetupPage = lazyRouteComponent(() => import('@/features/auth/setup-page'), 'SetupPage')
 const LoginPage = lazyRouteComponent(() => import('@/features/auth/login-page'), 'LoginPage')
-const RegisterPage = lazyRouteComponent(
-  () => import('@/features/auth/register-page'),
-  'RegisterPage',
-)
-const PendingPage = lazyRouteComponent(() => import('@/features/auth/pending-page'), 'PendingPage')
-
-const ProvidersPage = lazyRouteComponent(
-  () => import('@/features/catalog/providers-page'),
-  'ProvidersPage',
-)
-const ModelsPage = lazyRouteComponent(() => import('@/features/catalog/models-page'), 'ModelsPage')
-const RevisionsPage = lazyRouteComponent(
-  () => import('@/features/catalog/revisions-page'),
-  'RevisionsPage',
+const ResourcePoolsPage = lazyRouteComponent(
+  () => import('@/features/catalog/resource-pools-page'),
+  'ResourcePoolsPage',
 )
 const CredentialsPage = lazyRouteComponent(
   () => import('@/features/credentials/credentials-page'),
   'CredentialsPage',
 )
-const UsersPage = lazyRouteComponent(() => import('@/features/access/users-page'), 'UsersPage')
-const InvitationsPage = lazyRouteComponent(
-  () => import('@/features/access/invitations-page'),
-  'InvitationsPage',
+const PlansPage = lazyRouteComponent(
+  () => import('@/features/subscriptions/plans-page'),
+  'PlansPage',
 )
+const SubscriptionsPage = lazyRouteComponent(
+  () => import('@/features/subscriptions/subscriptions-page'),
+  'SubscriptionsPage',
+)
+const UsersPage = lazyRouteComponent(() => import('@/features/access/users-page'), 'UsersPage')
 const KeysPage = lazyRouteComponent(() => import('@/features/access/keys-page'), 'KeysPage')
 const UsagePage = lazyRouteComponent(() => import('@/features/ledger/usage-page'), 'UsagePage')
 const EntriesPage = lazyRouteComponent(
   () => import('@/features/ledger/entries-page'),
   'EntriesPage',
-)
-const EntitlementsPage = lazyRouteComponent(
-  () => import('@/features/ledger/entitlements-page'),
-  'EntitlementsPage',
 )
 const CostsPage = lazyRouteComponent(() => import('@/features/ledger/costs-page'), 'CostsPage')
 const SettingsPage = lazyRouteComponent(
@@ -68,6 +57,11 @@ const OperationsPage = lazyRouteComponent(
   () => import('@/features/operations/operations-page'),
   'OperationsPage',
 )
+const GettingStartedPage = lazyRouteComponent(
+  () => import('@/features/onboarding/getting-started-page'),
+  'GettingStartedPage',
+)
+const AccountPage = lazyRouteComponent(() => import('@/features/auth/account-page'), 'AccountPage')
 
 interface RouterContext {
   queryClient: QueryClient
@@ -132,24 +126,9 @@ const loginRoute = createRoute({
     return <LoginPage {...(search.redirect ? { redirectTo: search.redirect } : {})} />
   },
 })
-const registerRoute = createRoute({
-  getParentRoute: () => publicLayout,
-  path: '/register',
-  validateSearch: parseRegistrationSearch,
-  component: () => <RegisterPage invitation={registerRoute.useSearch().invitation ?? ''} />,
-})
-const pendingRoute = createRoute({
-  getParentRoute: () => publicLayout,
-  path: '/pending-review',
-  component: PendingPage,
-})
 
 function parseLoginSearch(search: Record<string, unknown>): { redirect?: string } {
   return typeof search.redirect === 'string' ? { redirect: search.redirect } : {}
-}
-
-function parseRegistrationSearch(search: Record<string, unknown>): { invitation?: string } {
-  return typeof search.invitation === 'string' ? { invitation: search.invitation } : {}
 }
 
 interface ParsedListSearch {
@@ -196,37 +175,79 @@ function protectedRoute<const TPath extends string>(
   })
 }
 
-const providersRoute = protectedRoute('/providers', 'providers:read', ProvidersPage, true)
-const modelsRoute = protectedRoute('/models', 'providers:read', ModelsPage, true)
-const revisionsRoute = protectedRoute('/configuration', 'providers:read', RevisionsPage, true)
-const credentialsRoute = protectedRoute('/provider-keys', 'credentials:read', CredentialsPage, true)
-const usersRoute = protectedRoute('/members', 'access:read', UsersPage, true, ['administrator'])
-const invitationsRoute = protectedRoute('/invitations', 'access:read', InvitationsPage, true, [
+const resourcePoolsRoute = protectedRoute(
+  '/resource-pools',
+  'resource-pools:write',
+  ResourcePoolsPage,
+)
+const credentialsRoute = protectedRoute('/provider-keys', 'credentials:write', CredentialsPage)
+const plansRoute = protectedRoute('/plans', 'plans:write', PlansPage)
+const subscriptionsRoute = createRoute({
+  getParentRoute: () => authenticatedLayout,
+  path: '/subscriptions',
+  beforeLoad: async ({ context }) => {
+    const session = await context.queryClient.ensureQueryData(sessionQuery)
+    const allowed =
+      session.capabilities.includes('subscriptions:write') ||
+      session.capabilities.includes('subscriptions:read')
+    if (!allowed) throw redirect({ to: '/forbidden' })
+  },
+  validateSearch: listSearch,
+  component: SubscriptionsPage,
+})
+const usersRoute = protectedRoute('/members', 'members:write', UsersPage, true, ['administrator'])
+const keysRoute = protectedRoute('/api-keys', 'keys:write', KeysPage, true)
+const usageRoute = createRoute({
+  getParentRoute: () => authenticatedLayout,
+  path: '/api-logs',
+  beforeLoad: usageGuard,
+  validateSearch: listSearch,
+  component: UsagePage,
+})
+const entriesRoute = createRoute({
+  getParentRoute: () => authenticatedLayout,
+  path: '/quota-records',
+  beforeLoad: usageGuard,
+  validateSearch: listSearch,
+  component: EntriesPage,
+})
+const costsRoute = protectedRoute('/costs', 'operations:read', CostsPage, true, ['administrator'])
+const settingsRoute = protectedRoute('/site-settings', 'members:write', SettingsPage, false, [
   'administrator',
 ])
-const keysRoute = protectedRoute('/gateway-keys', 'access:read', KeysPage, true, [
+const overviewRoute = createRoute({
+  getParentRoute: () => authenticatedLayout,
+  path: '/dashboard',
+  component: OverviewPage,
+})
+const operationsRoute = protectedRoute('/operations', 'operations:read', OperationsPage, false, [
   'administrator',
+])
+const gettingStartedRoute = protectedRoute(
+  '/getting-started',
+  'operations:read',
+  GettingStartedPage,
+  false,
+  ['administrator'],
+)
+const accountRoute = protectedRoute('/account', 'subscriptions:read', AccountPage, false, [
   'member',
-])
-const usageRoute = protectedRoute('/api-logs', 'ledger:read', UsagePage, true)
-const entriesRoute = protectedRoute('/quota-records', 'ledger:read', EntriesPage, true)
-const entitlementsRoute = protectedRoute('/entitlements', 'ledger:read', EntitlementsPage, true, [
-  'administrator',
-  'member',
-])
-const costsRoute = protectedRoute('/costs', 'ledger:write', CostsPage, true, ['administrator'])
-const settingsRoute = protectedRoute('/site-settings', 'access:read', SettingsPage, false, [
-  'administrator',
-])
-const overviewRoute = protectedRoute('/dashboard', 'access:read', OverviewPage)
-const operationsRoute = protectedRoute('/operations', 'access:read', OperationsPage, false, [
-  'administrator',
 ])
 const forbiddenRoute = createRoute({
   getParentRoute: () => authenticatedLayout,
   path: '/forbidden',
   component: ForbiddenPage,
 })
+
+async function usageGuard({ context }: { context: RouterContext }) {
+  const session = await context.queryClient.ensureQueryData(sessionQuery)
+  if (
+    !session.capabilities.includes('operations:read') &&
+    !session.capabilities.includes('usage:read')
+  ) {
+    throw redirect({ to: '/forbidden' })
+  }
+}
 
 function guard(capability: Capability, roles?: readonly Role[]) {
   return async ({ context }: { context: RouterContext }) => {
@@ -242,40 +263,36 @@ function guard(capability: Capability, roles?: readonly Role[]) {
 
 const routeTree = rootRoute.addChildren([
   rootIndex,
-  publicLayout.addChildren([setupRoute, loginRoute, registerRoute, pendingRoute]),
+  publicLayout.addChildren([setupRoute, loginRoute]),
   authenticatedLayout.addChildren([
-    providersRoute,
-    modelsRoute,
-    revisionsRoute,
+    resourcePoolsRoute,
     credentialsRoute,
+    plansRoute,
+    subscriptionsRoute,
     usersRoute,
-    invitationsRoute,
     keysRoute,
     usageRoute,
     entriesRoute,
-    entitlementsRoute,
     costsRoute,
     settingsRoute,
     overviewRoute,
     operationsRoute,
+    gettingStartedRoute,
+    accountRoute,
     forbiddenRoute,
   ]),
 ])
 
-export function createAppRouter(queryClient: QueryClient, initialEntries?: string[]) {
+export function createAppRouter({ queryClient, memory }: RouterContext & { memory?: boolean }) {
   return createRouter({
     routeTree,
     context: { queryClient },
-    defaultPreload: 'intent',
-    defaultPreloadStaleTime: 0,
-    ...(initialEntries ? { history: createMemoryHistory({ initialEntries }) } : {}),
+    ...(memory ? { history: createMemoryHistory({ initialEntries: ['/'] }) } : {}),
   })
 }
 
-export type AppRouter = ReturnType<typeof createAppRouter>
-
 declare module '@tanstack/react-router' {
   interface Register {
-    router: AppRouter
+    router: ReturnType<typeof createAppRouter>
   }
 }

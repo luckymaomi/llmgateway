@@ -45,8 +45,8 @@ func TestIdentityRepositoryCommitsBootstrapAndPasswordChangeAsIdentityFacts(t *t
 	fixtureUserID := uuid.New()
 	duplicateDigest := make([]byte, 32)
 	duplicateDigest[0] = 1
-	if _, err := pool.Exec(ctx, `INSERT INTO users (id, email, display_name, password_hash, role, status, approved_at)
-VALUES ($1, 'bootstrap-transaction-fixture@example.test', 'Fixture', 'fixture-hash', 'member', 'active', now())`, fixtureUserID); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO users (id, email, display_name, password_hash, role, status)
+VALUES ($1, 'bootstrap-transaction-fixture@example.test', 'Fixture', 'fixture-hash', 'member', 'active')`, fixtureUserID); err != nil {
 		t.Fatalf("insert rollback fixture user: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO sessions (user_id, token_digest, csrf_digest, expires_at)
@@ -186,8 +186,8 @@ func TestIdentityRepositoryResolvesCurrentDisplayNames(t *testing.T) {
 		{id: firstUserID, displayName: "First Creator"},
 		{id: secondUserID, displayName: "Second Creator"},
 	} {
-		if _, err := pool.Exec(ctx, `INSERT INTO users (id, email, display_name, password_hash, role, status, approved_at)
-VALUES ($1, $2, $3, 'fixture-hash', 'administrator', 'active', now())`, user.id, "display-name-"+user.id.String()+"@example.test", user.displayName); err != nil {
+		if _, err := pool.Exec(ctx, `INSERT INTO users (id, email, display_name, password_hash, role, status)
+VALUES ($1, $2, $3, 'fixture-hash', 'administrator', 'active')`, user.id, "display-name-"+user.id.String()+"@example.test", user.displayName); err != nil {
 			t.Fatalf("insert identity display-name fixture: %v", err)
 		}
 	}

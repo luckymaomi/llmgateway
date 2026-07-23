@@ -2,15 +2,15 @@ import { expect, type Page, type Request } from '@playwright/test'
 
 import { expectPageWidthToFit, isRecord, uuidPattern } from './acceptance-helpers'
 
-const runPath = '/api/control/gateway-key-test/runs'
+const runPath = '/api/control/api-key-test/runs'
 
 export async function verifyGatewayKeyRequest(page: Page, keyName: string): Promise<void> {
   const keyRow = page
-    .getByRole('table', { name: 'Gateway Key 列表' })
+    .getByRole('table', { name: 'API 密钥列表' })
     .getByRole('row')
     .filter({ hasText: keyName })
   await keyRow.getByRole('button', { name: '测试请求' }).click()
-  const dialog = page.getByRole('dialog', { name: '测试 Gateway Key' })
+  const dialog = page.getByRole('dialog', { name: '测试 API 密钥' })
 
   const completedResponse = page.waitForResponse((response) => isGatewayKeyTest(response.request()))
   await dialog.getByRole('button', { name: '开始测试' }).click()

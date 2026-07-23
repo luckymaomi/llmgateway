@@ -10,7 +10,7 @@ var ledgerTestTime = time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)
 
 func newFundedAccount(t *testing.T, tokens Tokens) *Account {
 	t.Helper()
-	account, err := NewAccount("user", "entitlement")
+	account, err := NewAccount("user", "subscription")
 	if err != nil {
 		t.Fatalf("NewAccount() error = %v", err)
 	}
@@ -200,7 +200,7 @@ func TestRebuildRecreatesBalanceAndReservationProjection(t *testing.T) {
 		t.Fatalf("Settle() error = %v", err)
 	}
 
-	rebuilt, err := Rebuild("user", "entitlement", account.Entries())
+	rebuilt, err := Rebuild("user", "subscription", account.Entries())
 	if err != nil {
 		t.Fatalf("Rebuild() error = %v", err)
 	}
@@ -216,7 +216,7 @@ func TestRebuildProtectsEventIdentityDuringRecovery(t *testing.T) {
 	entries := account.Entries()
 	entries = append(entries, entries[0])
 
-	_, err := Rebuild("user", "entitlement", entries)
+	_, err := Rebuild("user", "subscription", entries)
 	if kind := ledgerErrorKind(t, err); kind != ErrorInvalidHistory {
 		t.Fatalf("error kind = %q, want %q", kind, ErrorInvalidHistory)
 	}

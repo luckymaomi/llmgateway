@@ -1,10 +1,12 @@
 -- +goose Up
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
-CREATE TYPE user_status AS ENUM ('pending', 'active', 'disabled');
+CREATE TYPE user_status AS ENUM ('active', 'disabled', 'deleted');
 CREATE TYPE user_role AS ENUM ('administrator', 'member');
-CREATE TYPE resource_domain AS ENUM ('free', 'professional');
-CREATE TYPE credential_status AS ENUM ('active', 'cooling', 'disabled');
+CREATE TYPE resource_pool_status AS ENUM ('active', 'disabled', 'retired');
+CREATE TYPE credential_status AS ENUM ('active', 'cooling', 'disabled', 'retired');
+CREATE TYPE service_plan_status AS ENUM ('active', 'disabled', 'archived');
+CREATE TYPE subscription_status AS ENUM ('scheduled', 'active', 'suspended', 'canceled', 'expired');
 CREATE TYPE request_status AS ENUM ('queued', 'dispatching', 'streaming', 'completed', 'failed', 'canceled', 'uncertain');
 CREATE TYPE response_status AS ENUM ('queued', 'in_progress', 'completed', 'failed', 'canceled', 'uncertain');
 CREATE TYPE attempt_status AS ENUM ('created', 'sending', 'streaming', 'completed', 'failed', 'uncertain');
@@ -23,14 +25,17 @@ INSERT INTO system_state (singleton) VALUES (true);
 CREATE TABLE users (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     email text NOT NULL,
-    display_name text NOT NULL,
+    display_name text NOT NULL CHECK (char_length(display_name) BETWEEN 1 AND 120),
     password_hash text NOT NULL,
     role user_role NOT NULL DEFAULT 'member',
-    status user_status NOT NULL DEFAULT 'pending',
-    approved_at timestamptz,
+    status user_status NOT NULL DEFAULT 'active',
     disabled_at timestamptz,
+    deleted_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now()
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CHECK ((status = 'disabled') = (disabled_at IS NOT NULL)),
+    CHECK ((status = 'deleted') = (deleted_at IS NOT NULL)),
+    CHECK (status <> 'deleted' OR disabled_at IS NULL)
 );
 
 CREATE TABLE site_profile (
@@ -44,46 +49,23 @@ CREATE TABLE site_profile (
 );
 INSERT INTO site_profile (singleton, name) VALUES (true, 'LLMGateway');
 
-CREATE TABLE invitations (
-    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    code_digest bytea NOT NULL UNIQUE CHECK (octet_length(code_digest) = 32),
-    code_prefix text NOT NULL CHECK (octet_length(code_prefix) = 13 AND left(code_prefix, 7) = 'invite_'),
-    created_by uuid NOT NULL REFERENCES users(id),
-    expires_at timestamptz NOT NULL,
-    claimed_by uuid REFERENCES users(id),
-    claimed_at timestamptz,
-    revoked_at timestamptz,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    CHECK ((claimed_by IS NULL) = (claimed_at IS NULL))
-);
-
-CREATE TABLE invitation_mutations (
+CREATE TABLE member_mutations (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     actor_user_id uuid NOT NULL REFERENCES users(id),
+    action text NOT NULL,
     idempotency_key uuid NOT NULL,
+    user_id uuid REFERENCES users(id),
     request_fingerprint bytea NOT NULL CHECK (octet_length(request_fingerprint) = 32),
     request_id text NOT NULL,
-    invitation_id uuid REFERENCES invitations(id),
+    encrypted_one_time_secret bytea,
     result jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_at timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (actor_user_id, idempotency_key)
-);
-
-CREATE TABLE member_password_reset_mutations (
-    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    actor_user_id uuid NOT NULL REFERENCES users(id),
-    idempotency_key uuid NOT NULL,
-    user_id uuid NOT NULL REFERENCES users(id),
-    request_fingerprint bytea NOT NULL CHECK (octet_length(request_fingerprint) = 32),
-    request_id text NOT NULL,
-    result jsonb NOT NULL DEFAULT '{}'::jsonb,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (actor_user_id, idempotency_key)
+    UNIQUE (actor_user_id, action, idempotency_key)
 );
 
 CREATE TABLE sessions (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id uuid NOT NULL REFERENCES users(id),
     token_digest bytea NOT NULL UNIQUE,
     csrf_digest bytea NOT NULL,
     expires_at timestamptz NOT NULL,
@@ -94,8 +76,8 @@ CREATE TABLE sessions (
 
 CREATE TABLE gateway_keys (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    name text NOT NULL,
+    user_id uuid NOT NULL REFERENCES users(id),
+    name text NOT NULL CHECK (char_length(name) BETWEEN 1 AND 120),
     prefix text NOT NULL,
     secret_digest bytea NOT NULL UNIQUE,
     expires_at timestamptz,
@@ -116,44 +98,62 @@ CREATE TABLE gateway_key_mutations (
     UNIQUE (actor_user_id, idempotency_key)
 );
 
+-- Providers and models are catalog projections created only from validated code definitions.
 CREATE TABLE providers (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    catalog_id text NOT NULL UNIQUE,
     slug text NOT NULL UNIQUE,
     name text NOT NULL,
     kind text NOT NULL,
     base_url text NOT NULL,
-    enabled boolean NOT NULL DEFAULT true,
-    source_url text,
-    verified_at timestamptz,
+    source_url text NOT NULL,
+    verified_at timestamptz NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE provider_mutations (
+CREATE TABLE models (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    provider_id uuid NOT NULL REFERENCES providers(id),
+    public_name text NOT NULL UNIQUE,
+    upstream_name text NOT NULL,
+    display_name text NOT NULL,
+    capabilities jsonb NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (provider_id, upstream_name)
+);
+
+CREATE TABLE resource_pools (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    provider_id uuid NOT NULL REFERENCES providers(id),
+    slug text NOT NULL UNIQUE CHECK (slug ~ '^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$'),
+    name text NOT NULL CHECK (char_length(name) BETWEEN 2 AND 80),
+    status resource_pool_status NOT NULL DEFAULT 'active',
+    retired_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CHECK ((status = 'retired') = (retired_at IS NOT NULL))
+);
+
+CREATE TABLE resource_pool_models (
+    resource_pool_id uuid NOT NULL REFERENCES resource_pools(id),
+    model_id uuid NOT NULL REFERENCES models(id),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (resource_pool_id, model_id)
+);
+
+CREATE TABLE resource_pool_mutations (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     actor_user_id uuid NOT NULL REFERENCES users(id),
     action text NOT NULL,
     idempotency_key uuid NOT NULL,
     request_fingerprint bytea NOT NULL CHECK (octet_length(request_fingerprint) = 32),
     request_id text NOT NULL,
-    provider_id uuid REFERENCES providers(id),
+    resource_pool_id uuid REFERENCES resource_pools(id),
     result jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE (actor_user_id, action, idempotency_key)
-);
-
-CREATE TABLE models (
-    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    provider_id uuid NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
-    public_name text NOT NULL UNIQUE,
-    upstream_name text NOT NULL,
-    display_name text NOT NULL,
-    resource_domain resource_domain NOT NULL,
-    capabilities jsonb NOT NULL DEFAULT '{}'::jsonb,
-    enabled boolean NOT NULL DEFAULT true,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (provider_id, upstream_name)
 );
 
 CREATE TABLE model_price_versions (
@@ -180,44 +180,40 @@ CREATE TABLE model_price_mutations (
 );
 
 -- +goose StatementBegin
-CREATE FUNCTION reject_model_price_version_mutation() RETURNS trigger
+CREATE FUNCTION reject_immutable_record_mutation() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
-    RAISE EXCEPTION 'model price versions are immutable' USING ERRCODE = '55000';
+    RAISE EXCEPTION '% records are immutable', TG_TABLE_NAME USING ERRCODE = '55000';
 END;
 $$;
 -- +goose StatementEnd
 
 CREATE TRIGGER model_price_versions_immutable
 BEFORE UPDATE OR DELETE ON model_price_versions
-FOR EACH ROW EXECUTE FUNCTION reject_model_price_version_mutation();
+FOR EACH ROW EXECUTE FUNCTION reject_immutable_record_mutation();
 
 CREATE TABLE provider_credentials (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    provider_id uuid NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
-    name text NOT NULL,
+    resource_pool_id uuid NOT NULL REFERENCES resource_pools(id),
+    name text NOT NULL CHECK (char_length(name) BETWEEN 1 AND 120),
     encrypted_secret bytea NOT NULL,
-    resource_domain resource_domain NOT NULL,
     status credential_status NOT NULL DEFAULT 'active',
-    rpm_limit integer,
-    tpm_limit bigint,
-    concurrency_limit integer,
+    rpm_limit integer CHECK (rpm_limit IS NULL OR rpm_limit > 0),
+    tpm_limit bigint CHECK (tpm_limit IS NULL OR tpm_limit > 0),
+    concurrency_limit integer CHECK (concurrency_limit IS NULL OR concurrency_limit > 0),
     cooldown_until timestamptz,
     consecutive_failures integer NOT NULL DEFAULT 0,
     last_success_at timestamptz,
     last_error_kind text,
     last_probe_at timestamptz,
-    last_probe_latency_ms bigint,
+    last_probe_latency_ms bigint CHECK (last_probe_latency_ms IS NULL OR last_probe_latency_ms >= 0),
     last_probe_kind text,
-    last_probe_status text,
+    last_probe_status text CHECK (last_probe_status IS NULL OR last_probe_status IN ('succeeded', 'failed', 'unavailable', 'uncertain')),
     last_probe_error_kind text,
+    retired_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
-    CHECK (rpm_limit IS NULL OR rpm_limit > 0),
-    CHECK (tpm_limit IS NULL OR tpm_limit > 0),
-    CHECK (concurrency_limit IS NULL OR concurrency_limit > 0),
-    CHECK (last_probe_latency_ms IS NULL OR last_probe_latency_ms >= 0),
-    CHECK (last_probe_status IS NULL OR last_probe_status IN ('succeeded', 'failed', 'unavailable', 'uncertain'))
+    CHECK ((status = 'retired') = (retired_at IS NOT NULL))
 );
 
 CREATE TABLE credential_mutations (
@@ -230,120 +226,116 @@ CREATE TABLE credential_mutations (
     credential_id uuid REFERENCES provider_credentials(id),
     result jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_at timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (actor_user_id, idempotency_key)
+    UNIQUE (actor_user_id, action, idempotency_key)
 );
 
 CREATE TABLE credential_models (
-    credential_id uuid NOT NULL REFERENCES provider_credentials(id) ON DELETE CASCADE,
-    model_id uuid NOT NULL REFERENCES models(id) ON DELETE CASCADE,
+    credential_id uuid NOT NULL REFERENCES provider_credentials(id),
+    model_id uuid NOT NULL REFERENCES models(id),
     priority integer NOT NULL DEFAULT 100,
     weight integer NOT NULL DEFAULT 100 CHECK (weight > 0),
     PRIMARY KEY (credential_id, model_id)
 );
 
 CREATE TABLE gateway_key_models (
-    gateway_key_id uuid NOT NULL REFERENCES gateway_keys(id) ON DELETE CASCADE,
-    model_id uuid NOT NULL,
+    gateway_key_id uuid NOT NULL REFERENCES gateway_keys(id),
+    model_id uuid NOT NULL REFERENCES models(id),
     created_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (gateway_key_id, model_id)
 );
 
-CREATE TABLE config_revisions (
+CREATE TABLE service_plans (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    revision bigint GENERATED ALWAYS AS IDENTITY UNIQUE,
-    checksum text NOT NULL,
+    slug text NOT NULL UNIQUE CHECK (slug ~ '^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$'),
+    name text NOT NULL CHECK (char_length(name) BETWEEN 2 AND 100),
+    description text NOT NULL DEFAULT '' CHECK (char_length(description) <= 500),
+    kind plan_kind NOT NULL,
+    status service_plan_status NOT NULL DEFAULT 'active',
+    current_version_id uuid,
     created_by uuid NOT NULL REFERENCES users(id),
     created_at timestamptz NOT NULL DEFAULT now(),
-    published_at timestamptz,
-    published_by uuid REFERENCES users(id)
+    updated_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE config_mutations (
+CREATE TABLE service_plan_versions (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    service_plan_id uuid NOT NULL REFERENCES service_plans(id),
+    version integer NOT NULL CHECK (version > 0),
+    token_quota bigint NOT NULL CHECK (token_quota > 0),
+    validity_days integer NOT NULL CHECK (validity_days BETWEEN 1 AND 3650),
+    concurrency_limit integer NOT NULL CHECK (concurrency_limit BETWEEN 1 AND 10000),
+    rpm_limit integer CHECK (rpm_limit IS NULL OR rpm_limit > 0),
+    tpm_limit bigint CHECK (tpm_limit IS NULL OR tpm_limit > 0),
+    created_by uuid NOT NULL REFERENCES users(id),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (service_plan_id, version),
+    UNIQUE (id, service_plan_id)
+);
+
+CREATE TABLE service_plan_version_routes (
+    service_plan_version_id uuid NOT NULL REFERENCES service_plan_versions(id),
+    model_id uuid NOT NULL REFERENCES models(id),
+    resource_pool_id uuid NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (service_plan_version_id, model_id),
+    FOREIGN KEY (resource_pool_id, model_id) REFERENCES resource_pool_models(resource_pool_id, model_id)
+);
+
+ALTER TABLE service_plans
+    ADD CONSTRAINT service_plans_current_version_fk
+    FOREIGN KEY (current_version_id, id) REFERENCES service_plan_versions(id, service_plan_id);
+
+CREATE TRIGGER service_plan_versions_immutable
+BEFORE UPDATE OR DELETE ON service_plan_versions
+FOR EACH ROW EXECUTE FUNCTION reject_immutable_record_mutation();
+
+CREATE TRIGGER service_plan_version_routes_immutable
+BEFORE UPDATE OR DELETE ON service_plan_version_routes
+FOR EACH ROW EXECUTE FUNCTION reject_immutable_record_mutation();
+
+CREATE TABLE service_plan_mutations (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     actor_user_id uuid NOT NULL REFERENCES users(id),
     action text NOT NULL,
     idempotency_key uuid NOT NULL,
     request_fingerprint bytea NOT NULL CHECK (octet_length(request_fingerprint) = 32),
     request_id text NOT NULL,
-    revision_id uuid REFERENCES config_revisions(id),
+    service_plan_id uuid REFERENCES service_plans(id),
     result jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE (actor_user_id, action, idempotency_key)
 );
 
-CREATE TABLE config_revision_providers (
-    revision_id uuid NOT NULL REFERENCES config_revisions(id) ON DELETE CASCADE,
-    provider_id uuid NOT NULL,
-    slug text NOT NULL,
-    name text NOT NULL,
-    kind text NOT NULL,
-    base_url text NOT NULL,
-    PRIMARY KEY (revision_id, provider_id),
-    UNIQUE (revision_id, slug)
-);
-
-CREATE TABLE config_revision_models (
-    revision_id uuid NOT NULL REFERENCES config_revisions(id) ON DELETE CASCADE,
-    model_id uuid NOT NULL,
-    provider_id uuid NOT NULL,
-    public_name text NOT NULL,
-    upstream_name text NOT NULL,
-    display_name text NOT NULL,
-    resource_domain resource_domain NOT NULL,
-    capabilities jsonb NOT NULL,
-    created_at timestamptz NOT NULL,
-    PRIMARY KEY (revision_id, model_id),
-    UNIQUE (revision_id, public_name),
-    FOREIGN KEY (revision_id, provider_id) REFERENCES config_revision_providers(revision_id, provider_id) ON DELETE CASCADE
-);
-
-CREATE TABLE config_revision_credentials (
-    revision_id uuid NOT NULL REFERENCES config_revisions(id) ON DELETE CASCADE,
-    credential_id uuid NOT NULL,
-    provider_id uuid NOT NULL,
-    resource_domain resource_domain NOT NULL,
-    rpm_limit integer,
-    tpm_limit bigint,
-    concurrency_limit integer,
-    PRIMARY KEY (revision_id, credential_id),
-    FOREIGN KEY (revision_id, provider_id) REFERENCES config_revision_providers(revision_id, provider_id) ON DELETE CASCADE,
-    CHECK (rpm_limit IS NULL OR rpm_limit > 0),
-    CHECK (tpm_limit IS NULL OR tpm_limit > 0),
-    CHECK (concurrency_limit IS NULL OR concurrency_limit > 0)
-);
-
-CREATE TABLE config_revision_routes (
-    revision_id uuid NOT NULL REFERENCES config_revisions(id) ON DELETE CASCADE,
-    model_id uuid NOT NULL,
-    credential_id uuid NOT NULL,
-    priority integer NOT NULL DEFAULT 100,
-    weight integer NOT NULL DEFAULT 100 CHECK (weight > 0),
-    PRIMARY KEY (revision_id, model_id, credential_id),
-    FOREIGN KEY (revision_id, model_id) REFERENCES config_revision_models(revision_id, model_id) ON DELETE CASCADE,
-    FOREIGN KEY (revision_id, credential_id) REFERENCES config_revision_credentials(revision_id, credential_id) ON DELETE CASCADE
-);
-
-CREATE TABLE active_config (
-    singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
-    revision_id uuid NOT NULL REFERENCES config_revisions(id),
-    version bigint NOT NULL,
-    updated_at timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE TABLE entitlements (
+CREATE TABLE subscriptions (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    plan plan_kind NOT NULL,
-    resource_domain resource_domain NOT NULL,
-    model_id uuid REFERENCES models(id) ON DELETE CASCADE,
+    user_id uuid NOT NULL REFERENCES users(id),
+    service_plan_version_id uuid NOT NULL REFERENCES service_plan_versions(id),
+    status subscription_status NOT NULL,
     granted_tokens bigint NOT NULL CHECK (granted_tokens > 0),
     starts_at timestamptz NOT NULL,
     expires_at timestamptz NOT NULL,
-    concurrency_limit integer NOT NULL CHECK (concurrency_limit > 0),
-    rpm_limit integer CHECK (rpm_limit IS NULL OR rpm_limit > 0),
-    tpm_limit bigint CHECK (tpm_limit IS NULL OR tpm_limit > 0),
+    notes text NOT NULL DEFAULT '' CHECK (char_length(notes) <= 500),
+    assigned_by uuid NOT NULL REFERENCES users(id),
+    suspended_at timestamptz,
+    canceled_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT now(),
-    CHECK (expires_at > starts_at)
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CHECK (expires_at > starts_at),
+    CHECK ((status = 'suspended') = (suspended_at IS NOT NULL)),
+    CHECK ((status = 'canceled') = (canceled_at IS NOT NULL))
+);
+
+CREATE TABLE subscription_mutations (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    actor_user_id uuid NOT NULL REFERENCES users(id),
+    action text NOT NULL,
+    idempotency_key uuid NOT NULL,
+    request_fingerprint bytea NOT NULL CHECK (octet_length(request_fingerprint) = 32),
+    request_id text NOT NULL,
+    subscription_id uuid REFERENCES subscriptions(id),
+    result jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (actor_user_id, action, idempotency_key)
 );
 
 CREATE TABLE requests (
@@ -353,9 +345,8 @@ CREATE TABLE requests (
     user_id uuid NOT NULL REFERENCES users(id),
     gateway_key_id uuid NOT NULL REFERENCES gateway_keys(id),
     model_id uuid NOT NULL REFERENCES models(id),
-    entitlement_id uuid NOT NULL REFERENCES entitlements(id),
-    config_revision_id uuid REFERENCES config_revisions(id),
-    resource_domain resource_domain NOT NULL,
+    subscription_id uuid NOT NULL REFERENCES subscriptions(id),
+    resource_pool_id uuid NOT NULL REFERENCES resource_pools(id),
     price_version_id uuid NOT NULL REFERENCES model_price_versions(id),
     cost_currency text NOT NULL CHECK (cost_currency ~ '^[A-Z]{3}$'),
     input_rate_nanos_per_million bigint NOT NULL CHECK (input_rate_nanos_per_million BETWEEN 0 AND 1000000000000000),
@@ -409,7 +400,7 @@ CREATE TABLE request_attempts (
     created_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE (request_id, sequence),
     FOREIGN KEY (request_id, execution_id, execution_generation)
-        REFERENCES requests(id, execution_id, execution_generation) ON DELETE CASCADE,
+        REFERENCES requests(id, execution_id, execution_generation),
     CHECK ((input_tokens IS NULL) = (output_tokens IS NULL)),
     CHECK (input_tokens IS NOT NULL OR usage_source = 'unknown')
 );
@@ -417,7 +408,7 @@ CREATE TABLE request_attempts (
 CREATE TABLE ledger_events (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id uuid NOT NULL REFERENCES users(id),
-    entitlement_id uuid NOT NULL REFERENCES entitlements(id),
+    subscription_id uuid NOT NULL REFERENCES subscriptions(id),
     request_id uuid REFERENCES requests(id),
     reservation_id uuid,
     kind ledger_event_kind NOT NULL,
@@ -434,7 +425,7 @@ CREATE TABLE ledger_events (
 
 CREATE TABLE ledger_reservations (
     id uuid PRIMARY KEY,
-    entitlement_id uuid NOT NULL REFERENCES entitlements(id),
+    subscription_id uuid NOT NULL REFERENCES subscriptions(id),
     request_id uuid NOT NULL UNIQUE REFERENCES requests(id),
     state reservation_state NOT NULL,
     reserved_tokens bigint NOT NULL CHECK (reserved_tokens > 0),
@@ -460,7 +451,7 @@ CREATE TABLE audit_events (
 CREATE TABLE response_records (
     id uuid PRIMARY KEY,
     request_id uuid UNIQUE REFERENCES requests(id) ON DELETE SET NULL,
-    gateway_key_id uuid NOT NULL REFERENCES gateway_keys(id) ON DELETE CASCADE,
+    gateway_key_id uuid NOT NULL REFERENCES gateway_keys(id),
     previous_response_id uuid REFERENCES response_records(id) ON DELETE SET NULL,
     idempotency_key text,
     request_digest bytea,
@@ -485,12 +476,16 @@ CREATE TABLE response_records (
            (background AND execution_id IS NOT NULL AND execution_generation > 0 AND execution_claimed_at IS NOT NULL AND execution_heartbeat_at IS NOT NULL))
 );
 
+CREATE UNIQUE INDEX users_email_lower_idx ON users (lower(email)) WHERE status <> 'deleted';
+CREATE INDEX users_status_created_idx ON users (status, created_at DESC);
 CREATE INDEX sessions_active_digest_idx ON sessions (token_digest) WHERE revoked_at IS NULL;
-CREATE UNIQUE INDEX users_email_lower_idx ON users (lower(email));
 CREATE INDEX gateway_keys_active_digest_idx ON gateway_keys (secret_digest) WHERE revoked_at IS NULL;
 CREATE INDEX gateway_key_models_model_idx ON gateway_key_models (model_id, gateway_key_id);
-CREATE INDEX provider_credentials_eligible_idx ON provider_credentials (provider_id, resource_domain, status, cooldown_until);
-CREATE INDEX entitlements_applicable_idx ON entitlements (user_id, resource_domain, expires_at, starts_at);
+CREATE INDEX resource_pools_provider_status_idx ON resource_pools (provider_id, status, name);
+CREATE INDEX provider_credentials_eligible_idx ON provider_credentials (resource_pool_id, status, cooldown_until);
+CREATE INDEX subscriptions_applicable_idx ON subscriptions (user_id, status, starts_at, expires_at);
+CREATE INDEX service_plan_versions_plan_idx ON service_plan_versions (service_plan_id, version DESC);
+CREATE INDEX service_plan_routes_pool_idx ON service_plan_version_routes (resource_pool_id, model_id);
 CREATE INDEX requests_user_created_idx ON requests (user_id, accepted_at DESC);
 CREATE INDEX requests_accepted_idx ON requests (accepted_at DESC, id);
 CREATE INDEX model_price_versions_effective_idx ON model_price_versions (model_id, effective_at DESC, created_at DESC);
@@ -500,7 +495,7 @@ CREATE INDEX requests_execution_recovery_idx ON requests (execution_heartbeat_at
 CREATE INDEX request_attempts_request_idx ON request_attempts (request_id, sequence);
 CREATE INDEX request_attempts_credential_created_idx ON request_attempts (credential_id, created_at DESC, id);
 CREATE INDEX ledger_events_user_created_idx ON ledger_events (user_id, created_at DESC);
-CREATE INDEX ledger_events_entitlement_created_idx ON ledger_events (entitlement_id, created_at, id);
+CREATE INDEX ledger_events_subscription_created_idx ON ledger_events (subscription_id, created_at, id);
 CREATE UNIQUE INDEX ledger_events_actor_source_event_idx ON ledger_events (created_by, source_event_id)
     WHERE source_event_id IS NOT NULL AND created_by IS NOT NULL;
 CREATE UNIQUE INDEX ledger_events_system_source_event_idx ON ledger_events (source_event_id)
@@ -511,8 +506,6 @@ CREATE UNIQUE INDEX response_records_owner_idempotency_idx ON response_records (
     WHERE idempotency_key IS NOT NULL;
 CREATE INDEX response_records_execution_idx ON response_records (status, execution_heartbeat_at, created_at, id)
     WHERE background = true AND status IN ('queued', 'in_progress');
-CREATE INDEX config_revision_models_public_name_idx ON config_revision_models (public_name, revision_id);
-CREATE INDEX config_revision_routes_credential_idx ON config_revision_routes (revision_id, credential_id, model_id);
 
 -- +goose Down
 DROP TABLE IF EXISTS response_records;
@@ -521,41 +514,45 @@ DROP TABLE IF EXISTS ledger_reservations;
 DROP TABLE IF EXISTS ledger_events;
 DROP TABLE IF EXISTS request_attempts;
 DROP TABLE IF EXISTS requests;
-DROP TABLE IF EXISTS entitlements;
-DROP TABLE IF EXISTS active_config;
-DROP TABLE IF EXISTS config_revision_routes;
-DROP TABLE IF EXISTS config_revision_credentials;
-DROP TABLE IF EXISTS config_revision_models;
-DROP TABLE IF EXISTS config_revision_providers;
-DROP TABLE IF EXISTS config_mutations;
-DROP TABLE IF EXISTS config_revisions;
+DROP TABLE IF EXISTS subscription_mutations;
+DROP TABLE IF EXISTS subscriptions;
+DROP TABLE IF EXISTS service_plan_mutations;
+DROP TRIGGER IF EXISTS service_plan_version_routes_immutable ON service_plan_version_routes;
+DROP TABLE IF EXISTS service_plan_version_routes;
+DROP TRIGGER IF EXISTS service_plan_versions_immutable ON service_plan_versions;
+ALTER TABLE IF EXISTS service_plans DROP CONSTRAINT IF EXISTS service_plans_current_version_fk;
+DROP TABLE IF EXISTS service_plan_versions;
+DROP TABLE IF EXISTS service_plans;
 DROP TABLE IF EXISTS credential_models;
 DROP TABLE IF EXISTS credential_mutations;
 DROP TABLE IF EXISTS provider_credentials;
+DROP TRIGGER IF EXISTS model_price_versions_immutable ON model_price_versions;
 DROP TABLE IF EXISTS model_price_mutations;
 DROP TABLE IF EXISTS model_price_versions;
-DROP FUNCTION IF EXISTS reject_model_price_version_mutation();
-DROP TABLE IF EXISTS models;
-DROP TABLE IF EXISTS provider_mutations;
-DROP TABLE IF EXISTS providers;
+DROP FUNCTION IF EXISTS reject_immutable_record_mutation();
 DROP TABLE IF EXISTS gateway_key_models;
 DROP TABLE IF EXISTS gateway_key_mutations;
 DROP TABLE IF EXISTS gateway_keys;
+DROP TABLE IF EXISTS resource_pool_mutations;
+DROP TABLE IF EXISTS resource_pool_models;
+DROP TABLE IF EXISTS resource_pools;
+DROP TABLE IF EXISTS models;
+DROP TABLE IF EXISTS providers;
 DROP TABLE IF EXISTS sessions;
-DROP TABLE IF EXISTS member_password_reset_mutations;
-DROP TABLE IF EXISTS invitation_mutations;
-DROP TABLE IF EXISTS invitations;
+DROP TABLE IF EXISTS member_mutations;
 DROP TABLE IF EXISTS site_profile;
 DROP TABLE IF EXISTS users;
 DROP TABLE IF EXISTS system_state;
-DROP TYPE IF EXISTS plan_kind;
 DROP TYPE IF EXISTS reservation_state;
+DROP TYPE IF EXISTS plan_kind;
 DROP TYPE IF EXISTS ledger_event_kind;
 DROP TYPE IF EXISTS usage_source;
 DROP TYPE IF EXISTS attempt_status;
-DROP TYPE IF EXISTS request_status;
 DROP TYPE IF EXISTS response_status;
+DROP TYPE IF EXISTS request_status;
+DROP TYPE IF EXISTS subscription_status;
+DROP TYPE IF EXISTS service_plan_status;
 DROP TYPE IF EXISTS credential_status;
-DROP TYPE IF EXISTS resource_domain;
+DROP TYPE IF EXISTS resource_pool_status;
 DROP TYPE IF EXISTS user_role;
 DROP TYPE IF EXISTS user_status;

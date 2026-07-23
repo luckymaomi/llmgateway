@@ -27,8 +27,8 @@ func TestAccountRecoveryPersistsPasswordSessionAndAuditFacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mutation := identity.PasswordResetMutation{
-		IdempotencyKey: uuid.New(), RequestFingerprint: bytes.Repeat([]byte{0x42}, 32), RequestID: "member-password-reset-test",
+	mutation := identity.MemberMutation{
+		Action: identity.MemberMutationPassword, IdempotencyKey: uuid.New(), RequestFingerprint: bytes.Repeat([]byte{0x42}, 32), RequestID: "member-password-reset-test",
 	}
 
 	first, err := repository.ResetMemberPassword(ctx, memberID, replacementHash, administratorID, mutation)
@@ -146,8 +146,8 @@ func insertRecoveryUser(t *testing.T, pool *pgxpool.Pool, role identity.Role, st
 	t.Helper()
 	id := uuid.New()
 	_, err := pool.Exec(context.Background(), `INSERT INTO users (
-id, email, display_name, password_hash, role, status, approved_at, disabled_at
-) VALUES ($1, $2, 'Recovery fixture', 'fixture-password-hash', $3::user_role, $4::user_status, now(), CASE WHEN $4::user_status = 'disabled' THEN now() ELSE NULL END)`, id, recoveryEmail(id), role, status)
+id, email, display_name, password_hash, role, status, disabled_at
+) VALUES ($1, $2, 'Recovery fixture', 'fixture-password-hash', $3::user_role, $4::user_status, CASE WHEN $4::user_status = 'disabled' THEN now() ELSE NULL END)`, id, recoveryEmail(id), role, status)
 	if err != nil {
 		t.Fatalf("insert recovery user: %v", err)
 	}

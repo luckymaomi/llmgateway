@@ -16,27 +16,12 @@ var (
 	ErrNotFound                 = errors.New("quota record not found")
 	ErrConflict                 = errors.New("quota conflict")
 	ErrModelNotAuthorized       = errors.New("model is not authorized")
-	ErrResourceDomainMismatch   = errors.New("resource domain does not match the model")
 	ErrQuotaExhausted           = errors.New("quota exhausted")
 	ErrCostConfigurationMissing = errors.New("model cost configuration is missing")
 	ErrUsageUnknown             = errors.New("usage is unknown")
 	ErrTerminalConflict         = errors.New("reservation has a different terminal result")
 	ErrOutcomeUnknown           = errors.New("quota operation outcome is unknown")
 	ErrInvariant                = errors.New("quota invariant violated")
-)
-
-type ResourceDomain string
-
-const (
-	ResourceFree         ResourceDomain = "free"
-	ResourceProfessional ResourceDomain = "professional"
-)
-
-type Plan string
-
-const (
-	PlanToken  Plan = "token"
-	PlanCoding Plan = "coding"
 )
 
 type UsageSource string
@@ -76,60 +61,27 @@ const (
 	LedgerSettlement   LedgerKind = "settlement"
 	LedgerRelease      LedgerKind = "release"
 	LedgerCompensation LedgerKind = "compensation"
+	LedgerAdjustment   LedgerKind = "adjustment"
 )
 
-type Entitlement struct {
-	ID               uuid.UUID      `json:"id"`
-	UserID           uuid.UUID      `json:"user_id"`
-	Plan             Plan           `json:"plan"`
-	ResourceDomain   ResourceDomain `json:"resource_domain"`
-	ModelID          *uuid.UUID     `json:"model_id,omitempty"`
-	GrantedTokens    int64          `json:"granted_tokens"`
-	BalanceTokens    int64          `json:"balance_tokens"`
-	StartsAt         time.Time      `json:"starts_at"`
-	ExpiresAt        time.Time      `json:"expires_at"`
-	ConcurrencyLimit int32          `json:"concurrency_limit"`
-	RPMLimit         *int32         `json:"rpm_limit,omitempty"`
-	TPMLimit         *int64         `json:"tpm_limit,omitempty"`
-	CreatedAt        time.Time      `json:"created_at"`
-	OwnerName        string         `json:"-"`
-	ModelAlias       *string        `json:"-"`
-}
-
-type NewEntitlement struct {
-	IdempotencyKey   uuid.UUID
-	RequestID        string
-	UserID           uuid.UUID
-	Plan             Plan
-	ResourceDomain   ResourceDomain
-	ModelID          *uuid.UUID
-	GrantedTokens    int64
-	StartsAt         time.Time
-	ExpiresAt        time.Time
-	ConcurrencyLimit int32
-	RPMLimit         *int32
-	TPMLimit         *int64
-	Note             string
-}
-
 type LedgerEvent struct {
-	ID             uuid.UUID      `json:"id"`
-	UserID         uuid.UUID      `json:"user_id"`
-	EntitlementID  uuid.UUID      `json:"entitlement_id"`
-	RequestID      *uuid.UUID     `json:"request_id,omitempty"`
-	ReservationID  *uuid.UUID     `json:"reservation_id,omitempty"`
-	Kind           LedgerKind     `json:"kind"`
-	TokenDelta     int64          `json:"token_delta"`
-	ReservedTokens int64          `json:"reserved_tokens"`
-	InputTokens    int64          `json:"input_tokens"`
-	OutputTokens   int64          `json:"output_tokens"`
-	UsageSource    UsageSource    `json:"usage_source"`
-	ResourceDomain ResourceDomain `json:"resource_domain"`
-	Note           *string        `json:"note,omitempty"`
-	CreatedBy      *uuid.UUID     `json:"created_by,omitempty"`
-	CreatedAt      time.Time      `json:"created_at"`
-	OwnerName      string         `json:"-"`
-	ActorName      *string        `json:"-"`
+	ID              uuid.UUID   `json:"id"`
+	UserID          uuid.UUID   `json:"user_id"`
+	SubscriptionID  uuid.UUID   `json:"subscription_id"`
+	ServicePlanName string      `json:"service_plan_name"`
+	RequestID       *uuid.UUID  `json:"request_id,omitempty"`
+	ReservationID   *uuid.UUID  `json:"reservation_id,omitempty"`
+	Kind            LedgerKind  `json:"kind"`
+	TokenDelta      int64       `json:"token_delta"`
+	ReservedTokens  int64       `json:"reserved_tokens"`
+	InputTokens     int64       `json:"input_tokens"`
+	OutputTokens    int64       `json:"output_tokens"`
+	UsageSource     UsageSource `json:"usage_source"`
+	Note            *string     `json:"note,omitempty"`
+	CreatedBy       *uuid.UUID  `json:"created_by,omitempty"`
+	CreatedAt       time.Time   `json:"created_at"`
+	OwnerName       string      `json:"-"`
+	ActorName       *string     `json:"-"`
 }
 
 type Page struct {
@@ -138,23 +90,14 @@ type Page struct {
 }
 
 type PageResult[T any] struct {
-	Items []T
-	Total int64
-}
-
-type EntitlementQuery struct {
-	UserID         *uuid.UUID
-	Search         string
-	Status         string
-	ResourceDomain ResourceDomain
-	Page           Page
+	Items []T   `json:"items"`
+	Total int64 `json:"total"`
 }
 
 type LedgerFilter struct {
 	UserID         *uuid.UUID
-	EntitlementID  *uuid.UUID
+	SubscriptionID *uuid.UUID
 	Search         string
-	ResourceDomain ResourceDomain
 	Page           Page
 }
 
@@ -162,9 +105,9 @@ type RequestLogQuery struct {
 	UserID         *uuid.UUID
 	GatewayKeyID   *uuid.UUID
 	ModelID        *uuid.UUID
+	ResourcePoolID *uuid.UUID
 	Search         string
 	Status         RequestStatus
-	ResourceDomain ResourceDomain
 	From           time.Time
 	To             time.Time
 	Page           Page
@@ -178,7 +121,9 @@ type RequestLog struct {
 	KeyPrefix         string
 	ModelID           uuid.UUID
 	ModelAlias        string
-	ResourceDomain    ResourceDomain
+	ResourcePoolID    uuid.UUID
+	ResourcePoolName  string
+	ResourcePoolSlug  string
 	Status            RequestStatus
 	Stream            bool
 	InputTokens       *int64
@@ -217,49 +162,46 @@ type RequestLogDetail struct {
 }
 
 type AcceptInput struct {
-	RequestID        uuid.UUID
-	UserID           uuid.UUID
-	GatewayKeyID     uuid.UUID
-	ModelID          uuid.UUID
-	ConfigRevisionID *uuid.UUID
-	ResourceDomain   ResourceDomain
-	Stream           bool
-	RequestDigest    []byte
-	IdempotencyKey   *string
-	ReservedTokens   int64
+	RequestID      uuid.UUID
+	UserID         uuid.UUID
+	GatewayKeyID   uuid.UUID
+	ModelID        uuid.UUID
+	Stream         bool
+	RequestDigest  []byte
+	IdempotencyKey *string
+	ReservedTokens int64
 }
 
 type Request struct {
-	ID                        uuid.UUID      `json:"id"`
-	IdempotencyKey            *string        `json:"idempotency_key,omitempty"`
-	UserID                    uuid.UUID      `json:"user_id"`
-	GatewayKeyID              uuid.UUID      `json:"gateway_key_id"`
-	ModelID                   uuid.UUID      `json:"model_id"`
-	EntitlementID             uuid.UUID      `json:"entitlement_id"`
-	ConfigRevisionID          *uuid.UUID     `json:"config_revision_id,omitempty"`
-	ResourceDomain            ResourceDomain `json:"resource_domain"`
-	PriceVersionID            uuid.UUID      `json:"price_version_id"`
-	CostCurrency              string         `json:"cost_currency"`
-	InputRateNanosPerMillion  int64          `json:"input_rate_nanos_per_million"`
-	OutputRateNanosPerMillion int64          `json:"output_rate_nanos_per_million"`
-	InputCostNanos            *int64         `json:"input_cost_nanos,omitempty"`
-	OutputCostNanos           *int64         `json:"output_cost_nanos,omitempty"`
-	TotalCostNanos            *int64         `json:"total_cost_nanos,omitempty"`
-	Status                    RequestStatus  `json:"status"`
-	Stream                    bool           `json:"stream"`
-	InputTokens               *int64         `json:"input_tokens,omitempty"`
-	OutputTokens              *int64         `json:"output_tokens,omitempty"`
-	UsageSource               UsageSource    `json:"usage_source"`
-	ErrorKind                 *string        `json:"error_kind,omitempty"`
-	ErrorDetail               *string        `json:"error_detail,omitempty"`
-	AcceptedAt                time.Time      `json:"accepted_at"`
-	CompletedAt               *time.Time     `json:"completed_at,omitempty"`
-	UpdatedAt                 time.Time      `json:"updated_at"`
+	ID                        uuid.UUID     `json:"id"`
+	IdempotencyKey            *string       `json:"idempotency_key,omitempty"`
+	UserID                    uuid.UUID     `json:"user_id"`
+	GatewayKeyID              uuid.UUID     `json:"gateway_key_id"`
+	ModelID                   uuid.UUID     `json:"model_id"`
+	SubscriptionID            uuid.UUID     `json:"subscription_id"`
+	ResourcePoolID            uuid.UUID     `json:"resource_pool_id"`
+	PriceVersionID            uuid.UUID     `json:"price_version_id"`
+	CostCurrency              string        `json:"cost_currency"`
+	InputRateNanosPerMillion  int64         `json:"input_rate_nanos_per_million"`
+	OutputRateNanosPerMillion int64         `json:"output_rate_nanos_per_million"`
+	InputCostNanos            *int64        `json:"input_cost_nanos,omitempty"`
+	OutputCostNanos           *int64        `json:"output_cost_nanos,omitempty"`
+	TotalCostNanos            *int64        `json:"total_cost_nanos,omitempty"`
+	Status                    RequestStatus `json:"status"`
+	Stream                    bool          `json:"stream"`
+	InputTokens               *int64        `json:"input_tokens,omitempty"`
+	OutputTokens              *int64        `json:"output_tokens,omitempty"`
+	UsageSource               UsageSource   `json:"usage_source"`
+	ErrorKind                 *string       `json:"error_kind,omitempty"`
+	ErrorDetail               *string       `json:"error_detail,omitempty"`
+	AcceptedAt                time.Time     `json:"accepted_at"`
+	CompletedAt               *time.Time    `json:"completed_at,omitempty"`
+	UpdatedAt                 time.Time     `json:"updated_at"`
 }
 
 type Reservation struct {
 	ID              uuid.UUID        `json:"id"`
-	EntitlementID   uuid.UUID        `json:"entitlement_id"`
+	SubscriptionID  uuid.UUID        `json:"subscription_id"`
 	RequestID       uuid.UUID        `json:"request_id"`
 	State           ReservationState `json:"state"`
 	ReservedTokens  int64            `json:"reserved_tokens"`
@@ -271,18 +213,18 @@ type Reservation struct {
 	UpdatedAt       time.Time        `json:"updated_at"`
 }
 
-type AcceptedRequest struct {
-	Request             Request             `json:"request"`
-	Reservation         Reservation         `json:"reservation"`
-	EntitlementCapacity EntitlementCapacity `json:"entitlement_capacity"`
-	Replayed            bool                `json:"replayed"`
-}
-
-type EntitlementCapacity struct {
+type SubscriptionCapacity struct {
 	ID               uuid.UUID `json:"id"`
 	ConcurrencyLimit int32     `json:"concurrency_limit"`
 	RPMLimit         *int32    `json:"rpm_limit,omitempty"`
 	TPMLimit         *int64    `json:"tpm_limit,omitempty"`
+}
+
+type AcceptedRequest struct {
+	Request              Request              `json:"request"`
+	Reservation          Reservation          `json:"reservation"`
+	SubscriptionCapacity SubscriptionCapacity `json:"subscription_capacity"`
+	Replayed             bool                 `json:"replayed"`
 }
 
 type Resolution struct {
@@ -291,8 +233,6 @@ type Resolution struct {
 }
 
 type Repository interface {
-	CreateEntitlement(context.Context, NewEntitlement, uuid.UUID) (Entitlement, error)
-	ListEntitlements(context.Context, EntitlementQuery) (PageResult[Entitlement], error)
 	ListLedger(context.Context, LedgerFilter) (PageResult[LedgerEvent], error)
 	ListRequestLogs(context.Context, RequestLogQuery) (PageResult[RequestLog], error)
 	GetRequestLog(context.Context, uuid.UUID, *uuid.UUID) (RequestLogDetail, error)

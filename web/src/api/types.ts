@@ -2,18 +2,16 @@ export type Role = 'administrator' | 'member'
 
 export type Capability =
   | 'providers:read'
-  | 'providers:write'
-  | 'credentials:read'
+  | 'resource-pools:write'
   | 'credentials:write'
-  | 'access:read'
-  | 'access:write'
-  | 'ledger:read'
-  | 'ledger:write'
-  | 'gateway-key:test'
-  | 'revisions:publish'
-
-export type ResourceDomain = 'free' | 'professional'
-export type EntityStatus = 'active' | 'disabled' | 'pending' | 'cooling' | 'unknown'
+  | 'members:write'
+  | 'plans:write'
+  | 'subscriptions:write'
+  | 'subscriptions:read'
+  | 'keys:write'
+  | 'operations:read'
+  | 'usage:read'
+  | 'api-key:test'
 
 export interface Session {
   userId: string
@@ -57,43 +55,40 @@ export interface OverviewTrendPoint {
   outputTokens: number
 }
 
-export interface OverviewStep {
-  id: string
-  complete: boolean
-}
-
 interface OverviewBase {
   requests: RequestWindowSummary
   trend: OverviewTrendPoint[]
   errors: Array<{ kind: string; count: number }>
-  steps: OverviewStep[]
 }
 
 export interface AdministratorOverview extends OverviewBase {
   scope: 'administrator'
   resources: {
-    providerCount: number
-    enabledProviderCount: number
+    resourcePoolCount: number
+    activeResourcePoolCount: number
+    connectedProviderCount: number
     modelCount: number
     credentialCount: number
     activeCredentialCount: number
     coolingCredentialCount: number
+    successfulCredentialProbeCount: number
     activeMemberCount: number
-    pendingMemberCount: number
-    activeGatewayKeyCount: number
-    activeEntitlementCount: number
-    hasActiveConfiguration: boolean
+    activeApiKeyCount: number
+    activeServicePlanCount: number
+    activeSubscriptionCount: number
+    hasActiveUpstream: boolean
     hasModelPrice: boolean
+    hasCompletedRequest: boolean
   }
 }
 
 export interface MemberOverview extends OverviewBase {
   scope: 'member'
   access: {
-    activeGatewayKeyCount: number
-    activeEntitlementCount: number
+    activeApiKeyCount: number
+    activeSubscriptionCount: number
     remainingTokens: number
-    nearestEntitlementExpiry?: string
+    nearestSubscriptionExpiry?: string
   }
 }
 
@@ -114,28 +109,48 @@ export interface ListQuery {
   sort?: string
   order?: 'asc' | 'desc'
   providerId?: string
-  resourceDomain?: ResourceDomain
+  resourcePoolId?: string
+  subscriptionId?: string
   userId?: string
-  gatewayKeyId?: string
+  apiKeyId?: string
   modelId?: string
   from?: string
   to?: string
 }
 
-export interface ProviderRecord {
+export interface ModelCapabilities {
+  chat: boolean
+  streaming: boolean
+  tools: boolean
+  reasoning: boolean
+  reasoningMode?: 'toggle' | 'effort' | 'hybrid'
+  structuredOutput: boolean
+  contextTokens: number
+  outputTokens: number
+}
+
+export interface Model {
   id: string
+  providerId: string
+  providerSlug: string
+  providerName: string
+  publicName: string
+  upstreamName: string
+  displayName: string
+  capabilities: ModelCapabilities
+  createdAt: string
+  updatedAt: string
+}
+
+export interface Provider {
+  id: string
+  catalogId: string
   slug: string
   name: string
   kind: string
   baseUrl: string
-  status: 'enabled' | 'disabled'
-  verifiedAt?: string
-  updatedAt: string
-}
-
-export interface ProviderKind {
-  kind: string
-  displayName: string
+  sourceUrl: string
+  verifiedAt: string
   contract: {
     referenceUrl: string
     contractSnapshot: string
@@ -145,133 +160,39 @@ export interface ProviderKind {
     liveCapabilities: string[]
     status: 'verified' | 'degraded'
   }
+  resourcePoolCount: number
+  activeCredentialCount: number
+  createdAt: string
+  updatedAt: string
 }
 
-export interface ProviderPreset {
+export type ResourcePoolStatus = 'active' | 'disabled' | 'retired'
+
+export interface ResourcePool {
   id: string
-  name: string
-  kind: string
-  baseUrl: string
-  verifiedAt: string
-  models: Array<{
-    alias: string
-    upstreamModelId: string
-    capabilities: ModelCapability[]
-    reasoningMode?: ReasoningMode
-    contextTokens: number
-  }>
-  state: 'not_installed' | 'installed' | 'conflict'
-  installedProviderId?: string
-  installedCredentials: number
-}
-
-export interface ProviderPresetInstallation {
-  presetId: string
-  provider: ProviderRecord
-  models: Model[]
-}
-
-export interface Provider extends ProviderRecord {
-  modelCount: number
-  credentialCount: number
-}
-
-export interface ProviderCreateInput {
+  providerId: string
+  providerCatalogId: string
+  providerSlug: string
+  providerName: string
+  providerKind: string
+  providerBaseUrl: string
   slug: string
   name: string
-  kind: Provider['kind']
-  baseUrl: string
-}
-
-export interface ProviderUpdateInput {
-  name: string
-  kind: Provider['kind']
-  baseUrl: string
-  expectedUpdatedAt: string
-}
-
-export type ModelCapability = 'streaming' | 'tools' | 'reasoning' | 'structured_output'
-export type ReasoningMode = 'toggle' | 'effort' | 'hybrid'
-
-export interface Model {
-  id: string
-  providerId: string
-  providerName: string
-  alias: string
-  upstreamModelId: string
-  resourceDomain: ResourceDomain
-  capabilities: ModelCapability[]
-  reasoningMode?: ReasoningMode
-  contextTokens: number
-  status: EntityStatus
-  verifiedAt?: string
-}
-
-export interface ModelInput {
-  providerId: string
-  alias: string
-  upstreamModelId: string
-  resourceDomain: ResourceDomain
-  capabilities: ModelCapability[]
-  reasoningMode?: ReasoningMode
-  contextTokens?: number
-}
-
-export interface ConfigurationRevision {
-  id: string
-  sequence: number
-  status: 'draft' | 'validating' | 'published' | 'superseded' | 'invalid'
-  createdBy: string
-  createdAt: string
-  publishedAt?: string
-  summary: string
-  validationIssueCount: number
-  providerCount: number
+  status: ResourcePoolStatus
+  models: Model[]
   modelCount: number
   credentialCount: number
-  routeCount: number
-}
-
-export interface ActiveConfigurationModel {
-  id: string
-  alias: string
-  displayName: string
-  providerId: string
-  providerName: string
-  resourceDomain: ResourceDomain
-}
-
-export interface ActiveConfiguration {
-  revisionId: string | null
-  sequence: number
-  version: number
-  updatedAt: string | null
-  models: ActiveConfigurationModel[]
-}
-
-export interface Credential {
-  id: string
-  providerId: string
-  providerName: string
-  label: string
-  maskedSecret: string
-  resourceDomain: ResourceDomain
-  status: EntityStatus
-  modelBindings: CredentialModelBinding[]
-  rpmLimit?: number
-  tpmLimit?: number
-  concurrencyLimit?: number
-  cooldownUntil?: string
-  lastCheckedAt?: string
-  recentSuccessRate?: number
-  firstByteP95Ms?: number
-  totalLatencyP95Ms?: number
-  lastProbeAt?: string
-  lastProbeLatencyMs?: number
-  lastProbeKind?: string
-  lastProbeStatus?: 'succeeded' | 'failed' | 'unavailable'
-  lastProbeErrorKind?: string
+  activeCredentialCount: number
+  retiredAt?: string
+  createdAt: string
   updatedAt: string
+}
+
+export interface ResourcePoolInput {
+  providerId: string
+  slug: string
+  name: string
+  modelIds: string[]
 }
 
 export interface CredentialModelBinding {
@@ -281,20 +202,65 @@ export interface CredentialModelBinding {
   weight: number
 }
 
-export interface CredentialInput {
+export type CredentialStatus = 'active' | 'cooling' | 'disabled' | 'retired'
+
+export interface Credential {
+  id: string
+  resourcePoolId: string
+  resourcePoolName: string
+  resourcePoolSlug: string
   providerId: string
-  label: string
+  providerName: string
+  providerKind: string
+  providerBaseUrl: string
+  name: string
+  status: CredentialStatus
+  rpmLimit?: number
+  tpmLimit?: number
+  concurrencyLimit?: number
+  cooldownUntil?: string
+  consecutiveFailures: number
+  lastSuccessAt?: string
+  lastErrorKind?: string
+  lastProbeAt?: string
+  lastProbeLatencyMs?: number
+  lastProbeKind?: string
+  lastProbeStatus?: string
+  lastProbeErrorKind?: string
+  lastCheckedAt?: string
+  recentSuccessRate?: number
+  firstByteP95Ms?: number
+  totalLatencyP95Ms?: number
+  retiredAt?: string
+  createdAt: string
+  updatedAt: string
+  modelBindings: CredentialModelBinding[]
+}
+
+export interface CredentialInput {
+  resourcePoolId: string
+  name: string
   secret: string
-  resourceDomain: ResourceDomain
   modelBindings: Array<Omit<CredentialModelBinding, 'modelName'>>
   rpmLimit?: number
   tpmLimit?: number
   concurrencyLimit?: number
 }
 
-export interface CredentialUpdateInput extends Omit<CredentialInput, 'providerId' | 'secret'> {
-  secret?: string
+export interface CredentialUpdateInput extends Omit<CredentialInput, 'resourcePoolId'> {
   expectedUpdatedAt: string
+}
+
+export interface CredentialBatchInput extends Omit<CredentialInput, 'name' | 'secret'> {
+  items: Array<{ name: string; secret: string }>
+}
+
+export interface CredentialBatchResult {
+  line: number
+  name: string
+  status: 'created' | 'skipped' | 'rejected'
+  credential?: Credential
+  errorKind?: string
 }
 
 export interface CredentialProbeResult {
@@ -307,7 +273,6 @@ export interface CredentialProbeResult {
   latencyMillis: number
   modelId: string
   modelName: string
-  responseText?: string
   inputTokens?: number
   outputTokens?: number
   requestId: string
@@ -318,21 +283,17 @@ export interface UserAccount {
   displayName: string
   email: string
   role: Role
-  status: 'pending_review' | 'active' | 'suspended'
-  modelCount: number
+  status: 'active' | 'disabled' | 'deleted'
   keyCount: number
-  quotaRemainingTokens?: number
+  disabledAt?: string
+  deletedAt?: string
   createdAt: string
-  lastActiveAt?: string
+  updatedAt: string
 }
 
-export interface Invitation {
-  id: string
-  codePrefix: string
-  status: 'issued' | 'claimed' | 'approved' | 'expired' | 'revoked'
-  expiresAt: string
-  createdBy: string
-  claimedBy?: string
+export interface CreatedMember {
+  member: UserAccount
+  initialPassword: string
 }
 
 export interface GatewayKey {
@@ -358,22 +319,118 @@ export interface SessionRevocation {
   revokedSessions: number
 }
 
+export type PlanKind = 'token' | 'coding'
+export type PlanStatus = 'active' | 'disabled' | 'archived'
+
+export interface PlanRoute {
+  modelId: string
+  modelName: string
+  resourcePoolId: string
+  resourcePoolName: string
+  resourcePoolSlug: string
+  providerName: string
+}
+
+export interface PlanVersion {
+  id: string
+  version: number
+  tokenQuota: number
+  validityDays: number
+  concurrencyLimit: number
+  rpmLimit?: number
+  tpmLimit?: number
+  routes: PlanRoute[]
+  createdAt: string
+}
+
+export interface ServicePlan {
+  id: string
+  slug: string
+  name: string
+  description: string
+  kind: PlanKind
+  status: PlanStatus
+  currentVersion?: PlanVersion
+  activeSubscriptionCount: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface PlanInput {
+  slug: string
+  name: string
+  description: string
+  kind: PlanKind
+  tokenQuota: number
+  validityDays: number
+  concurrencyLimit: number
+  rpmLimit?: number
+  tpmLimit?: number
+  routes: Array<{ modelId: string; resourcePoolId: string }>
+}
+
+export type SubscriptionStatus = 'scheduled' | 'active' | 'suspended' | 'canceled' | 'expired'
+
+export interface Subscription {
+  id: string
+  userId: string
+  memberEmail: string
+  memberName: string
+  servicePlanId: string
+  servicePlanVersionId: string
+  servicePlanName: string
+  planKind: PlanKind
+  planVersion: number
+  status: SubscriptionStatus
+  grantedTokens: number
+  balanceTokens: number
+  startsAt: string
+  expiresAt: string
+  notes: string
+  concurrencyLimit: number
+  rpmLimit?: number
+  tpmLimit?: number
+  routes: PlanRoute[]
+  suspendedAt?: string
+  canceledAt?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface SubscriptionInput {
+  userId: string
+  servicePlanId: string
+  grantedTokens: number
+  startsAt: string
+  expiresAt: string
+  notes: string
+}
+
+export interface SubscriptionUpdateInput {
+  grantedTokens: number
+  startsAt: string
+  expiresAt: string
+  notes: string
+  expectedUpdatedAt: string
+}
+
 export type RequestStatus =
   'queued' | 'dispatching' | 'streaming' | 'completed' | 'failed' | 'canceled' | 'uncertain'
 
 export interface RequestLog {
-  id: string
   requestId: string
   acceptedAt: string
   completedAt?: string
   updatedAt: string
   userId: string
   userName: string
-  gatewayKeyId: string
+  apiKeyId: string
   keyPrefix: string
   modelId: string
   modelAlias: string
-  resourceDomain: ResourceDomain
+  resourcePoolId: string
+  resourcePoolName: string
+  resourcePoolSlug: string
   status: RequestStatus
   stream: boolean
   inputTokens?: number
@@ -381,7 +438,6 @@ export interface RequestLog {
   usageSource: 'authoritative' | 'estimated' | 'unknown'
   errorKind?: string
   attemptCount: number
-  lastAttemptStatus?: string
 }
 
 export interface RequestAttempt {
@@ -429,13 +485,15 @@ export interface ModelPriceInput {
 export interface CostSummary {
   userId: string
   userName: string
-  entitlementId: string
-  plan: 'token' | 'coding'
+  subscriptionId: string
+  servicePlanName: string
+  planKind: PlanKind
   modelId: string
   modelAlias: string
   providerId: string
   providerName: string
-  resourceDomain: ResourceDomain
+  resourcePoolId: string
+  resourcePoolName: string
   currency: string
   requestCount: number
   inputTokens: number
@@ -449,44 +507,13 @@ export interface LedgerEntry {
   id: string
   occurredAt: string
   ownerName: string
+  subscriptionId: string
+  servicePlanName: string
   kind: 'grant' | 'reservation' | 'settlement' | 'release' | 'compensation'
   tokenDelta: number
-  resourceDomain: ResourceDomain
   reason: string
   requestId?: string
   actorName: string
-}
-
-export interface Entitlement {
-  id: string
-  ownerId: string
-  ownerName: string
-  planKind: 'token' | 'coding'
-  resourceDomain: ResourceDomain
-  modelId?: string
-  modelAlias?: string
-  grantedTokens: number
-  balanceTokens: number
-  rpmLimit?: number
-  tpmLimit?: number
-  concurrencyLimit: number
-  startsAt: string
-  expiresAt: string
-  status: 'scheduled' | 'active' | 'expired'
-}
-
-export interface EntitlementInput {
-  ownerId: string
-  planKind: Entitlement['planKind']
-  resourceDomain: ResourceDomain
-  modelId?: string
-  grantedTokens: number
-  rpmLimit?: number
-  tpmLimit?: number
-  concurrencyLimit: number
-  startsAt: string
-  expiresAt: string
-  reason: string
 }
 
 export type OperationPhase =
@@ -500,20 +527,6 @@ export type OperationPhase =
   | 'failed'
   | 'canceled'
   | 'uncertain'
-
-export interface OperationSnapshot<TResult = unknown> {
-  id: string
-  kind: string
-  phase: OperationPhase
-  step: string
-  progress?: number
-  requestId: string
-  createdAt: string
-  updatedAt: string
-  canCancel: boolean
-  result?: TResult
-  error?: ApiProblemShape
-}
 
 export interface ApiProblemShape {
   status: number
@@ -531,7 +544,7 @@ export interface GatewayKeyTestModel {
 }
 
 export interface GatewayKeyTestInput {
-  gatewayKeyId: string
+  apiKeyId: string
   model: string
   message: string
 }

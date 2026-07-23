@@ -10,23 +10,12 @@ import (
 )
 
 var (
-	ErrInvalidInput          = errors.New("invalid registry input")
-	ErrNotFound              = errors.New("registry record not found")
-	ErrConflict              = errors.New("registry conflict")
-	ErrForbidden             = errors.New("registry operation forbidden")
-	ErrProviderEnabled       = errors.New("provider must be disabled before changing routing fields")
-	ErrValidationUnavailable = errors.New("registry validation is temporarily unavailable")
-	ErrIdempotencyConflict   = errors.New("registry idempotency key conflict")
-	ErrOutcomeUnknown        = errors.New("registry operation outcome is unknown")
-)
-
-type ProviderMutationAction string
-
-const (
-	ProviderMutationCreate  ProviderMutationAction = "provider.create"
-	ProviderMutationUpdate  ProviderMutationAction = "provider.update"
-	ProviderMutationStatus  ProviderMutationAction = "provider.status"
-	ProviderMutationInstall ProviderMutationAction = "provider.install"
+	ErrInvalidInput        = errors.New("invalid registry input")
+	ErrNotFound            = errors.New("registry record not found")
+	ErrConflict            = errors.New("registry conflict")
+	ErrForbidden           = errors.New("registry operation forbidden")
+	ErrIdempotencyConflict = errors.New("registry idempotency key conflict")
+	ErrOutcomeUnknown      = errors.New("registry operation outcome is unknown")
 )
 
 type MutationRequest struct {
@@ -34,52 +23,11 @@ type MutationRequest struct {
 	RequestID      string
 }
 
-type ProviderMutation struct {
-	Action             ProviderMutationAction
+type Mutation struct {
+	Action             string
 	IdempotencyKey     uuid.UUID
 	RequestFingerprint []byte
 	RequestID          string
-}
-
-type CredentialMutation struct {
-	Action             CredentialMutationAction
-	IdempotencyKey     uuid.UUID
-	RequestFingerprint []byte
-	RequestID          string
-}
-
-type CredentialMutationAction string
-
-const (
-	CredentialMutationCreate CredentialMutationAction = "credential.create"
-	CredentialMutationUpdate CredentialMutationAction = "credential.update"
-	CredentialMutationStatus CredentialMutationAction = "credential.status"
-)
-
-type ResourceDomain string
-
-const (
-	ResourceFree         ResourceDomain = "free"
-	ResourceProfessional ResourceDomain = "professional"
-)
-
-type Provider struct {
-	ID         uuid.UUID      `json:"id"`
-	Slug       string         `json:"slug"`
-	Name       string         `json:"name"`
-	Kind       providers.Kind `json:"kind"`
-	BaseURL    string         `json:"base_url"`
-	Enabled    bool           `json:"enabled"`
-	SourceURL  *string        `json:"source_url,omitempty"`
-	VerifiedAt *time.Time     `json:"verified_at,omitempty"`
-	CreatedAt  time.Time      `json:"created_at"`
-	UpdatedAt  time.Time      `json:"updated_at"`
-}
-
-type ProviderPresetInstallation struct {
-	PresetID string   `json:"preset_id"`
-	Provider Provider `json:"provider"`
-	Models   []Model  `json:"models"`
 }
 
 type ModelCapabilities struct {
@@ -102,18 +50,91 @@ const (
 )
 
 type Model struct {
-	ID             uuid.UUID         `json:"id"`
-	ProviderID     uuid.UUID         `json:"provider_id"`
-	ProviderSlug   string            `json:"provider_slug,omitempty"`
-	ProviderName   string            `json:"provider_name,omitempty"`
-	PublicName     string            `json:"public_name"`
-	UpstreamName   string            `json:"upstream_name"`
-	DisplayName    string            `json:"display_name"`
-	ResourceDomain ResourceDomain    `json:"resource_domain"`
-	Capabilities   ModelCapabilities `json:"capabilities"`
-	Enabled        bool              `json:"enabled"`
-	CreatedAt      time.Time         `json:"created_at"`
-	UpdatedAt      time.Time         `json:"updated_at"`
+	ID           uuid.UUID         `json:"id"`
+	ProviderID   uuid.UUID         `json:"provider_id"`
+	ProviderSlug string            `json:"provider_slug,omitempty"`
+	ProviderName string            `json:"provider_name,omitempty"`
+	PublicName   string            `json:"public_name"`
+	UpstreamName string            `json:"upstream_name"`
+	DisplayName  string            `json:"display_name"`
+	Capabilities ModelCapabilities `json:"capabilities"`
+	CreatedAt    time.Time         `json:"created_at"`
+	UpdatedAt    time.Time         `json:"updated_at"`
+}
+
+type Provider struct {
+	ID                    uuid.UUID              `json:"id"`
+	CatalogID             string                 `json:"catalog_id"`
+	Slug                  string                 `json:"slug"`
+	Name                  string                 `json:"name"`
+	Kind                  providers.Kind         `json:"kind"`
+	BaseURL               string                 `json:"base_url"`
+	SourceURL             string                 `json:"source_url"`
+	VerifiedAt            time.Time              `json:"verified_at"`
+	Contract              providers.ContractInfo `json:"contract"`
+	ResourcePoolCount     int64                  `json:"resource_pool_count"`
+	ActiveCredentialCount int64                  `json:"active_credential_count"`
+	CreatedAt             time.Time              `json:"created_at"`
+	UpdatedAt             time.Time              `json:"updated_at"`
+}
+
+type ProviderProjection struct {
+	CatalogID  string
+	Slug       string
+	Name       string
+	Kind       providers.Kind
+	BaseURL    string
+	SourceURL  string
+	VerifiedAt time.Time
+	Models     []ModelProjection
+}
+
+type ModelProjection struct {
+	PublicName   string
+	UpstreamName string
+	DisplayName  string
+	Capabilities ModelCapabilities
+}
+
+type ResourcePoolStatus string
+
+const (
+	ResourcePoolActive   ResourcePoolStatus = "active"
+	ResourcePoolDisabled ResourcePoolStatus = "disabled"
+	ResourcePoolRetired  ResourcePoolStatus = "retired"
+)
+
+type ResourcePool struct {
+	ID                    uuid.UUID          `json:"id"`
+	ProviderID            uuid.UUID          `json:"provider_id"`
+	ProviderCatalogID     string             `json:"provider_catalog_id"`
+	ProviderSlug          string             `json:"provider_slug"`
+	ProviderName          string             `json:"provider_name"`
+	ProviderKind          providers.Kind     `json:"provider_kind"`
+	ProviderBaseURL       string             `json:"provider_base_url"`
+	Slug                  string             `json:"slug"`
+	Name                  string             `json:"name"`
+	Status                ResourcePoolStatus `json:"status"`
+	Models                []Model            `json:"models"`
+	ModelCount            int64              `json:"model_count"`
+	CredentialCount       int64              `json:"credential_count"`
+	ActiveCredentialCount int64              `json:"active_credential_count"`
+	RetiredAt             *time.Time         `json:"retired_at,omitempty"`
+	CreatedAt             time.Time          `json:"created_at"`
+	UpdatedAt             time.Time          `json:"updated_at"`
+}
+
+type NewResourcePool struct {
+	ProviderID uuid.UUID
+	Slug       string
+	Name       string
+	ModelIDs   []uuid.UUID
+}
+
+type ResourcePoolChange struct {
+	ID                uuid.UUID
+	Name              string
+	ExpectedUpdatedAt time.Time
 }
 
 type CredentialStatus string
@@ -122,6 +143,7 @@ const (
 	CredentialActive   CredentialStatus = "active"
 	CredentialCooling  CredentialStatus = "cooling"
 	CredentialDisabled CredentialStatus = "disabled"
+	CredentialRetired  CredentialStatus = "retired"
 )
 
 type CredentialModelBinding struct {
@@ -133,9 +155,14 @@ type CredentialModelBinding struct {
 
 type Credential struct {
 	ID                  uuid.UUID                `json:"id"`
+	ResourcePoolID      uuid.UUID                `json:"resource_pool_id"`
+	ResourcePoolName    string                   `json:"resource_pool_name"`
+	ResourcePoolSlug    string                   `json:"resource_pool_slug"`
 	ProviderID          uuid.UUID                `json:"provider_id"`
+	ProviderName        string                   `json:"provider_name"`
+	ProviderKind        providers.Kind           `json:"provider_kind"`
+	ProviderBaseURL     string                   `json:"provider_base_url"`
 	Name                string                   `json:"name"`
-	ResourceDomain      ResourceDomain           `json:"resource_domain"`
 	Status              CredentialStatus         `json:"status"`
 	RPMLimit            *int32                   `json:"rpm_limit,omitempty"`
 	TPMLimit            *int64                   `json:"tpm_limit,omitempty"`
@@ -153,9 +180,21 @@ type Credential struct {
 	RecentSuccessRate   *float64                 `json:"recent_success_rate,omitempty"`
 	FirstByteP95Ms      *int64                   `json:"first_byte_p95_ms,omitempty"`
 	TotalLatencyP95Ms   *int64                   `json:"total_latency_p95_ms,omitempty"`
+	RetiredAt           *time.Time               `json:"retired_at,omitempty"`
 	CreatedAt           time.Time                `json:"created_at"`
 	UpdatedAt           time.Time                `json:"updated_at"`
 	ModelBindings       []CredentialModelBinding `json:"model_bindings"`
+}
+
+type NewCredential struct {
+	ID               uuid.UUID
+	ResourcePoolID   uuid.UUID
+	Name             string
+	EncryptedSecret  []byte
+	RPMLimit         *int32
+	TPMLimit         *int64
+	ConcurrencyLimit *int32
+	ModelBindings    []CredentialModelBinding
 }
 
 type CredentialChange struct {
@@ -163,12 +202,24 @@ type CredentialChange struct {
 	Name              string
 	EncryptedSecret   []byte
 	ReplaceSecret     bool
-	ResourceDomain    ResourceDomain
 	RPMLimit          *int32
 	TPMLimit          *int64
 	ConcurrencyLimit  *int32
 	ModelBindings     []CredentialModelBinding
 	ExpectedUpdatedAt time.Time
+}
+
+type CredentialBatchItem struct {
+	Name   string `json:"name"`
+	Secret string `json:"-"`
+}
+
+type CredentialBatchResult struct {
+	Line       int         `json:"line"`
+	Name       string      `json:"name"`
+	Status     string      `json:"status"`
+	Credential *Credential `json:"credential,omitempty"`
+	ErrorKind  string      `json:"error_kind,omitempty"`
 }
 
 type CredentialProbeTarget struct {
@@ -180,54 +231,41 @@ type CredentialProbeTarget struct {
 }
 
 type CredentialProbeExecution struct {
-	Kind          string
-	Status        string
-	ErrorKind     *string
-	Retryable     bool
-	MayUseTokens  bool
-	LatencyMillis int64
-	ModelID       uuid.UUID
-	ModelName     string
-	ResponseText  string
-	InputTokens   *int64
-	OutputTokens  *int64
+	Kind          string    `json:"kind"`
+	Status        string    `json:"status"`
+	ErrorKind     *string   `json:"error_kind,omitempty"`
+	Retryable     bool      `json:"retryable"`
+	MayUseTokens  bool      `json:"may_use_tokens"`
+	LatencyMillis int64     `json:"latency_ms"`
+	ModelID       uuid.UUID `json:"model_id"`
+	ModelName     string    `json:"model_name"`
+	RequestID     string    `json:"request_id"`
+	ResponseText  string    `json:"-"`
+	InputTokens   *int64    `json:"input_tokens,omitempty"`
+	OutputTokens  *int64    `json:"output_tokens,omitempty"`
 }
 
 type CredentialProbeExecutor interface {
 	Execute(context.Context, CredentialProbeTarget) CredentialProbeExecution
 }
 
-type NewCredential struct {
-	ID               uuid.UUID
-	ProviderID       uuid.UUID
-	Name             string
-	EncryptedSecret  []byte
-	ResourceDomain   ResourceDomain
-	RPMLimit         *int32
-	TPMLimit         *int64
-	ConcurrencyLimit *int32
-	ModelBindings    []CredentialModelBinding
-}
-
 type Repository interface {
-	ReplayProviderMutation(context.Context, uuid.UUID, ProviderMutation) (Provider, bool, error)
-	ReplayProviderPresetInstallation(context.Context, uuid.UUID, ProviderMutation) (ProviderPresetInstallation, bool, error)
-	InstallProviderPreset(context.Context, ProviderPresetInstallation, uuid.UUID, ProviderMutation) (ProviderPresetInstallation, error)
-	CreateProvider(context.Context, Provider, uuid.UUID, ProviderMutation) (Provider, error)
-	UpdateProvider(context.Context, Provider, uuid.UUID, ProviderMutation) (Provider, error)
-	SetProviderEnabled(context.Context, uuid.UUID, bool, time.Time, uuid.UUID, ProviderMutation) (Provider, error)
+	SyncCatalog(context.Context, []ProviderProjection) error
 	ListProviders(context.Context) ([]Provider, error)
 	GetProvider(context.Context, uuid.UUID) (Provider, error)
-
-	CreateModel(context.Context, Model, uuid.UUID) (Model, error)
-	UpdateModel(context.Context, Model, uuid.UUID) (Model, error)
 	ListModels(context.Context) ([]Model, error)
 
-	ReplayCredentialMutation(context.Context, uuid.UUID, CredentialMutation) (Credential, bool, error)
-	CreateCredential(context.Context, NewCredential, uuid.UUID, CredentialMutation) (Credential, error)
-	UpdateCredential(context.Context, CredentialChange, uuid.UUID, CredentialMutation) (Credential, error)
-	SetCredentialStatus(context.Context, uuid.UUID, CredentialStatus, time.Time, uuid.UUID, CredentialMutation) (Credential, error)
-	ListCredentials(context.Context) ([]Credential, error)
+	CreateResourcePool(context.Context, NewResourcePool, uuid.UUID, Mutation) (ResourcePool, error)
+	UpdateResourcePool(context.Context, ResourcePoolChange, uuid.UUID, Mutation) (ResourcePool, error)
+	SetResourcePoolStatus(context.Context, uuid.UUID, ResourcePoolStatus, time.Time, uuid.UUID, Mutation) (ResourcePool, error)
+	ListResourcePools(context.Context, bool) ([]ResourcePool, error)
+	GetResourcePool(context.Context, uuid.UUID) (ResourcePool, error)
+
+	CreateCredential(context.Context, NewCredential, uuid.UUID, Mutation) (Credential, error)
+	UpdateCredential(context.Context, CredentialChange, uuid.UUID, Mutation) (Credential, error)
+	SetCredentialStatus(context.Context, uuid.UUID, CredentialStatus, time.Time, uuid.UUID, Mutation) (Credential, error)
+	RetireCredential(context.Context, uuid.UUID, []byte, time.Time, uuid.UUID, Mutation) (Credential, error)
+	ListCredentials(context.Context, bool) ([]Credential, error)
 	GetCredential(context.Context, uuid.UUID) (Credential, error)
 	GetEncryptedCredential(context.Context, uuid.UUID) ([]byte, error)
 	RecordCredentialProbe(context.Context, uuid.UUID, time.Time, CredentialProbeExecution, uuid.UUID, string) (Credential, error)

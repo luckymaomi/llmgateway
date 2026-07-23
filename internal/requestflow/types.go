@@ -29,17 +29,15 @@ var (
 )
 
 type Model struct {
-	ConfigRevisionID uuid.UUID
-	ID               uuid.UUID
-	PublicName       string
-	UpstreamName     string
-	ProviderID       uuid.UUID
-	ProviderSlug     string
-	ProviderKind     providers.Kind
-	ProviderBaseURL  string
-	ResourceDomain   registry.ResourceDomain
-	Capabilities     registry.ModelCapabilities
-	CreatedAt        time.Time
+	ID              uuid.UUID
+	PublicName      string
+	UpstreamName    string
+	ProviderID      uuid.UUID
+	ProviderSlug    string
+	ProviderKind    providers.Kind
+	ProviderBaseURL string
+	Capabilities    registry.ModelCapabilities
+	CreatedAt       time.Time
 }
 
 type Candidate struct {
@@ -82,13 +80,13 @@ type CredentialObservation struct {
 }
 
 type CatalogRepository interface {
-	ListPublishedModels(context.Context, uuid.UUID) ([]Model, error)
+	ListAvailableModels(context.Context, uuid.UUID) ([]Model, error)
 }
 
 type Repository interface {
 	CatalogRepository
-	ResolvePublishedModel(context.Context, uuid.UUID, string) (Model, error)
-	ListPublishedCandidates(context.Context, uuid.UUID, uuid.UUID, registry.ResourceDomain) ([]Candidate, error)
+	ResolveAvailableModel(context.Context, uuid.UUID, string) (Model, error)
+	ListResourcePoolCandidates(context.Context, uuid.UUID, uuid.UUID) ([]Candidate, error)
 	ClaimExecution(context.Context, uuid.UUID, uuid.UUID) (execution.Claim, error)
 	HeartbeatExecution(context.Context, execution.Claim) error
 	MarkExecutionStreaming(context.Context, execution.Claim, uuid.UUID, AttemptUpdate) error
@@ -112,13 +110,14 @@ type RecoveryResult struct {
 }
 
 type Accepted struct {
-	RequestID              uuid.UUID
-	ReservationID          uuid.UUID
-	EntitlementID          uuid.UUID
-	EntitlementConcurrency int32
-	EntitlementRPMLimit    *int32
-	EntitlementTPMLimit    *int64
-	Existing               bool
+	RequestID               uuid.UUID
+	ReservationID           uuid.UUID
+	SubscriptionID          uuid.UUID
+	ResourcePoolID          uuid.UUID
+	SubscriptionConcurrency int32
+	SubscriptionRPMLimit    *int32
+	SubscriptionTPMLimit    *int64
+	Existing                bool
 }
 
 type AdmissionRequest struct {
@@ -136,16 +135,14 @@ type Admitter interface {
 }
 
 type AcceptCommand struct {
-	RequestID        uuid.UUID
-	UserID           uuid.UUID
-	GatewayKeyID     uuid.UUID
-	ModelID          uuid.UUID
-	ResourceDomain   registry.ResourceDomain
-	ConfigRevisionID *uuid.UUID
-	IdempotencyKey   *string
-	RequestDigest    []byte
-	Stream           bool
-	ReservedTokens   int64
+	RequestID      uuid.UUID
+	UserID         uuid.UUID
+	GatewayKeyID   uuid.UUID
+	ModelID        uuid.UUID
+	IdempotencyKey *string
+	RequestDigest  []byte
+	Stream         bool
+	ReservedTokens int64
 }
 
 type Usage struct {
@@ -167,23 +164,23 @@ type SecretResolver interface {
 }
 
 type LeaseRequest struct {
-	RequestID              uuid.UUID
-	ExecutionID            uuid.UUID
-	UserID                 uuid.UUID
-	GatewayKeyID           uuid.UUID
-	ModelID                uuid.UUID
-	ProviderID             uuid.UUID
-	CredentialID           uuid.UUID
-	EntitlementID          uuid.UUID
-	ResourceDomain         registry.ResourceDomain
-	EstimatedTokens        int64
-	RPMLimit               *int32
-	TPMLimit               *int64
-	Concurrency            *int32
-	EntitlementConcurrency int32
-	EntitlementRPMLimit    *int32
-	EntitlementTPMLimit    *int64
-	CapacityWaitDeadline   time.Time
+	RequestID               uuid.UUID
+	ExecutionID             uuid.UUID
+	UserID                  uuid.UUID
+	GatewayKeyID            uuid.UUID
+	ModelID                 uuid.UUID
+	ProviderID              uuid.UUID
+	CredentialID            uuid.UUID
+	SubscriptionID          uuid.UUID
+	ResourcePoolID          uuid.UUID
+	EstimatedTokens         int64
+	RPMLimit                *int32
+	TPMLimit                *int64
+	Concurrency             *int32
+	SubscriptionConcurrency int32
+	SubscriptionRPMLimit    *int32
+	SubscriptionTPMLimit    *int64
+	CapacityWaitDeadline    time.Time
 }
 
 type Lease interface {

@@ -75,7 +75,7 @@ func (r *QuotaRepository) resolveOnce(ctx context.Context, command resolutionCom
 	if err != nil {
 		return quota.Resolution{}, err
 	}
-	if _, err := queries.GetEntitlementForUpdate(ctx, reservationRecord.EntitlementID); err != nil {
+	if _, err := queries.GetSubscriptionForUpdate(ctx, reservationRecord.SubscriptionID); err != nil {
 		return quota.Resolution{}, err
 	}
 	if err := validateResolutionFence(requestRecord, reservationRecord, command); err != nil {
@@ -103,7 +103,7 @@ func (r *QuotaRepository) resolveOnce(ctx context.Context, command resolutionCom
 	requestID := requestRecord.ID
 	reservationID := reservationRecord.ID
 	eventRecord, err := queries.CreateLedgerEvent(ctx, db.CreateLedgerEventParams{
-		UserID: requestRecord.UserID, EntitlementID: reservationRecord.EntitlementID, RequestID: &requestID, ReservationID: &reservationID,
+		UserID: requestRecord.UserID, SubscriptionID: reservationRecord.SubscriptionID, RequestID: &requestID, ReservationID: &reservationID,
 		Kind: command.kind, TokenDelta: reservationRecord.ReservedTokens - chargeTokens, ReservedTokens: reservationRecord.ReservedTokens,
 		InputTokens: command.inputTokens, OutputTokens: command.outputTokens, UsageSource: db.UsageSource(command.usageSource),
 	})
@@ -231,8 +231,8 @@ func matchesTerminal(request db.Request, reservation db.LedgerReservation, comma
 func requestFromDB(value db.Request) quota.Request {
 	return quota.Request{
 		ID: value.ID, IdempotencyKey: value.IdempotencyKey, UserID: value.UserID, GatewayKeyID: value.GatewayKeyID,
-		ModelID: value.ModelID, EntitlementID: value.EntitlementID, ConfigRevisionID: value.ConfigRevisionID,
-		ResourceDomain: quota.ResourceDomain(value.ResourceDomain), Status: quota.RequestStatus(value.Status), Stream: value.Stream,
+		ModelID: value.ModelID, SubscriptionID: value.SubscriptionID, ResourcePoolID: value.ResourcePoolID,
+		Status: quota.RequestStatus(value.Status), Stream: value.Stream,
 		PriceVersionID: value.PriceVersionID, CostCurrency: value.CostCurrency,
 		InputRateNanosPerMillion: value.InputRateNanosPerMillion, OutputRateNanosPerMillion: value.OutputRateNanosPerMillion,
 		InputCostNanos: value.InputCostNanos, OutputCostNanos: value.OutputCostNanos, TotalCostNanos: value.TotalCostNanos,
@@ -244,7 +244,7 @@ func requestFromDB(value db.Request) quota.Request {
 
 func reservationFromDB(value db.LedgerReservation) quota.Reservation {
 	return quota.Reservation{
-		ID: value.ID, EntitlementID: value.EntitlementID, RequestID: value.RequestID, State: quota.ReservationState(value.State),
+		ID: value.ID, SubscriptionID: value.SubscriptionID, RequestID: value.RequestID, State: quota.ReservationState(value.State),
 		ReservedTokens: value.ReservedTokens, ChargedTokens: value.ChargedTokens, UsageSource: quota.UsageSource(value.UsageSource),
 		ReserveEventID: value.ReserveEventID, TerminalEventID: value.TerminalEventID,
 		CreatedAt: value.CreatedAt.Time.UTC(), UpdatedAt: value.UpdatedAt.Time.UTC(),
@@ -260,6 +260,10 @@ func optionalString(value string) *string {
 
 func equalInt64(value *int64, expected int64) bool {
 	return value != nil && *value == expected
+}
+
+func equalInt64Pointers(value, expected *int64) bool {
+	return value == nil && expected == nil || value != nil && expected != nil && *value == *expected
 }
 
 func equalString(value *string, expected string) bool {

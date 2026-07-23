@@ -31,5 +31,5 @@ func (a *API) authenticate(next http.Handler) http.Handler {
 }
 
 func authenticationError() *canonical.Error {
-	return &canonical.Error{Kind: canonical.ErrorAuthentication, Code: "invalid_api_key", Message: "invalid gateway API key", HTTPStatus: http.StatusUnauthorized}
+	return &canonical.Error{Kind: canonical.ErrorAuthentication, Code: "invalid_api_key", Message: "invalid API key", HTTPStatus: http.StatusUnauthorized}
 }

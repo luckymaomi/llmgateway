@@ -2,8 +2,8 @@ package ledger
 
 import "fmt"
 
-func Rebuild(userID UserID, entitlementID EntitlementID, entries []Entry) (*Account, error) {
-	account, err := NewAccount(userID, entitlementID)
+func Rebuild(userID UserID, subscriptionID SubscriptionID, entries []Entry) (*Account, error) {
+	account, err := NewAccount(userID, subscriptionID)
 	if err != nil {
 		return nil, err
 	}

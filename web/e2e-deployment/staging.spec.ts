@@ -36,7 +36,7 @@ test('preserves administrator and member boundaries through the production TLS t
   const initialAdministratorPassword =
     (await page.getByTestId('initial-administrator-password').textContent()) ?? ''
   expect(initialAdministratorPassword).toMatch(/^[A-Za-z0-9_-]{40,}$/)
-  await page.getByRole('button', { name: '我已保存，进入控制面' }).click()
+  await page.goto('/')
 
   await page
     .getByRole('complementary', { name: '管理员导航' })
@@ -74,59 +74,35 @@ test('preserves administrator and member boundaries through the production TLS t
     await passwordVerificationContext.close()
   }
 
-  const invitationResponse = await page.request.post('/api/control/invitations', {
-    data: { expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() },
-    headers: { 'Idempotency-Key': crypto.randomUUID(), 'X-CSRF-Token': csrfToken },
-  })
-  expect(invitationResponse.status()).toBe(201)
-  const invitationPayload = (await invitationResponse.json()) as { data?: { code?: unknown } }
-  const invitationCode =
-    typeof invitationPayload.data?.code === 'string' ? invitationPayload.data.code : ''
-  expect(invitationCode).toMatch(/^invite_[A-Za-z0-9_-]{20,}$/)
-
-  const registrationContext = await browser.newContext({
-    baseURL: new URL(page.url()).origin,
-    ignoreHTTPSErrors: true,
-  })
-  const registrationPage = await registrationContext.newPage()
-  await registrationPage.goto('/register')
-  await registrationPage.getByLabel('邀请码').fill(invitationCode)
-  await registrationPage.getByLabel('显示名称').fill('Deployment Member')
-  await registrationPage.getByLabel('邮箱').fill(memberEmail)
-  await registrationPage.getByLabel('密码').fill(memberPassword)
-  const registrationResponsePromise = registrationPage.waitForResponse(
-    (response) =>
-      response.url().endsWith('/api/control/registrations') &&
-      response.request().method() === 'POST',
-  )
-  await registrationPage.getByRole('button', { name: '提交注册' }).click()
-  expect((await registrationResponsePromise).status()).toBe(202)
-  await registrationContext.close()
-
   await page.goto('/members')
-  const memberRow = page.getByRole('row').filter({ hasText: memberEmail })
-  const approvalResponsePromise = page.waitForResponse(
+  await page.getByRole('button', { name: '创建成员' }).click()
+  const memberDialog = page.getByRole('dialog', { name: '创建成员' })
+  await memberDialog.getByLabel('显示名称').fill('Deployment Member')
+  await memberDialog.getByLabel('邮箱').fill(memberEmail)
+  const memberResponsePromise = page.waitForResponse(
     (response) =>
-      response.url().includes('/api/control/users/') &&
-      response.url().endsWith('/review') &&
-      response.request().method() === 'POST',
+      response.url().endsWith('/api/control/members') && response.request().method() === 'POST',
   )
-  await memberRow.getByRole('button', { name: '批准' }).click()
-  expect((await approvalResponsePromise).status()).toBe(200)
+  await memberDialog.getByRole('button', { name: '保存' }).click()
+  expect((await memberResponsePromise).status()).toBe(201)
+  const initialMemberPassword =
+    (await page.getByRole('dialog').locator('.secret-reveal code').textContent()) ?? ''
+  expect(initialMemberPassword).toMatch(/^\S{40,}$/)
+  await page.getByRole('dialog').getByRole('button', { name: '完成' }).click()
+  const memberRow = page.getByRole('row').filter({ hasText: memberEmail })
+  await expect(memberRow).toBeVisible()
 
-  await page
-    .getByRole('complementary', { name: '管理员导航' })
-    .getByRole('button', { name: '退出登录' })
-    .click()
-  await login(page, memberEmail, memberPassword)
+  await logout(page, '管理员导航')
+  await login(page, memberEmail, initialMemberPassword)
+  await changePassword(page, '控制台导航', initialMemberPassword, memberPassword)
   const managementRequests: string[] = []
   page.on('request', (request) => {
     const path = new URL(request.url()).pathname
-    if (request.method() === 'GET' && path === '/api/control/users') managementRequests.push(path)
+    if (request.method() === 'GET' && path === '/api/control/members') managementRequests.push(path)
   })
   await page.goto('/members')
   expect(managementRequests).toEqual([])
-  const forbidden = await page.request.get('/api/control/users')
+  const forbidden = await page.request.get('/api/control/members')
   expect(forbidden.status()).toBe(403)
   expect(problemCode(await forbidden.json())).toBe('forbidden')
 })
@@ -134,13 +110,48 @@ test('preserves administrator and member boundaries through the production TLS t
 async function verifyRestoredIdentities(page: Page): Promise<void> {
   await page.goto('/login')
   await login(page, administratorEmail, administratorPassword)
+  await logout(page, '管理员导航')
+  await login(page, memberEmail, memberPassword)
+  const forbidden = await page.request.get('/api/control/members')
+  expect(forbidden.status()).toBe(403)
+}
+
+async function changePassword(
+  page: Page,
+  navigationName: string,
+  currentPassword: string,
+  replacementPassword: string,
+): Promise<void> {
   await page
-    .getByRole('complementary', { name: '管理员导航' })
+    .getByRole('complementary', { name: navigationName })
+    .getByRole('button', { name: '更换密码' })
+    .click()
+  const dialog = page.getByRole('dialog', { name: '更换密码' })
+  await dialog.getByLabel('当前密码').fill(currentPassword)
+  await dialog.getByLabel('新密码', { exact: true }).fill(replacementPassword)
+  await dialog.getByLabel('确认新密码').fill(replacementPassword)
+  const response = page.waitForResponse(
+    (candidate) =>
+      candidate.url().endsWith('/api/control/password') && candidate.request().method() === 'POST',
+  )
+  await dialog.getByRole('button', { name: '确认更换' }).click()
+  expect((await response).status()).toBe(200)
+  await page
+    .getByRole('dialog', { name: '密码已更换' })
+    .getByRole('button', { name: '完成' })
+    .click()
+}
+
+async function logout(page: Page, navigationName: string): Promise<void> {
+  const response = page.waitForResponse(
+    (candidate) =>
+      candidate.url().endsWith('/api/control/session') && candidate.request().method() === 'DELETE',
+  )
+  await page
+    .getByRole('complementary', { name: navigationName })
     .getByRole('button', { name: '退出登录' })
     .click()
-  await login(page, memberEmail, memberPassword)
-  const forbidden = await page.request.get('/api/control/users')
-  expect(forbidden.status()).toBe(403)
+  expect((await response).status()).toBe(204)
 }
 
 async function login(page: Page, email: string, password: string): Promise<void> {

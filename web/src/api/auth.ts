@@ -1,5 +1,5 @@
 import { apiClient } from './client'
-import type { Role, Session } from './types'
+import type { Session } from './types'
 
 const base = '/api/control'
 
@@ -18,19 +18,6 @@ export interface BootstrapResult extends Session {
 export interface LoginInput {
   email: string
   password: string
-}
-
-export interface RegistrationInput {
-  invitation: string
-  displayName: string
-  email: string
-  password: string
-}
-
-export interface RegistrationResult {
-  userId: string
-  role: Role
-  status: 'pending_review' | 'active'
 }
 
 function adoptSession<T extends Session>(session: T): T {
@@ -55,9 +42,4 @@ export const authApi = {
       { revokedSessions: number },
       { currentPassword: string; replacementPassword: string }
     >(`${base}/password`, { method: 'POST', body: { currentPassword, replacementPassword } }),
-  register: (input: RegistrationInput) =>
-    apiClient.request<RegistrationResult, RegistrationInput>(`${base}/registrations`, {
-      method: 'POST',
-      body: input,
-    }),
 }

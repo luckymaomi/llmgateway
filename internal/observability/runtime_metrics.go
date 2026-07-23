@@ -31,11 +31,11 @@ func NewRuntimeMetrics(registry prometheus.Registerer, loggers ...*slog.Logger) 
 	metrics := &RuntimeMetrics{
 		admissionRequests:  prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: "llmgateway", Subsystem: "admission", Name: "requests_total", Help: "Local and shared admission outcomes."}, []string{"outcome"}),
 		admissionWait:      prometheus.NewHistogramVec(prometheus.HistogramOpts{Namespace: "llmgateway", Subsystem: "admission", Name: "wait_seconds", Help: "Time spent waiting for admission.", Buckets: []float64{0.001, 0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 30}}, []string{"outcome"}),
-		coordinationLeases: prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: "llmgateway", Subsystem: "coordination", Name: "leases_total", Help: "Shared request lease acquisition outcomes."}, []string{"outcome", "resource_domain"}),
-		coordinationActive: prometheus.NewGaugeVec(prometheus.GaugeOpts{Namespace: "llmgateway", Subsystem: "coordination", Name: "active_leases", Help: "Currently held shared request leases."}, []string{"resource_domain"}),
+		coordinationLeases: prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: "llmgateway", Subsystem: "coordination", Name: "leases_total", Help: "Shared request lease acquisition outcomes."}, []string{"outcome", "resource_pool"}),
+		coordinationActive: prometheus.NewGaugeVec(prometheus.GaugeOpts{Namespace: "llmgateway", Subsystem: "coordination", Name: "active_leases", Help: "Currently held shared request leases."}, []string{"resource_pool"}),
 		coordinationWait:   prometheus.NewHistogramVec(prometheus.HistogramOpts{Namespace: "llmgateway", Subsystem: "coordination", Name: "wait_seconds", Help: "Time spent acquiring shared request capacity.", Buckets: []float64{0.001, 0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 30}}, []string{"outcome"}),
 		providerAttempts:   prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: "llmgateway", Subsystem: "provider", Name: "attempts_total", Help: "Terminal Provider attempt outcomes."}, []string{"provider_kind", "outcome", "error_kind"}),
-		quotaOperations:    prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: "llmgateway", Subsystem: "quota", Name: "operations_total", Help: "Quota reservation and settlement operation outcomes."}, []string{"operation", "outcome", "resource_domain"}),
+		quotaOperations:    prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: "llmgateway", Subsystem: "quota", Name: "operations_total", Help: "Quota reservation and settlement operation outcomes."}, []string{"operation", "outcome", "resource_pool"}),
 		requestRecovery:    prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: "llmgateway", Subsystem: "request_recovery", Name: "results_total", Help: "Recovered stale request outcomes."}, []string{"outcome"}),
 		background:         prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: "llmgateway", Subsystem: "background", Name: "responses_total", Help: "Background Responses lifecycle outcomes."}, []string{"outcome"}),
 	}
@@ -55,7 +55,7 @@ func (m *RuntimeMetrics) initialize() {
 	for _, outcome := range []string{"acquired", "capacity_exhausted", "unavailable", "failed"} {
 		m.coordinationWait.WithLabelValues(outcome)
 	}
-	for _, domain := range []string{"free", "professional", "unknown"} {
+	for _, domain := range []string{"unknown"} {
 		m.coordinationActive.WithLabelValues(domain)
 		for _, outcome := range []string{"acquired", "capacity_exhausted", "unavailable", "failed"} {
 			m.coordinationLeases.WithLabelValues(outcome, domain)
@@ -170,18 +170,18 @@ func (c observedCoordinator) Acquire(ctx context.Context, request requestflow.Le
 	if err != nil {
 		outcome = admissionOutcome(err)
 	}
-	domain := string(request.ResourceDomain)
-	if domain == "" {
-		domain = "unknown"
+	pool := request.ResourcePoolID.String()
+	if request.ResourcePoolID == uuid.Nil {
+		pool = "unknown"
 	}
-	c.metrics.coordinationLeases.WithLabelValues(outcome, domain).Inc()
+	c.metrics.coordinationLeases.WithLabelValues(outcome, pool).Inc()
 	c.metrics.coordinationWait.WithLabelValues(outcome).Observe(wait.Seconds())
 	if err != nil {
-		c.metrics.log("coordination.acquire_failed", "outcome", outcome, "resource_domain", domain)
+		c.metrics.log("coordination.acquire_failed", "outcome", outcome, "resource_pool", pool)
 		return lease, wait, err
 	}
-	c.metrics.coordinationActive.WithLabelValues(domain).Inc()
-	return &observedLease{next: lease, release: func() { c.metrics.coordinationActive.WithLabelValues(domain).Dec() }}, wait, nil
+	c.metrics.coordinationActive.WithLabelValues(pool).Inc()
+	return &observedLease{next: lease, release: func() { c.metrics.coordinationActive.WithLabelValues(pool).Dec() }}, wait, nil
 }
 
 type observedLease struct {
@@ -209,7 +209,11 @@ type observedAccounting struct {
 
 func (a observedAccounting) AcceptRequest(ctx context.Context, command requestflow.AcceptCommand) (requestflow.Accepted, error) {
 	result, err := a.next.AcceptRequest(ctx, command)
-	a.record("reserve", string(command.ResourceDomain), err)
+	pool := "unknown"
+	if result.ResourcePoolID != uuid.Nil {
+		pool = result.ResourcePoolID.String()
+	}
+	a.record("reserve", pool, err)
 	return result, err
 }
 
@@ -237,13 +241,13 @@ func (a observedAccounting) Compensate(ctx context.Context, claim execution.Clai
 	return err
 }
 
-func (a observedAccounting) record(operation, domain string, err error) {
+func (a observedAccounting) record(operation, pool string, err error) {
 	outcome := "succeeded"
 	if err != nil {
 		outcome = "failed"
 	}
-	a.metrics.quotaOperations.WithLabelValues(operation, outcome, domain).Inc()
+	a.metrics.quotaOperations.WithLabelValues(operation, outcome, pool).Inc()
 	if err != nil {
-		a.metrics.log("quota.operation_failed", "operation", operation, "resource_domain", domain)
+		a.metrics.log("quota.operation_failed", "operation", operation, "resource_pool", pool)
 	}
 }

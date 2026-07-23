@@ -91,7 +91,7 @@ func (a *API) executeBackgroundResponse(parent context.Context, heartbeatInterva
 
 	principal, err := a.identity.GatewayPrincipalByID(ctx, record.GatewayKeyID)
 	if err != nil {
-		a.terminateBackgroundResponse(claim, nil, responseowner.StatusFailed, "gateway_key_inactive", "the gateway key or its owner is no longer active")
+		a.terminateBackgroundResponse(claim, nil, responseowner.StatusFailed, "api_key_inactive", "the API key or its owner is no longer active")
 		return
 	}
 	request, parseError := protocol.ParseResponsesRequest(bytes.NewReader(record.Request), record.ID.String())

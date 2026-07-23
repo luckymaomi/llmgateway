@@ -33,31 +33,29 @@ type ErrorCount struct {
 	Count int64
 }
 
-type Step struct {
-	ID       string
-	Complete bool
-}
-
 type AdministratorResources struct {
-	ProviderCount          int64
-	EnabledProviderCount   int64
-	ModelCount             int64
-	CredentialCount        int64
-	ActiveCredentialCount  int64
-	CoolingCredentialCount int64
-	ActiveMemberCount      int64
-	PendingMemberCount     int64
-	ActiveGatewayKeyCount  int64
-	ActiveEntitlementCount int64
-	HasActiveConfiguration bool
-	HasModelPrice          bool
+	ResourcePoolCount              int64
+	ActiveResourcePoolCount        int64
+	ConnectedProviderCount         int64
+	ModelCount                     int64
+	CredentialCount                int64
+	ActiveCredentialCount          int64
+	CoolingCredentialCount         int64
+	SuccessfulCredentialProbeCount int64
+	ActiveMemberCount              int64
+	ActiveGatewayKeyCount          int64
+	ActiveServicePlanCount         int64
+	ActiveSubscriptionCount        int64
+	HasActiveUpstream              bool
+	HasModelPrice                  bool
+	HasCompletedRequest            bool
 }
 
 type MemberAccess struct {
-	ActiveGatewayKeyCount    int64
-	ActiveEntitlementCount   int64
-	RemainingTokens          int64
-	NearestEntitlementExpiry *time.Time
+	ActiveGatewayKeyCount     int64
+	ActiveSubscriptionCount   int64
+	RemainingTokens           int64
+	NearestSubscriptionExpiry *time.Time
 }
 
 type AdministratorOverview struct {
@@ -65,7 +63,6 @@ type AdministratorOverview struct {
 	Requests  RequestSummary
 	Trend     []TrendPoint
 	Errors    []ErrorCount
-	Steps     []Step
 }
 
 type MemberOverview struct {
@@ -73,7 +70,6 @@ type MemberOverview struct {
 	Requests RequestSummary
 	Trend    []TrendPoint
 	Errors   []ErrorCount
-	Steps    []Step
 }
 
 type Overview struct {

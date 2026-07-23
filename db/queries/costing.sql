@@ -38,10 +38,10 @@ LIMIT sqlc.arg(page_size) OFFSET sqlc.arg(page_offset);
 
 -- name: ListCostSummaries :many
 SELECT request.user_id, user_record.display_name AS user_name,
-       request.entitlement_id, entitlement.plan::text AS plan,
+       request.subscription_id, plan.name AS service_plan_name, plan.kind::text AS plan_kind,
        request.model_id, model.public_name AS model_alias,
        model.provider_id, provider.name AS provider_name,
-       request.resource_domain::text AS resource_domain, request.cost_currency AS currency,
+       request.resource_pool_id, pool.name AS resource_pool_name, request.cost_currency AS currency,
        count(*)::bigint AS request_count,
        sum(request.input_tokens)::bigint AS input_tokens,
        sum(request.output_tokens)::bigint AS output_tokens,
@@ -50,12 +50,15 @@ SELECT request.user_id, user_record.display_name AS user_name,
        sum(request.total_cost_nanos)::bigint AS total_cost_nanos
 FROM requests request
 JOIN users user_record ON user_record.id = request.user_id
-JOIN entitlements entitlement ON entitlement.id = request.entitlement_id
+JOIN subscriptions subscription ON subscription.id = request.subscription_id
+JOIN service_plan_versions version ON version.id = subscription.service_plan_version_id
+JOIN service_plans plan ON plan.id = version.service_plan_id
 JOIN models model ON model.id = request.model_id
 JOIN providers provider ON provider.id = model.provider_id
+JOIN resource_pools pool ON pool.id = request.resource_pool_id
 WHERE request.total_cost_nanos IS NOT NULL
-GROUP BY request.user_id, user_record.display_name, request.entitlement_id, entitlement.plan,
+GROUP BY request.user_id, user_record.display_name, request.subscription_id, plan.name, plan.kind,
          request.model_id, model.public_name, model.provider_id, provider.name,
-         request.resource_domain, request.cost_currency
-ORDER BY max(request.completed_at) DESC NULLS LAST, request.user_id, request.entitlement_id, request.model_id
+         request.resource_pool_id, pool.name, request.cost_currency
+ORDER BY max(request.completed_at) DESC NULLS LAST, request.user_id, request.subscription_id, request.model_id
 LIMIT sqlc.arg(page_size) OFFSET sqlc.arg(page_offset);

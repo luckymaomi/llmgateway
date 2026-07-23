@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
-import { Dialog, Tooltip } from 'radix-ui'
-import { KeyRound, LogOut, Menu, Network, X } from 'lucide-react'
+import { Tooltip } from 'radix-ui'
+import { KeyRound, LogOut, Network } from 'lucide-react'
 import { Suspense, useState } from 'react'
 
 import { authApi, type Session } from '@/api'
@@ -9,6 +9,7 @@ import { navigationFor, navigationItemFor } from '@/app/navigation'
 import { clearAuthenticatedSession, useSession } from '@/app/session'
 import { siteProfileQuery } from '@/app/site-profile'
 import { PasswordChangeDialog } from '@/features/auth/password-change-dialog'
+import { OnboardingTourProvider } from '@/features/onboarding/onboarding-tour'
 import { cn } from '@/lib/cn'
 
 import { IconButton } from '../ui/icon-button'
@@ -24,7 +25,6 @@ export function AppShell() {
   const siteProfile = useQuery(siteProfileQuery)
   const siteName = siteProfile.data?.name ?? 'LLMGateway'
   const navigation = navigationFor(session)
-  const [mobileOpen, setMobileOpen] = useState(false)
   const [passwordOpen, setPasswordOpen] = useState(false)
   const pathname = useRouterState({ select: (state) => state.location.pathname })
   const currentPage = navigationItemFor(session, pathname)
@@ -38,84 +38,54 @@ export function AppShell() {
     },
   })
 
-  const navigationContent = (
-    <SidebarNavigation
-      pathname={pathname}
-      navigation={navigation}
-      onNavigate={() => setMobileOpen(false)}
-    />
-  )
-  const sessionControls = (
+  const desktopSessionControls = (
     <SessionControls
       session={session}
       logoutPending={logout.isPending}
-      onChangePassword={() => {
-        setMobileOpen(false)
-        setPasswordOpen(true)
-      }}
+      onChangePassword={() => setPasswordOpen(true)}
       onLogout={() => logout.mutate()}
     />
   )
 
   return (
-    <Tooltip.Provider delayDuration={350}>
-      <div className="app-shell">
-        <aside
-          className="sidebar"
-          aria-label={session.role === 'administrator' ? '管理员导航' : '控制台导航'}
-        >
-          <div className="sidebar__brand">
-            <span className="sidebar__brand-mark" aria-hidden="true">
-              <Network size={18} />
-            </span>
-            <span>{siteName}</span>
-          </div>
-          {navigationContent}
-          {sessionControls}
-        </aside>
-
-        <div className="app-column">
-          <header className="app-header">
-            <div className="app-header__left">
-              <Dialog.Root open={mobileOpen} onOpenChange={setMobileOpen}>
-                <Dialog.Trigger asChild>
-                  <IconButton label="打开导航" className="mobile-menu-trigger" showTooltip={false}>
-                    <Menu size={19} />
-                  </IconButton>
-                </Dialog.Trigger>
-                <Dialog.Portal>
-                  <Dialog.Overlay className="dialog-overlay" />
-                  <Dialog.Content className="mobile-navigation">
-                    <div className="mobile-navigation__header">
-                      <Dialog.Title>{siteName}</Dialog.Title>
-                      <Dialog.Close asChild>
-                        <IconButton label="关闭导航" showTooltip={false}>
-                          <X size={19} />
-                        </IconButton>
-                      </Dialog.Close>
-                    </div>
-                    {navigationContent}
-                    {sessionControls}
-                  </Dialog.Content>
-                </Dialog.Portal>
-              </Dialog.Root>
-              <strong>{currentPage?.label ?? '控制台'}</strong>
-              <span className="app-header__context">
-                {session.role === 'administrator' ? '管理员控制台' : '控制台'}
+    <OnboardingTourProvider>
+      <Tooltip.Provider delayDuration={350}>
+        <div className="app-shell">
+          <aside
+            className="sidebar"
+            aria-label={session.role === 'administrator' ? '管理员导航' : '控制台导航'}
+          >
+            <div className="sidebar__brand">
+              <span className="sidebar__brand-mark" aria-hidden="true">
+                <Network size={18} />
               </span>
+              <span>{siteName}</span>
             </div>
-            <div className="app-header__status">
-              <span className="health-dot" aria-hidden="true" />
-              会话有效
-            </div>
-          </header>
-          <Suspense fallback={<LoadingState label="正在加载页面" />}>
-            <Outlet />
-          </Suspense>
+            <SidebarNavigation pathname={pathname} navigation={navigation} />
+            {desktopSessionControls}
+          </aside>
+
+          <div className="app-column">
+            <header className="app-header">
+              <div className="app-header__left">
+                <strong>{currentPage?.label ?? '控制台'}</strong>
+                <span className="app-header__context">
+                  {session.role === 'administrator' ? '管理员控制台' : '控制台'}
+                </span>
+              </div>
+              <div className="app-header__status">
+                <span className="health-dot" aria-hidden="true" />
+                会话有效
+              </div>
+            </header>
+            <Suspense fallback={<LoadingState label="正在加载页面" />}>
+              <Outlet />
+            </Suspense>
+          </div>
+          <PasswordChangeDialog open={passwordOpen} onOpenChange={setPasswordOpen} />
         </div>
-        <PasswordChangeDialog open={passwordOpen} onOpenChange={setPasswordOpen} />
-      </div>
-    </Tooltip.Provider>
+      </Tooltip.Provider>
+    </OnboardingTourProvider>
   )
 }
 
@@ -152,11 +122,9 @@ function SessionControls({
 function SidebarNavigation({
   pathname,
   navigation,
-  onNavigate,
 }: {
   pathname: string
   navigation: ReturnType<typeof navigationFor>
-  onNavigate: () => void
 }) {
   return (
     <nav className="sidebar__nav">
@@ -172,7 +140,7 @@ function SidebarNavigation({
                 to={item.to}
                 className={cn('sidebar__link', active && 'sidebar__link--active')}
                 aria-current={active ? 'page' : undefined}
-                onClick={onNavigate}
+                data-onboarding-nav={item.to}
               >
                 <Icon size={17} strokeWidth={1.8} />
                 <span>{item.label}</span>

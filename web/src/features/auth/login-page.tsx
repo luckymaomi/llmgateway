@@ -1,6 +1,6 @@
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Link, useNavigate } from '@tanstack/react-router'
+import { useNavigate } from '@tanstack/react-router'
 import { LogIn } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import { z } from 'zod'
@@ -68,10 +68,6 @@ export function LoginPage({ redirectTo }: { redirectTo?: string }) {
           {login.isPending ? '正在登录' : '登录'}
         </Button>
       </form>
-      <footer className="auth-panel__footer">
-        <span>持有邀请码</span>
-        <Link to="/register">注册</Link>
-      </footer>
     </AuthPanel>
   )
 }

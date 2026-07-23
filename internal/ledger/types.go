@@ -5,7 +5,7 @@ import "time"
 type Tokens int64
 type EventID string
 type UserID string
-type EntitlementID string
+type SubscriptionID string
 type ReservationID string
 type RequestID string
 
@@ -50,7 +50,7 @@ type Entry struct {
 	ID             EventID
 	Kind           EntryKind
 	UserID         UserID
-	EntitlementID  EntitlementID
+	SubscriptionID SubscriptionID
 	ReservationID  ReservationID
 	RequestID      RequestID
 	TokenDelta     Tokens
@@ -82,11 +82,11 @@ type ReservationSnapshot struct {
 }
 
 type Snapshot struct {
-	UserID        UserID
-	EntitlementID EntitlementID
-	Balance       Tokens
-	Revision      uint64
-	Reservations  []ReservationSnapshot
+	UserID         UserID
+	SubscriptionID SubscriptionID
+	Balance        Tokens
+	Revision       uint64
+	Reservations   []ReservationSnapshot
 }
 
 type GrantCommand struct {

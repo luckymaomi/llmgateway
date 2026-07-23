@@ -48,7 +48,7 @@ try {
   $recoveryPasswordPath = Join-Path $buildDirectory "administrator-password.txt"
   $docker = Get-LLMGatewayDockerCommand
   & $docker exec $postgres.Container psql -v ON_ERROR_STOP=1 -U llmgateway -d $databaseName -c `
-    "INSERT INTO users (email, display_name, password_hash, role, status, approved_at, disabled_at) VALUES ('$recoveryEmail', 'Operations Administrator', 'fixture-hash', 'administrator', 'disabled', now(), now()); INSERT INTO sessions (user_id, token_digest, csrf_digest, expires_at) SELECT id, digest('operations-recovery-session', 'sha256'), digest('operations-recovery-csrf', 'sha256'), now() + interval '1 hour' FROM users WHERE email = '$recoveryEmail';" | Out-Null
+    "INSERT INTO users (email, display_name, password_hash, role, status, disabled_at) VALUES ('$recoveryEmail', 'Operations Administrator', 'fixture-hash', 'administrator', 'disabled', now()); INSERT INTO sessions (user_id, token_digest, csrf_digest, expires_at) SELECT id, digest('operations-recovery-session', 'sha256'), digest('operations-recovery-csrf', 'sha256'), now() + interval '1 hour' FROM users WHERE email = '$recoveryEmail';" | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "Could not create the offline recovery fixture." }
   [IO.File]::WriteAllText($recoveryPasswordPath, $recoveryPassword + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 

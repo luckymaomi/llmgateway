@@ -142,6 +142,11 @@ try {
   $gatewayProcesses += $firstGateway
   Wait-CapacityGateway -Process $firstGateway -BaseURL $gatewayURLs[0]
 
+  $docker = Get-LLMGatewayDockerCommand
+  & $docker exec $postgres.Container psql -v ON_ERROR_STOP=1 -U llmgateway -d llmgateway_capacity -c `
+    "UPDATE providers SET base_url = '$providerBaseURL' WHERE catalog_id = 'siliconflow'; UPDATE models SET upstream_name = 'fixture-chat' WHERE provider_id = (SELECT id FROM providers WHERE catalog_id = 'siliconflow');" | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "Could not redirect the capacity Provider catalog to the fixture." }
+
   $adminSession = New-Object Microsoft.PowerShell.Commands.WebRequestSession
   $setup = Invoke-CapacityControl -Method Post -Uri "$($gatewayURLs[0])/api/control/setup" -Session $adminSession -Body @{
     email = "capacity-owner@example.test"
@@ -149,34 +154,36 @@ try {
   if (-not $setup.data.initialPassword) { throw "Capacity setup did not return one-time administrator credentials." }
   $csrf = $setup.data.csrfToken
   $setup.data.initialPassword = $null
-  $provider = Invoke-CapacityControl -Method Post -Uri "$($gatewayURLs[0])/api/control/providers" -Session $adminSession -CSRF $csrf `
-    -IdempotencyKey ([guid]::NewGuid().ToString()) -Body @{ slug = "capacity-openai"; name = "Capacity fixture"; kind = "openai-compatible"; baseUrl = $providerBaseURL }
-  $model = Invoke-CapacityControl -Method Post -Uri "$($gatewayURLs[0])/api/control/models" -Session $adminSession -CSRF $csrf -Body @{
-    providerId = $provider.data.id; alias = "capacity-chat"; upstreamModelId = "fixture-chat"; resourceDomain = "free"
-    capabilities = @("streaming", "tools", "reasoning"); reasoningMode = "toggle"; contextTokens = 8192
-  }
+  $providers = Invoke-CapacityControl -Method Get -Uri "$($gatewayURLs[0])/api/control/providers" -Session $adminSession
+  $provider = @($providers.data | Where-Object { $_.catalog_id -eq "siliconflow" }) | Select-Object -First 1
+  $models = Invoke-CapacityControl -Method Get -Uri "$($gatewayURLs[0])/api/control/models" -Session $adminSession
+  $model = @($models.data | Where-Object { $_.provider_id -eq $provider.id }) | Select-Object -First 1
+  if ($null -eq $provider -or $null -eq $model) { throw "Capacity code-owned Provider catalog was not available." }
+  $resourcePool = Invoke-CapacityControl -Method Post -Uri "$($gatewayURLs[0])/api/control/resource-pools" -Session $adminSession -CSRF $csrf `
+    -IdempotencyKey ([guid]::NewGuid().ToString()) -Body @{
+      providerId = $provider.id; slug = "capacity-pool"; name = "Capacity Pool"; modelIds = @($model.id)
+    }
   $null = Invoke-CapacityControl -Method Post -Uri "$($gatewayURLs[0])/api/control/model-prices" -Session $adminSession -CSRF $csrf `
     -IdempotencyKey ([guid]::NewGuid().ToString()) -Body @{
-      modelId = $model.data.id; currency = "USD"; inputPricePerMillionTokens = "0"; outputPricePerMillionTokens = "0"
+      modelId = $model.id; currency = "USD"; inputPricePerMillionTokens = "0"; outputPricePerMillionTokens = "0"
       effectiveAt = (Get-Date).ToUniversalTime().AddMinutes(-1).ToString("o")
     }
   foreach ($credentialIndex in 1..6) {
     $credential = Invoke-CapacityControl -Method Post -Uri "$($gatewayURLs[0])/api/control/credentials" -Session $adminSession -CSRF $csrf `
       -IdempotencyKey ([guid]::NewGuid().ToString()) -Body @{
-        providerId = $provider.data.id; label = "Capacity fixture credential $credentialIndex"; secret = "core-upstream-secret"; resourceDomain = "free"
-        modelBindings = @(@{ modelId = $model.data.id; priority = 10; weight = 100 })
+        resourcePoolId = $resourcePool.data.id; name = "Capacity fixture credential $credentialIndex"; secret = "core-upstream-secret"
+        modelBindings = @(@{ model_id = $model.id; priority = 10; weight = 100 })
         rpmLimit = 100000; tpmLimit = 100000000; concurrencyLimit = 128
       }
     if (-not $credential.data.id) { throw "Capacity credential $credentialIndex was not created." }
   }
-  $enabled = Invoke-CapacityControl -Method Put -Uri "$($gatewayURLs[0])/api/control/providers/$($provider.data.id)/status" -Session $adminSession -CSRF $csrf `
-    -IdempotencyKey ([guid]::NewGuid().ToString()) -Body @{ enabled = $true; expectedUpdatedAt = $provider.data.updatedAt }
-  if ($enabled.data.status -ne "enabled") { throw "Capacity Provider was not enabled." }
-  $revision = Invoke-CapacityControl -Method Post -Uri "$($gatewayURLs[0])/api/control/configuration/revisions" -Session $adminSession -CSRF $csrf `
-    -IdempotencyKey ([guid]::NewGuid().ToString())
-  $published = Invoke-CapacityControl -Method Post -Uri "$($gatewayURLs[0])/api/control/configuration/revisions/$($revision.data.id)/publish" -Session $adminSession -CSRF $csrf `
-    -IdempotencyKey ([guid]::NewGuid().ToString()) -Body @{ expectedActiveVersion = 0 }
-  if ($published.data.phase -ne "completed") { throw "Capacity configuration was not published." }
+  $plan = Invoke-CapacityControl -Method Post -Uri "$($gatewayURLs[0])/api/control/plans" -Session $adminSession -CSRF $csrf `
+    -IdempotencyKey ([guid]::NewGuid().ToString()) -Body @{
+      slug = "capacity-plan"; name = "Capacity Plan"; description = ""; kind = "token"
+      tokenQuota = 100000000; validityDays = 1; concurrencyLimit = 16; rpmLimit = 600; tpmLimit = 1000000
+      routes = @(@{ modelId = $model.id; resourcePoolId = $resourcePool.data.id })
+    }
+  if ($plan.data.current_version.version -ne 1) { throw "Capacity plan version was not published." }
 
   $env:LLMGATEWAY_DATABASE_MIGRATE_ON_START = "false"
   $env:LLMGATEWAY_DATABASE_URL = $secondDatabaseURL
@@ -188,7 +195,7 @@ try {
 
   & $capacityPath -base-urls ($gatewayURLs -join ",") -database-url $observerDatabaseURL `
     -valkey-address $valkey.Address -valkey-password $valkeyPassword -api-key-pepper $apiKeyPepper `
-    -model-id $model.data.id -model "capacity-chat" -provider-admin-url $providerAdminURL `
+    -model-id $model.id -plan-version-id $plan.data.current_version.id -model $model.public_name -provider-admin-url $providerAdminURL `
     -users $Users -active-users $ActiveUsers -duration "$($DurationSeconds)s" -postgres-connection-limit 49 > $reportPath
   if ($LASTEXITCODE -ne 0) { throw "Capacity acceptance failed; inspect $reportPath." }
   $report = Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -197,7 +204,7 @@ try {
   Copy-Item -LiteralPath $reportPath -Destination (Join-Path $evidenceDirectory "capacity-report.json") -Force
 
   $recoveryProcess = Start-CapacityProcess -FilePath $recoveryPath -Arguments @(
-    "-base-url", $gatewayURLs[0], "-run-id", $report.runId, "-model", "capacity-chat", "-requests", "128"
+    "-base-url", $gatewayURLs[0], "-run-id", $report.runId, "-model", $model.public_name, "-requests", "128"
   ) -Stdout $recoveryReportPath -Stderr (Join-Path $buildDirectory "recovery.stderr.log")
   $recoveryDeadline = (Get-Date).AddSeconds(30)
   do {
@@ -224,16 +231,15 @@ try {
   }
 
   $probeBody = @{
-    model = "capacity-chat"; messages = @(@{ role = "user"; content = "capacity short" }); max_tokens = 16
+    model = $model.public_name; messages = @(@{ role = "user"; content = "capacity short" }); max_tokens = 16
   } | ConvertTo-Json -Depth 4
-  $probeKey = "llmg_capacity_$($report.runId)_250"
+  $probeKey = "llmg_capacity_$($report.runId)_$(('{0:D3}' -f ($Users - 1)))"
   $probe = Invoke-WebRequest -UseBasicParsing -Method Post -Uri "$($gatewayURLs[1])/v1/chat/completions" `
     -Headers @{ Authorization = "Bearer $probeKey"; "Idempotency-Key" = [guid]::NewGuid().ToString() } `
     -ContentType "application/json" -Body $probeBody -TimeoutSec 20
   $probeKey = $null
   if ($probe.StatusCode -ne 200) { throw "Surviving Gateway did not recover after the shared lease expired." }
 
-  $docker = Get-LLMGatewayDockerCommand
   $databaseDeadline = (Get-Date).AddSeconds(10)
   do {
     $recoveryFacts = & $docker exec $postgres.Container psql -v ON_ERROR_STOP=1 -U llmgateway -d llmgateway_capacity -Atc `

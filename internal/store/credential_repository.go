@@ -10,132 +10,95 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/luckymaomi/llmgateway/internal/providers"
 	"github.com/luckymaomi/llmgateway/internal/registry"
 	db "github.com/luckymaomi/llmgateway/internal/store/db"
 )
 
-func (r *RegistryRepository) ReplayCredentialMutation(ctx context.Context, actorID uuid.UUID, mutation registry.CredentialMutation) (registry.Credential, bool, error) {
-	operation, err := r.queries.GetCredentialMutation(ctx, credentialMutationLookup(actorID, mutation))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return registry.Credential{}, false, nil
-	}
-	if err != nil {
-		return registry.Credential{}, false, translateRegistryError(err)
-	}
-	credential, err := credentialMutationResult(operation, mutation)
-	return credential, true, err
-}
-
-func (r *RegistryRepository) CreateCredential(ctx context.Context, input registry.NewCredential, actorID uuid.UUID, mutation registry.CredentialMutation) (registry.Credential, error) {
+func (r *RegistryRepository) CreateCredential(ctx context.Context, input registry.NewCredential, actorID uuid.UUID, mutation registry.Mutation) (registry.Credential, error) {
 	return r.executeCredentialMutation(ctx, actorID, mutation, func(queries *db.Queries) (registry.Credential, error) {
-		bindings, err := validateCredentialBindings(ctx, queries, input.ProviderID, input.ResourceDomain, input.ModelBindings)
-		if err != nil {
-			return registry.Credential{}, err
+		for _, binding := range input.ModelBindings {
+			if _, err := queries.GetModelForCredentialBinding(ctx, db.GetModelForCredentialBindingParams{ID: binding.ModelID, ResourcePoolID: input.ResourcePoolID}); err != nil {
+				return registry.Credential{}, translateRegistryError(err)
+			}
 		}
 		created, err := queries.CreateCredential(ctx, db.CreateCredentialParams{
-			ID: input.ID, ProviderID: input.ProviderID, Name: input.Name, EncryptedSecret: input.EncryptedSecret, ResourceDomain: db.ResourceDomain(input.ResourceDomain),
+			ID: input.ID, ResourcePoolID: input.ResourcePoolID, Name: input.Name, EncryptedSecret: input.EncryptedSecret,
 			RpmLimit: input.RPMLimit, TpmLimit: input.TPMLimit, ConcurrencyLimit: input.ConcurrencyLimit,
 		})
 		if err != nil {
 			return registry.Credential{}, translateRegistryError(err)
 		}
-		if err := replaceCredentialBindings(ctx, queries, created.ID, bindings); err != nil {
+		if err := bindCredentialModels(ctx, queries, created.ID, input.ModelBindings); err != nil {
 			return registry.Credential{}, err
 		}
-		result := credentialWithBindings(created, bindings)
-		params := auditParams(&actorID, "credential.created", "credential", created.ID.String(), credentialAuditDetail(nil, &created, nil, bindings))
-		params.RequestID = &mutation.RequestID
-		if _, err := queries.CreateAuditEvent(ctx, params); err != nil {
-			return registry.Credential{}, err
-		}
-		return result, nil
+		return credentialByID(ctx, queries, created.ID)
 	})
 }
 
-func (r *RegistryRepository) UpdateCredential(ctx context.Context, input registry.CredentialChange, actorID uuid.UUID, mutation registry.CredentialMutation) (registry.Credential, error) {
+func (r *RegistryRepository) UpdateCredential(ctx context.Context, input registry.CredentialChange, actorID uuid.UUID, mutation registry.Mutation) (registry.Credential, error) {
 	return r.executeCredentialMutation(ctx, actorID, mutation, func(queries *db.Queries) (registry.Credential, error) {
 		current, err := queries.GetCredentialForUpdate(ctx, input.ID)
 		if err != nil {
 			return registry.Credential{}, translateRegistryError(err)
 		}
-		if !current.UpdatedAt.Time.Equal(input.ExpectedUpdatedAt) {
-			return registry.Credential{}, registry.ErrConflict
+		for _, binding := range input.ModelBindings {
+			if _, err := queries.GetModelForCredentialBinding(ctx, db.GetModelForCredentialBindingParams{ID: binding.ModelID, ResourcePoolID: current.ResourcePoolID}); err != nil {
+				return registry.Credential{}, translateRegistryError(err)
+			}
 		}
-		bindings, err := validateCredentialBindings(ctx, queries, current.ProviderID, input.ResourceDomain, input.ModelBindings)
-		if err != nil {
-			return registry.Credential{}, err
-		}
-		updated, err := queries.UpdateCredential(ctx, db.UpdateCredentialParams{
-			ID: input.ID, Name: input.Name, ReplaceSecret: input.ReplaceSecret, EncryptedSecret: input.EncryptedSecret,
-			ResourceDomain: db.ResourceDomain(input.ResourceDomain), RpmLimit: input.RPMLimit, TpmLimit: input.TPMLimit,
-			ConcurrencyLimit: input.ConcurrencyLimit, ExpectedUpdatedAt: optionalTimestamp(&input.ExpectedUpdatedAt),
-		})
-		if errors.Is(err, pgx.ErrNoRows) {
-			return registry.Credential{}, registry.ErrConflict
-		}
-		if err != nil {
+		if _, err := queries.UpdateCredential(ctx, db.UpdateCredentialParams{
+			Name: input.Name, ReplaceSecret: input.ReplaceSecret, EncryptedSecret: input.EncryptedSecret,
+			RpmLimit: input.RPMLimit, TpmLimit: input.TPMLimit, ConcurrencyLimit: input.ConcurrencyLimit,
+			ID: input.ID, ExpectedUpdatedAt: timestamp(input.ExpectedUpdatedAt),
+		}); err != nil {
 			return registry.Credential{}, translateRegistryError(err)
 		}
-		beforeBindings, err := queries.ListCredentialModelBindingsForCredential(ctx, input.ID)
-		if err != nil {
+		if err := queries.DeleteCredentialModelBindings(ctx, input.ID); err != nil {
+			return registry.Credential{}, translateRegistryError(err)
+		}
+		if err := bindCredentialModels(ctx, queries, input.ID, input.ModelBindings); err != nil {
 			return registry.Credential{}, err
 		}
-		beforeBindingFacts := bindingFacts(beforeBindings)
-		if err := replaceCredentialBindings(ctx, queries, input.ID, bindings); err != nil {
-			return registry.Credential{}, err
-		}
-		result := credentialWithBindings(updated, bindings)
-		params := auditParams(&actorID, "credential.updated", "credential", input.ID.String(), credentialAuditDetail(&current, &updated, beforeBindingFacts, bindings))
-		params.RequestID = &mutation.RequestID
-		if _, err := queries.CreateAuditEvent(ctx, params); err != nil {
-			return registry.Credential{}, err
-		}
-		return result, nil
+		return credentialByID(ctx, queries, input.ID)
 	})
 }
 
-func (r *RegistryRepository) SetCredentialStatus(ctx context.Context, credentialID uuid.UUID, status registry.CredentialStatus, expectedUpdatedAt time.Time, actorID uuid.UUID, mutation registry.CredentialMutation) (registry.Credential, error) {
+func (r *RegistryRepository) SetCredentialStatus(ctx context.Context, id uuid.UUID, status registry.CredentialStatus, expectedUpdatedAt time.Time, actorID uuid.UUID, mutation registry.Mutation) (registry.Credential, error) {
 	return r.executeCredentialMutation(ctx, actorID, mutation, func(queries *db.Queries) (registry.Credential, error) {
-		current, err := queries.GetCredentialForUpdate(ctx, credentialID)
-		if err != nil {
+		if _, err := queries.SetCredentialStatus(ctx, db.SetCredentialStatusParams{Status: db.CredentialStatus(status), ID: id, ExpectedUpdatedAt: timestamp(expectedUpdatedAt)}); err != nil {
 			return registry.Credential{}, translateRegistryError(err)
 		}
-		if !current.UpdatedAt.Time.Equal(expectedUpdatedAt) {
-			return registry.Credential{}, registry.ErrConflict
-		}
-		bindings, err := queries.ListCredentialModelBindingsForCredential(ctx, credentialID)
-		if err != nil {
-			return registry.Credential{}, err
-		}
-		updated, err := queries.SetCredentialStatus(ctx, db.SetCredentialStatusParams{ID: credentialID, Status: db.CredentialStatus(status), ExpectedUpdatedAt: optionalTimestamp(&expectedUpdatedAt)})
-		if errors.Is(err, pgx.ErrNoRows) {
-			return registry.Credential{}, registry.ErrConflict
-		}
-		if err != nil {
-			return registry.Credential{}, translateRegistryError(err)
-		}
-		bindingValues := bindingFacts(bindings)
-		result := credentialWithBindings(updated, bindingValues)
-		params := auditParams(&actorID, "credential.status_changed", "credential", credentialID.String(), credentialAuditDetail(&current, &updated, bindingValues, bindingValues))
-		params.RequestID = &mutation.RequestID
-		if _, err := queries.CreateAuditEvent(ctx, params); err != nil {
-			return registry.Credential{}, err
-		}
-		return result, nil
+		return credentialByID(ctx, queries, id)
 	})
 }
 
-func (r *RegistryRepository) executeCredentialMutation(ctx context.Context, actorID uuid.UUID, mutation registry.CredentialMutation, apply func(*db.Queries) (registry.Credential, error)) (registry.Credential, error) {
+func (r *RegistryRepository) RetireCredential(ctx context.Context, id uuid.UUID, encryptedTombstone []byte, expectedUpdatedAt time.Time, actorID uuid.UUID, mutation registry.Mutation) (registry.Credential, error) {
+	return r.executeCredentialMutation(ctx, actorID, mutation, func(queries *db.Queries) (registry.Credential, error) {
+		if _, err := queries.RetireCredential(ctx, db.RetireCredentialParams{EncryptedTombstone: encryptedTombstone, ID: id, ExpectedUpdatedAt: timestamp(expectedUpdatedAt)}); err != nil {
+			return registry.Credential{}, translateRegistryError(err)
+		}
+		return credentialByID(ctx, queries, id)
+	})
+}
+
+func bindCredentialModels(ctx context.Context, queries *db.Queries, credentialID uuid.UUID, bindings []registry.CredentialModelBinding) error {
+	for _, binding := range bindings {
+		if err := queries.BindCredentialModel(ctx, db.BindCredentialModelParams{CredentialID: credentialID, ModelID: binding.ModelID, Priority: binding.Priority, Weight: binding.Weight}); err != nil {
+			return translateRegistryError(err)
+		}
+	}
+	return nil
+}
+
+func (r *RegistryRepository) executeCredentialMutation(ctx context.Context, actorID uuid.UUID, mutation registry.Mutation, apply func(*db.Queries) (registry.Credential, error)) (registry.Credential, error) {
 	tx, err := r.connections.Postgres.Begin(ctx)
 	if err != nil {
 		return registry.Credential{}, err
 	}
 	defer tx.Rollback(ctx)
 	queries := r.queries.WithTx(tx)
-	operation, err := queries.ClaimCredentialMutation(ctx, db.ClaimCredentialMutationParams{
-		ActorUserID: actorID, Action: string(mutation.Action), IdempotencyKey: mutation.IdempotencyKey,
-		RequestFingerprint: mutation.RequestFingerprint, RequestID: mutation.RequestID,
-	})
+	operation, err := queries.ClaimCredentialMutation(ctx, db.ClaimCredentialMutationParams{ActorUserID: actorID, Action: mutation.Action, IdempotencyKey: mutation.IdempotencyKey, RequestFingerprint: mutation.RequestFingerprint, RequestID: mutation.RequestID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		existing, loadErr := queries.GetCredentialMutation(ctx, credentialMutationLookup(actorID, mutation))
 		if loadErr != nil {
@@ -150,12 +113,18 @@ func (r *RegistryRepository) executeCredentialMutation(ctx context.Context, acto
 	if err != nil {
 		return registry.Credential{}, err
 	}
+	audit := auditParams(&actorID, mutation.Action, "provider_credential", result.ID.String(), map[string]any{
+		"resource_pool_id": result.ResourcePoolID, "status": result.Status, "model_bindings": result.ModelBindings,
+	})
+	audit.RequestID = &mutation.RequestID
+	if _, err := queries.CreateAuditEvent(ctx, audit); err != nil {
+		return registry.Credential{}, err
+	}
 	encoded, err := json.Marshal(result)
 	if err != nil {
-		return registry.Credential{}, fmt.Errorf("encode credential mutation result: %w", err)
+		return registry.Credential{}, err
 	}
-	credentialID := result.ID
-	if _, err := queries.CompleteCredentialMutation(ctx, db.CompleteCredentialMutationParams{CredentialID: &credentialID, Result: encoded, ID: operation.ID}); err != nil {
+	if _, err := queries.CompleteCredentialMutation(ctx, db.CompleteCredentialMutationParams{CredentialID: &result.ID, Result: encoded, ID: operation.ID}); err != nil {
 		return registry.Credential{}, err
 	}
 	if err := r.commitCredentialMutation(ctx, tx); err != nil {
@@ -164,99 +133,114 @@ func (r *RegistryRepository) executeCredentialMutation(ctx context.Context, acto
 	return result, nil
 }
 
-func (r *RegistryRepository) reconcileCredentialMutation(ctx context.Context, actorID uuid.UUID, mutation registry.CredentialMutation, commitErr error) (registry.Credential, error) {
+func (r *RegistryRepository) reconcileCredentialMutation(ctx context.Context, actorID uuid.UUID, mutation registry.Mutation, commitErr error) (registry.Credential, error) {
 	reconcileCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
 	defer cancel()
-	delay := 20 * time.Millisecond
-	var reconciliationErr error
-	for {
+	for delay := 20 * time.Millisecond; ; delay = minDuration(delay*2, 250*time.Millisecond) {
 		operation, err := r.queries.GetCredentialMutation(reconcileCtx, credentialMutationLookup(actorID, mutation))
 		if err == nil {
 			return credentialMutationResult(operation, mutation)
 		}
-		reconciliationErr = err
-		timer := time.NewTimer(delay)
-		select {
-		case <-reconcileCtx.Done():
-			timer.Stop()
-			return registry.Credential{}, fmt.Errorf("%w: commit: %v; reconciliation: %v", registry.ErrOutcomeUnknown, commitErr, reconciliationErr)
-		case <-timer.C:
-		}
-		if delay < 250*time.Millisecond {
-			delay *= 2
+		if !waitForReconcile(reconcileCtx, delay) {
+			return registry.Credential{}, fmt.Errorf("%w: commit: %v; reconciliation: %v", registry.ErrOutcomeUnknown, commitErr, err)
 		}
 	}
 }
 
-func (r *RegistryRepository) ListCredentials(ctx context.Context) ([]registry.Credential, error) {
-	items, err := r.queries.ListCredentials(ctx)
-	if err != nil {
-		return nil, err
+func credentialMutationLookup(actorID uuid.UUID, mutation registry.Mutation) db.GetCredentialMutationParams {
+	return db.GetCredentialMutationParams{ActorUserID: actorID, Action: mutation.Action, IdempotencyKey: mutation.IdempotencyKey}
+}
+
+func credentialMutationResult(operation db.CredentialMutation, mutation registry.Mutation) (registry.Credential, error) {
+	if !bytes.Equal(operation.RequestFingerprint, mutation.RequestFingerprint) {
+		return registry.Credential{}, registry.ErrIdempotencyConflict
 	}
-	bindings, err := r.queries.ListCredentialModelBindings(ctx)
-	if err != nil {
-		return nil, err
-	}
-	modelBindings := make(map[uuid.UUID][]registry.CredentialModelBinding)
-	for _, binding := range bindings {
-		modelBindings[binding.CredentialID] = append(modelBindings[binding.CredentialID], registry.CredentialModelBinding{
-			ModelID: binding.ModelID, ModelName: binding.PublicName, Priority: binding.Priority, Weight: binding.Weight,
-		})
-	}
-	result := make([]registry.Credential, 0, len(items))
-	for _, item := range items {
-		var lastCheckedAt *time.Time
-		if item.LastCheckedUnixSeconds >= 0 {
-			value := time.Unix(item.LastCheckedUnixSeconds, 0).UTC()
-			lastCheckedAt = &value
-		}
-		var recentSuccessRate *float64
-		if item.TerminalCount > 0 {
-			value := float64(item.CompletedCount) / float64(item.TerminalCount)
-			recentSuccessRate = &value
-		}
-		credential := registry.Credential{
-			ID: item.ID, ProviderID: item.ProviderID, Name: item.Name, ResourceDomain: registry.ResourceDomain(item.ResourceDomain),
-			Status: registry.CredentialStatus(item.Status), RPMLimit: item.RpmLimit, TPMLimit: item.TpmLimit,
-			ConcurrencyLimit: item.ConcurrencyLimit, CooldownUntil: timePointer(item.CooldownUntil),
-			ConsecutiveFailures: item.ConsecutiveFailures, LastSuccessAt: timePointer(item.LastSuccessAt), LastErrorKind: item.LastErrorKind,
-			LastProbeAt: timePointer(item.LastProbeAt), LastProbeLatencyMs: item.LastProbeLatencyMs, LastProbeKind: item.LastProbeKind,
-			LastProbeStatus: item.LastProbeStatus, LastProbeErrorKind: item.LastProbeErrorKind,
-			LastCheckedAt: lastCheckedAt, RecentSuccessRate: recentSuccessRate,
-			FirstByteP95Ms: optionalNonNegativeInt64(item.FirstByteP95Ms), TotalLatencyP95Ms: optionalNonNegativeInt64(item.TotalLatencyP95Ms),
-			CreatedAt: item.CreatedAt.Time, UpdatedAt: item.UpdatedAt.Time,
-		}
-		credential.ModelBindings = modelBindings[item.ID]
-		result = append(result, credential)
+	var result registry.Credential
+	if err := json.Unmarshal(operation.Result, &result); err != nil || operation.CredentialID == nil || *operation.CredentialID != result.ID {
+		return registry.Credential{}, fmt.Errorf("registry store: invalid credential mutation result")
 	}
 	return result, nil
 }
 
-func optionalNonNegativeInt64(value int64) *int64 {
-	if value < 0 {
-		return nil
-	}
-	return &value
+func (r *RegistryRepository) GetCredential(ctx context.Context, id uuid.UUID) (registry.Credential, error) {
+	return credentialByID(ctx, r.queries, id)
 }
 
-func (r *RegistryRepository) GetCredential(ctx context.Context, id uuid.UUID) (registry.Credential, error) {
-	item, err := r.queries.GetCredentialSecret(ctx, id)
+func credentialByID(ctx context.Context, queries *db.Queries, id uuid.UUID) (registry.Credential, error) {
+	row, err := queries.GetCredential(ctx, id)
 	if err != nil {
 		return registry.Credential{}, translateRegistryError(err)
 	}
-	bindings, err := r.queries.ListCredentialModelBindingsForCredential(ctx, id)
+	bindings, err := credentialBindings(ctx, queries, id)
 	if err != nil {
 		return registry.Credential{}, err
 	}
-	return credentialWithBindings(item, bindingFacts(bindings)), nil
+	return registry.Credential{
+		ID: row.ID, ResourcePoolID: row.ResourcePoolID, ResourcePoolName: row.ResourcePoolName, ResourcePoolSlug: row.ResourcePoolSlug,
+		ProviderID: row.ProviderID, ProviderName: row.ProviderName, ProviderKind: providers.Kind(row.ProviderKind), ProviderBaseURL: row.ProviderBaseUrl,
+		Name: row.Name, Status: registry.CredentialStatus(row.Status), RPMLimit: row.RpmLimit, TPMLimit: row.TpmLimit, ConcurrencyLimit: row.ConcurrencyLimit,
+		CooldownUntil: timePointer(row.CooldownUntil), ConsecutiveFailures: row.ConsecutiveFailures, LastSuccessAt: timePointer(row.LastSuccessAt), LastErrorKind: row.LastErrorKind,
+		LastProbeAt: timePointer(row.LastProbeAt), LastProbeLatencyMs: row.LastProbeLatencyMs, LastProbeKind: row.LastProbeKind, LastProbeStatus: row.LastProbeStatus, LastProbeErrorKind: row.LastProbeErrorKind,
+		RetiredAt: timePointer(row.RetiredAt), CreatedAt: row.CreatedAt.Time.UTC(), UpdatedAt: row.UpdatedAt.Time.UTC(), ModelBindings: bindings,
+	}, nil
 }
 
-func (r *RegistryRepository) GetEncryptedCredential(ctx context.Context, id uuid.UUID) ([]byte, error) {
-	credential, err := r.queries.GetCredentialSecret(ctx, id)
+func (r *RegistryRepository) ListCredentials(ctx context.Context, includeRetired bool) ([]registry.Credential, error) {
+	rows, err := r.queries.ListCredentials(ctx, includeRetired)
 	if err != nil {
 		return nil, translateRegistryError(err)
 	}
-	return append([]byte(nil), credential.EncryptedSecret...), nil
+	items := make([]registry.Credential, 0, len(rows))
+	for _, row := range rows {
+		bindings, err := credentialBindings(ctx, r.queries, row.ID)
+		if err != nil {
+			return nil, err
+		}
+		item := registry.Credential{
+			ID: row.ID, ResourcePoolID: row.ResourcePoolID, ResourcePoolName: row.ResourcePoolName, ResourcePoolSlug: row.ResourcePoolSlug,
+			ProviderID: row.ProviderID, ProviderName: row.ProviderName, ProviderKind: providers.Kind(row.ProviderKind), ProviderBaseURL: row.ProviderBaseUrl,
+			Name: row.Name, Status: registry.CredentialStatus(row.Status), RPMLimit: row.RpmLimit, TPMLimit: row.TpmLimit, ConcurrencyLimit: row.ConcurrencyLimit,
+			CooldownUntil: timePointer(row.CooldownUntil), ConsecutiveFailures: row.ConsecutiveFailures, LastSuccessAt: timePointer(row.LastSuccessAt), LastErrorKind: row.LastErrorKind,
+			LastProbeAt: timePointer(row.LastProbeAt), LastProbeLatencyMs: row.LastProbeLatencyMs, LastProbeKind: row.LastProbeKind, LastProbeStatus: row.LastProbeStatus, LastProbeErrorKind: row.LastProbeErrorKind,
+			RetiredAt: timePointer(row.RetiredAt), CreatedAt: row.CreatedAt.Time.UTC(), UpdatedAt: row.UpdatedAt.Time.UTC(), ModelBindings: bindings,
+		}
+		if row.LastCheckedUnixSeconds >= 0 {
+			checked := time.Unix(row.LastCheckedUnixSeconds, 0).UTC()
+			item.LastCheckedAt = &checked
+		}
+		if row.TerminalCount > 0 {
+			rate := float64(row.CompletedCount) / float64(row.TerminalCount)
+			item.RecentSuccessRate = &rate
+		}
+		if row.FirstByteP95Ms >= 0 {
+			item.FirstByteP95Ms = &row.FirstByteP95Ms
+		}
+		if row.TotalLatencyP95Ms >= 0 {
+			item.TotalLatencyP95Ms = &row.TotalLatencyP95Ms
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+func credentialBindings(ctx context.Context, queries *db.Queries, id uuid.UUID) ([]registry.CredentialModelBinding, error) {
+	rows, err := queries.ListCredentialModelBindings(ctx, id)
+	if err != nil {
+		return nil, translateRegistryError(err)
+	}
+	items := make([]registry.CredentialModelBinding, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, registry.CredentialModelBinding{ModelID: row.ModelID, ModelName: row.ModelName, Priority: row.Priority, Weight: row.Weight})
+	}
+	return items, nil
+}
+
+func (r *RegistryRepository) GetEncryptedCredential(ctx context.Context, id uuid.UUID) ([]byte, error) {
+	value, err := r.queries.GetEncryptedCredential(ctx, id)
+	if err != nil {
+		return nil, translateRegistryError(err)
+	}
+	return value, nil
 }
 
 func (r *RegistryRepository) RecordCredentialProbe(ctx context.Context, id uuid.UUID, checkedAt time.Time, execution registry.CredentialProbeExecution, actorID uuid.UUID, requestID string) (registry.Credential, error) {
@@ -266,116 +250,27 @@ func (r *RegistryRepository) RecordCredentialProbe(ctx context.Context, id uuid.
 	}
 	defer tx.Rollback(ctx)
 	queries := r.queries.WithTx(tx)
-	latencyMillis := execution.LatencyMillis
-	probeKind := execution.Kind
-	probeStatus := execution.Status
-	updated, err := queries.RecordCredentialProbe(ctx, db.RecordCredentialProbeParams{
-		ID: id, LastProbeAt: optionalTimestamp(&checkedAt), LastProbeLatencyMs: &latencyMillis,
-		LastProbeKind: &probeKind, LastProbeStatus: &probeStatus, LastProbeErrorKind: execution.ErrorKind,
-	})
-	if err != nil {
+	latency := execution.LatencyMillis
+	if _, err := queries.RecordCredentialProbe(ctx, db.RecordCredentialProbeParams{
+		LastProbeAt: timestamp(checkedAt), LastProbeLatencyMs: &latency, LastProbeKind: &execution.Kind,
+		LastProbeStatus: &execution.Status, LastProbeErrorKind: execution.ErrorKind, ID: id,
+	}); err != nil {
 		return registry.Credential{}, translateRegistryError(err)
 	}
-	params := auditParams(&actorID, "credential.probed", "credential", id.String(), map[string]any{
-		"kind": execution.Kind, "status": execution.Status, "latency_ms": execution.LatencyMillis,
-		"error_kind": execution.ErrorKind, "may_use_tokens": execution.MayUseTokens,
-		"model_id": execution.ModelID, "model_name": execution.ModelName,
-		"input_tokens": execution.InputTokens, "output_tokens": execution.OutputTokens,
+	audit := auditParams(&actorID, "credential.probed", "provider_credential", id.String(), map[string]any{
+		"status": execution.Status, "error_kind": execution.ErrorKind, "retryable": execution.Retryable,
+		"latency_ms": execution.LatencyMillis, "model_id": execution.ModelID,
 	})
-	params.RequestID = &requestID
-	if _, err := queries.CreateAuditEvent(ctx, params); err != nil {
+	audit.RequestID = &requestID
+	if _, err := queries.CreateAuditEvent(ctx, audit); err != nil {
 		return registry.Credential{}, err
 	}
-	bindings, err := queries.ListCredentialModelBindingsForCredential(ctx, id)
+	credential, err := credentialByID(ctx, queries, id)
 	if err != nil {
 		return registry.Credential{}, err
 	}
-	result := credentialWithBindings(updated, bindingFacts(bindings))
 	if err := tx.Commit(ctx); err != nil {
-		return registry.Credential{}, fmt.Errorf("%w: persist credential probe result", registry.ErrOutcomeUnknown)
+		return registry.Credential{}, translateRegistryError(err)
 	}
-	return result, nil
-}
-
-func credentialMutationLookup(actorID uuid.UUID, mutation registry.CredentialMutation) db.GetCredentialMutationParams {
-	return db.GetCredentialMutationParams{ActorUserID: actorID, Action: string(mutation.Action), IdempotencyKey: mutation.IdempotencyKey}
-}
-
-func credentialMutationResult(operation db.CredentialMutation, mutation registry.CredentialMutation) (registry.Credential, error) {
-	if operation.Action != string(mutation.Action) || !bytes.Equal(operation.RequestFingerprint, mutation.RequestFingerprint) {
-		return registry.Credential{}, registry.ErrIdempotencyConflict
-	}
-	var result registry.Credential
-	if err := json.Unmarshal(operation.Result, &result); err != nil || result.ID == uuid.Nil || operation.CredentialID == nil || *operation.CredentialID != result.ID {
-		return registry.Credential{}, fmt.Errorf("registry store: invalid credential mutation result")
-	}
-	return result, nil
-}
-
-func credentialFromDB(credential db.ProviderCredential) registry.Credential {
-	return registry.Credential{ID: credential.ID, ProviderID: credential.ProviderID, Name: credential.Name, ResourceDomain: registry.ResourceDomain(credential.ResourceDomain), Status: registry.CredentialStatus(credential.Status), RPMLimit: credential.RpmLimit, TPMLimit: credential.TpmLimit, ConcurrencyLimit: credential.ConcurrencyLimit, CooldownUntil: timePointer(credential.CooldownUntil), ConsecutiveFailures: credential.ConsecutiveFailures, LastSuccessAt: timePointer(credential.LastSuccessAt), LastErrorKind: credential.LastErrorKind, LastProbeAt: timePointer(credential.LastProbeAt), LastProbeLatencyMs: credential.LastProbeLatencyMs, LastProbeKind: credential.LastProbeKind, LastProbeStatus: credential.LastProbeStatus, LastProbeErrorKind: credential.LastProbeErrorKind, CreatedAt: credential.CreatedAt.Time, UpdatedAt: credential.UpdatedAt.Time}
-}
-
-func validateCredentialBindings(ctx context.Context, queries *db.Queries, providerID uuid.UUID, domain registry.ResourceDomain, bindings []registry.CredentialModelBinding) ([]registry.CredentialModelBinding, error) {
-	validated := make([]registry.CredentialModelBinding, 0, len(bindings))
-	for _, binding := range bindings {
-		model, err := queries.GetModelForCredentialBinding(ctx, binding.ModelID)
-		if err != nil {
-			return nil, translateRegistryError(err)
-		}
-		if model.ProviderID != providerID || registry.ResourceDomain(model.ResourceDomain) != domain {
-			return nil, registry.ErrConflict
-		}
-		binding.ModelName = model.PublicName
-		validated = append(validated, binding)
-	}
-	return validated, nil
-}
-
-func replaceCredentialBindings(ctx context.Context, queries *db.Queries, credentialID uuid.UUID, bindings []registry.CredentialModelBinding) error {
-	if err := queries.DeleteCredentialModelBindings(ctx, credentialID); err != nil {
-		return translateRegistryError(err)
-	}
-	for _, binding := range bindings {
-		if err := queries.BindCredentialModel(ctx, db.BindCredentialModelParams{CredentialID: credentialID, ModelID: binding.ModelID, Priority: binding.Priority, Weight: binding.Weight}); err != nil {
-			return translateRegistryError(err)
-		}
-	}
-	return nil
-}
-
-func bindingFacts(bindings []db.ListCredentialModelBindingsForCredentialRow) []registry.CredentialModelBinding {
-	values := make([]registry.CredentialModelBinding, 0, len(bindings))
-	for _, binding := range bindings {
-		values = append(values, registry.CredentialModelBinding{
-			ModelID: binding.ModelID, ModelName: binding.PublicName, Priority: binding.Priority, Weight: binding.Weight,
-		})
-	}
-	return values
-}
-
-func credentialWithBindings(credential db.ProviderCredential, bindings []registry.CredentialModelBinding) registry.Credential {
-	result := credentialFromDB(credential)
-	result.ModelBindings = append([]registry.CredentialModelBinding(nil), bindings...)
-	return result
-}
-
-func credentialAuditDetail(before, after *db.ProviderCredential, beforeBindings, afterBindings []registry.CredentialModelBinding) map[string]any {
-	detail := map[string]any{"before": nil, "after": nil}
-	if before != nil {
-		detail["before"] = credentialAuditSummary(*before, beforeBindings)
-	}
-	if after != nil {
-		detail["after"] = credentialAuditSummary(*after, afterBindings)
-	}
-	return detail
-}
-
-func credentialAuditSummary(credential db.ProviderCredential, bindings []registry.CredentialModelBinding) map[string]any {
-	return map[string]any{
-		"name": credential.Name, "provider_id": credential.ProviderID, "resource_domain": credential.ResourceDomain,
-		"status": credential.Status, "rpm_limit": credential.RpmLimit, "tpm_limit": credential.TpmLimit,
-		"concurrency_limit": credential.ConcurrencyLimit,
-		"model_bindings":    bindings,
-	}
+	return credential, nil
 }

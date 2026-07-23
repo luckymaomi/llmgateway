@@ -8,8 +8,8 @@ func evaluateEligibility(requirements Requirements, candidate Candidate, exclude
 	if candidate.ModelID != requirements.ModelID {
 		reasons = append(reasons, Exclusion{Reason: ExcludeModelMismatch})
 	}
-	if candidate.ResourceDomain != requirements.ResourceDomain {
-		reasons = append(reasons, Exclusion{Reason: ExcludeResourceDomainMismatch})
+	if candidate.ResourcePoolID != requirements.ResourcePoolID {
+		reasons = append(reasons, Exclusion{Reason: ExcludeResourcePoolMismatch})
 	}
 	if !candidate.CredentialAuthorized {
 		reasons = append(reasons, Exclusion{Reason: ExcludeCredentialUnauthorized})
@@ -36,8 +36,8 @@ func evaluateEligibility(requirements Requirements, candidate Candidate, exclude
 }
 
 func validateRequirements(requirements Requirements) error {
-	if requirements.ModelID == "" || !validResourceDomain(requirements.ResourceDomain) || requirements.At.IsZero() {
-		return newError(ErrorInvalidInput, "model, resource domain, and decision time are required", "")
+	if requirements.ModelID == "" || requirements.ResourcePoolID == "" || requirements.At.IsZero() {
+		return newError(ErrorInvalidInput, "model, resource pool, and decision time are required", "")
 	}
 	seen := make(map[Capability]struct{}, len(requirements.Capabilities))
 	for _, capability := range requirements.Capabilities {
@@ -53,8 +53,8 @@ func validateRequirements(requirements Requirements) error {
 }
 
 func validateCandidate(candidate Candidate) error {
-	if candidate.ID == "" || candidate.ModelID == "" || !validResourceDomain(candidate.ResourceDomain) {
-		return newError(ErrorInvalidCandidate, "candidate ID, model, and resource domain are required", candidate.ID)
+	if candidate.ID == "" || candidate.ModelID == "" || candidate.ResourcePoolID == "" {
+		return newError(ErrorInvalidCandidate, "candidate ID, model, and resource pool are required", candidate.ID)
 	}
 	if candidate.AdminPriority < 0 || candidate.AdminPriority > 1000 {
 		return newError(ErrorInvalidCandidate, "admin priority must be between 0 and 1000", candidate.ID)
@@ -73,8 +73,4 @@ func validateCandidate(candidate Candidate) error {
 		seen[capability] = struct{}{}
 	}
 	return nil
-}
-
-func validResourceDomain(domain ResourceDomain) bool {
-	return domain == ResourceFree || domain == ResourceProfessional
 }

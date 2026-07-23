@@ -49,22 +49,24 @@ type priceVersionView struct {
 }
 
 type costSummaryView struct {
-	UserID          string `json:"userId"`
-	UserName        string `json:"userName"`
-	EntitlementID   string `json:"entitlementId"`
-	Plan            string `json:"plan"`
-	ModelID         string `json:"modelId"`
-	ModelAlias      string `json:"modelAlias"`
-	ProviderID      string `json:"providerId"`
-	ProviderName    string `json:"providerName"`
-	ResourceDomain  string `json:"resourceDomain"`
-	Currency        string `json:"currency"`
-	RequestCount    int64  `json:"requestCount"`
-	InputTokens     int64  `json:"inputTokens"`
-	OutputTokens    int64  `json:"outputTokens"`
-	InputCostNanos  string `json:"inputCostNanos"`
-	OutputCostNanos string `json:"outputCostNanos"`
-	TotalCostNanos  string `json:"totalCostNanos"`
+	UserID           string `json:"userId"`
+	UserName         string `json:"userName"`
+	SubscriptionID   string `json:"subscriptionId"`
+	ServicePlanName  string `json:"servicePlanName"`
+	PlanKind         string `json:"planKind"`
+	ModelID          string `json:"modelId"`
+	ModelAlias       string `json:"modelAlias"`
+	ProviderID       string `json:"providerId"`
+	ProviderName     string `json:"providerName"`
+	ResourcePoolID   string `json:"resourcePoolId"`
+	ResourcePoolName string `json:"resourcePoolName"`
+	Currency         string `json:"currency"`
+	RequestCount     int64  `json:"requestCount"`
+	InputTokens      int64  `json:"inputTokens"`
+	OutputTokens     int64  `json:"outputTokens"`
+	InputCostNanos   string `json:"inputCostNanos"`
+	OutputCostNanos  string `json:"outputCostNanos"`
+	TotalCostNanos   string `json:"totalCostNanos"`
 }
 
 func (a *CostingAPI) createPriceVersion(w http.ResponseWriter, r *http.Request) {
@@ -146,7 +148,7 @@ func (a *CostingAPI) listSummaries(w http.ResponseWriter, r *http.Request) {
 	query := parseListQuery(r)
 	filtered := make([]costSummaryView, 0, len(items))
 	for _, item := range items {
-		if query.ResourceDomain != "" && item.ResourceDomain != query.ResourceDomain || !containsFold(item.UserName+" "+item.ModelAlias+" "+item.ProviderName+" "+item.Currency, query.Search) {
+		if query.ResourcePoolID != "" && item.ResourcePoolID != query.ResourcePoolID || !containsFold(item.UserName+" "+item.ServicePlanName+" "+item.ModelAlias+" "+item.ProviderName+" "+item.ResourcePoolName+" "+item.Currency, query.Search) {
 			continue
 		}
 		filtered = append(filtered, item)
@@ -161,9 +163,9 @@ func presentPriceVersion(value costing.PriceVersion) priceVersionView {
 }
 
 func presentCostSummary(value costing.Summary) costSummaryView {
-	return costSummaryView{UserID: value.UserID.String(), UserName: value.UserName, EntitlementID: value.EntitlementID.String(), Plan: value.Plan,
+	return costSummaryView{UserID: value.UserID.String(), UserName: value.UserName, SubscriptionID: value.SubscriptionID.String(), ServicePlanName: value.ServicePlanName, PlanKind: value.PlanKind,
 		ModelID: value.ModelID.String(), ModelAlias: value.ModelAlias, ProviderID: value.ProviderID.String(), ProviderName: value.ProviderName,
-		ResourceDomain: value.ResourceDomain, Currency: value.Currency, RequestCount: value.RequestCount,
+		ResourcePoolID: value.ResourcePoolID.String(), ResourcePoolName: value.ResourcePoolName, Currency: value.Currency, RequestCount: value.RequestCount,
 		InputTokens: value.InputTokens, OutputTokens: value.OutputTokens, InputCostNanos: strconv.FormatInt(value.InputCostNanos, 10),
 		OutputCostNanos: strconv.FormatInt(value.OutputCostNanos, 10), TotalCostNanos: strconv.FormatInt(value.TotalCostNanos, 10)}
 }

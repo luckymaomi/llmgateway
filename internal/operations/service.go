@@ -36,17 +36,7 @@ func (s *Service) Overview(ctx context.Context, actor identity.Principal) (Overv
 		if err != nil {
 			return Overview{}, err
 		}
-		steps := []Step{
-			{ID: "provider", Complete: resources.ProviderCount > 0},
-			{ID: "credential", Complete: resources.ActiveCredentialCount > 0},
-			{ID: "price", Complete: resources.HasModelPrice},
-			{ID: "publication", Complete: resources.HasActiveConfiguration},
-			{ID: "member", Complete: resources.ActiveMemberCount > 0},
-			{ID: "entitlement", Complete: resources.ActiveEntitlementCount > 0},
-			{ID: "gateway_key", Complete: resources.ActiveGatewayKeyCount > 0},
-			{ID: "request", Complete: requests.CompletedCount > 0},
-		}
-		return Overview{Administrator: &AdministratorOverview{Resources: resources, Requests: requests, Trend: trend, Errors: errorsFound, Steps: steps}}, nil
+		return Overview{Administrator: &AdministratorOverview{Resources: resources, Requests: requests, Trend: trend, Errors: errorsFound}}, nil
 	}
 	if actor.Role != identity.RoleMember {
 		return Overview{}, ErrForbidden
@@ -59,12 +49,7 @@ func (s *Service) Overview(ctx context.Context, actor identity.Principal) (Overv
 	if err != nil {
 		return Overview{}, err
 	}
-	steps := []Step{
-		{ID: "entitlement", Complete: access.ActiveEntitlementCount > 0},
-		{ID: "gateway_key", Complete: access.ActiveGatewayKeyCount > 0},
-		{ID: "request", Complete: requests.CompletedCount > 0},
-	}
-	return Overview{Member: &MemberOverview{Access: access, Requests: requests, Trend: trend, Errors: errorsFound, Steps: steps}}, nil
+	return Overview{Member: &MemberOverview{Access: access, Requests: requests, Trend: trend, Errors: errorsFound}}, nil
 }
 
 func (s *Service) requestFacts(ctx context.Context, userID *uuid.UUID, since, until time.Time) (RequestSummary, []TrendPoint, []ErrorCount, error) {

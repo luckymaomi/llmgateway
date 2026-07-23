@@ -1,66 +1,3 @@
--- name: CreateEntitlement :one
-INSERT INTO entitlements (user_id, plan, resource_domain, model_id, granted_tokens, starts_at, expires_at, concurrency_limit, rpm_limit, tpm_limit)
-VALUES (sqlc.arg(user_id), sqlc.arg(plan), sqlc.arg(resource_domain), sqlc.narg(model_id), sqlc.arg(granted_tokens), sqlc.arg(starts_at), sqlc.arg(expires_at), sqlc.arg(concurrency_limit), sqlc.narg(rpm_limit), sqlc.narg(tpm_limit))
-RETURNING *;
-
--- name: GetEntitlementForUpdate :one
-SELECT * FROM entitlements WHERE id = sqlc.arg(id) FOR UPDATE;
-
--- name: GetEntitlementByGrantIdempotency :one
-SELECT e.*, le.note AS grant_note
-FROM ledger_events le
-JOIN entitlements e ON e.id = le.entitlement_id
-WHERE le.source_event_id = sqlc.arg(source_event_id)
-  AND le.kind = 'grant'
-  AND le.created_by = sqlc.arg(created_by);
-
--- name: ListActiveEntitlements :many
-SELECT * FROM entitlements WHERE user_id = sqlc.arg(user_id) AND starts_at <= now() AND expires_at > now() ORDER BY resource_domain, expires_at, id;
-
--- name: CountEntitlements :one
-SELECT count(*)
-FROM entitlements e
-JOIN users owner ON owner.id = e.user_id
-LEFT JOIN models model ON model.id = e.model_id
-WHERE (sqlc.narg(user_id)::uuid IS NULL OR e.user_id = sqlc.narg(user_id))
-  AND (sqlc.arg(search)::text = '' OR concat_ws(' ', owner.display_name, owner.email, model.public_name, e.plan::text, e.resource_domain::text) ILIKE '%' || sqlc.arg(search)::text || '%')
-  AND (sqlc.arg(status)::text = ''
-    OR sqlc.arg(status)::text = 'scheduled' AND e.starts_at > now()
-    OR sqlc.arg(status)::text = 'active' AND e.starts_at <= now() AND e.expires_at > now()
-    OR sqlc.arg(status)::text = 'expired' AND e.expires_at <= now())
-  AND (sqlc.arg(resource_domain)::text = '' OR e.resource_domain::text = sqlc.arg(resource_domain)::text);
-
--- name: ListEntitlementsWithBalance :many
-SELECT e.*, owner.display_name AS owner_name, model.public_name AS model_alias,
-       coalesce(sum(le.token_delta), 0)::bigint AS balance_tokens
-FROM entitlements e
-JOIN users owner ON owner.id = e.user_id
-LEFT JOIN models model ON model.id = e.model_id
-LEFT JOIN ledger_events le ON le.entitlement_id = e.id
-WHERE (sqlc.narg(user_id)::uuid IS NULL OR e.user_id = sqlc.narg(user_id))
-  AND (sqlc.arg(search)::text = '' OR concat_ws(' ', owner.display_name, owner.email, model.public_name, e.plan::text, e.resource_domain::text) ILIKE '%' || sqlc.arg(search)::text || '%')
-  AND (sqlc.arg(status)::text = ''
-    OR sqlc.arg(status)::text = 'scheduled' AND e.starts_at > now()
-    OR sqlc.arg(status)::text = 'active' AND e.starts_at <= now() AND e.expires_at > now()
-    OR sqlc.arg(status)::text = 'expired' AND e.expires_at <= now())
-  AND (sqlc.arg(resource_domain)::text = '' OR e.resource_domain::text = sqlc.arg(resource_domain)::text)
-GROUP BY e.id, owner.display_name, model.public_name
-ORDER BY e.created_at DESC, e.id
-LIMIT sqlc.arg(page_size) OFFSET sqlc.arg(page_offset);
-
--- name: GetAuthorizedGatewayKeyModelDomain :one
-SELECT model.resource_domain
-FROM config_revision_models model
-JOIN config_revisions revision ON revision.id = model.revision_id
-JOIN gateway_key_models key_model
-  ON key_model.model_id = model.model_id AND key_model.gateway_key_id = sqlc.arg(gateway_key_id)
-WHERE model.revision_id = sqlc.arg(revision_id)
-  AND model.model_id = sqlc.arg(model_id)
-  AND revision.published_at IS NOT NULL;
-
--- name: GetModelDomain :one
-SELECT resource_domain FROM models WHERE id = sqlc.arg(model_id);
-
 -- name: GetActiveGatewayKeyForRequest :one
 SELECT k.user_id
 FROM gateway_keys k
@@ -72,29 +9,20 @@ WHERE k.id = sqlc.arg(gateway_key_id)
   AND u.status = 'active'
 FOR SHARE OF k, u;
 
--- name: ListApplicableEntitlementsForUpdate :many
-SELECT * FROM entitlements
-WHERE user_id = sqlc.arg(user_id)
-  AND resource_domain = sqlc.arg(resource_domain)
-  AND starts_at <= now() AND expires_at > now()
-  AND (model_id IS NULL OR model_id = sqlc.arg(model_id))
-ORDER BY (model_id IS NOT NULL) DESC, expires_at, id
-FOR UPDATE;
-
 -- name: CreateLedgerEvent :one
-INSERT INTO ledger_events (user_id, entitlement_id, request_id, reservation_id, kind, token_delta, reserved_tokens, input_tokens, output_tokens, usage_source, source_event_id, note, created_by)
-VALUES (sqlc.arg(user_id), sqlc.arg(entitlement_id), sqlc.narg(request_id), sqlc.narg(reservation_id), sqlc.arg(kind), sqlc.arg(token_delta), sqlc.arg(reserved_tokens), sqlc.arg(input_tokens), sqlc.arg(output_tokens), sqlc.arg(usage_source), sqlc.narg(source_event_id), sqlc.narg(note), sqlc.narg(created_by))
+INSERT INTO ledger_events (user_id, subscription_id, request_id, reservation_id, kind, token_delta, reserved_tokens, input_tokens, output_tokens, usage_source, source_event_id, note, created_by)
+VALUES (sqlc.arg(user_id), sqlc.arg(subscription_id), sqlc.narg(request_id), sqlc.narg(reservation_id), sqlc.arg(kind), sqlc.arg(token_delta), sqlc.arg(reserved_tokens), sqlc.arg(input_tokens), sqlc.arg(output_tokens), sqlc.arg(usage_source), sqlc.narg(source_event_id), sqlc.narg(note), sqlc.narg(created_by))
 RETURNING *;
 
--- name: EntitlementBalance :one
-SELECT coalesce(sum(token_delta), 0)::bigint FROM ledger_events WHERE entitlement_id = sqlc.arg(entitlement_id);
+-- name: SubscriptionBalance :one
+SELECT coalesce(sum(token_delta), 0)::bigint FROM ledger_events WHERE subscription_id = sqlc.arg(subscription_id);
 
--- name: ListLedgerEventsByEntitlement :many
-SELECT * FROM ledger_events WHERE entitlement_id = sqlc.arg(entitlement_id) ORDER BY created_at, id;
+-- name: ListLedgerEventsBySubscription :many
+SELECT * FROM ledger_events WHERE subscription_id = sqlc.arg(subscription_id) ORDER BY created_at, id;
 
 -- name: CreateLedgerReservation :one
-INSERT INTO ledger_reservations (id, entitlement_id, request_id, state, reserved_tokens, reserve_event_id)
-VALUES (sqlc.arg(id), sqlc.arg(entitlement_id), sqlc.arg(request_id), 'reserved', sqlc.arg(reserved_tokens), sqlc.arg(reserve_event_id))
+INSERT INTO ledger_reservations (id, subscription_id, request_id, state, reserved_tokens, reserve_event_id)
+VALUES (sqlc.arg(id), sqlc.arg(subscription_id), sqlc.arg(request_id), 'reserved', sqlc.arg(reserved_tokens), sqlc.arg(reserve_event_id))
 RETURNING *;
 
 -- name: GetLedgerReservationForUpdate :one
@@ -116,30 +44,31 @@ RETURNING *;
 SELECT count(*)
 FROM ledger_events event
 JOIN users owner ON owner.id = event.user_id
-JOIN entitlements entitlement ON entitlement.id = event.entitlement_id
+JOIN subscriptions subscription ON subscription.id = event.subscription_id
+JOIN service_plan_versions version ON version.id = subscription.service_plan_version_id
+JOIN service_plans plan ON plan.id = version.service_plan_id
 LEFT JOIN users actor ON actor.id = event.created_by
 WHERE (sqlc.narg(user_id)::uuid IS NULL OR event.user_id = sqlc.narg(user_id))
-  AND (sqlc.narg(entitlement_id)::uuid IS NULL OR event.entitlement_id = sqlc.narg(entitlement_id))
-  AND (sqlc.arg(search)::text = '' OR concat_ws(' ', owner.display_name, owner.email, actor.display_name, actor.email, event.note, event.request_id::text) ILIKE '%' || sqlc.arg(search)::text || '%')
-  AND (sqlc.arg(resource_domain)::text = '' OR entitlement.resource_domain::text = sqlc.arg(resource_domain)::text);
+  AND (sqlc.narg(subscription_id)::uuid IS NULL OR event.subscription_id = sqlc.narg(subscription_id))
+  AND (sqlc.arg(search)::text = '' OR concat_ws(' ', owner.display_name, owner.email, plan.name, actor.display_name, actor.email, event.note, event.request_id::text) ILIKE '%' || sqlc.arg(search)::text || '%');
 
 -- name: ListLedgerEvents :many
-SELECT event.*, entitlement.resource_domain, owner.display_name AS owner_name,
-       actor.display_name AS actor_name
+SELECT event.*, plan.name AS service_plan_name, owner.display_name AS owner_name, actor.display_name AS actor_name
 FROM ledger_events event
 JOIN users owner ON owner.id = event.user_id
-JOIN entitlements entitlement ON entitlement.id = event.entitlement_id
+JOIN subscriptions subscription ON subscription.id = event.subscription_id
+JOIN service_plan_versions version ON version.id = subscription.service_plan_version_id
+JOIN service_plans plan ON plan.id = version.service_plan_id
 LEFT JOIN users actor ON actor.id = event.created_by
 WHERE (sqlc.narg(user_id)::uuid IS NULL OR event.user_id = sqlc.narg(user_id))
-  AND (sqlc.narg(entitlement_id)::uuid IS NULL OR event.entitlement_id = sqlc.narg(entitlement_id))
-  AND (sqlc.arg(search)::text = '' OR concat_ws(' ', owner.display_name, owner.email, actor.display_name, actor.email, event.note, event.request_id::text) ILIKE '%' || sqlc.arg(search)::text || '%')
-  AND (sqlc.arg(resource_domain)::text = '' OR entitlement.resource_domain::text = sqlc.arg(resource_domain)::text)
+  AND (sqlc.narg(subscription_id)::uuid IS NULL OR event.subscription_id = sqlc.narg(subscription_id))
+  AND (sqlc.arg(search)::text = '' OR concat_ws(' ', owner.display_name, owner.email, plan.name, actor.display_name, actor.email, event.note, event.request_id::text) ILIKE '%' || sqlc.arg(search)::text || '%')
 ORDER BY event.created_at DESC, event.id LIMIT sqlc.arg(page_size) OFFSET sqlc.arg(page_offset);
 
 -- name: CreateRequest :one
-INSERT INTO requests (id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, entitlement_id, config_revision_id, resource_domain,
+INSERT INTO requests (id, idempotency_key, request_digest, user_id, gateway_key_id, model_id, subscription_id, resource_pool_id,
                       price_version_id, cost_currency, input_rate_nanos_per_million, output_rate_nanos_per_million, status, stream)
-VALUES (sqlc.arg(id), sqlc.narg(idempotency_key), sqlc.arg(request_digest), sqlc.arg(user_id), sqlc.arg(gateway_key_id), sqlc.arg(model_id), sqlc.arg(entitlement_id), sqlc.narg(config_revision_id), sqlc.arg(resource_domain),
+VALUES (sqlc.arg(id), sqlc.narg(idempotency_key), sqlc.arg(request_digest), sqlc.arg(user_id), sqlc.arg(gateway_key_id), sqlc.arg(model_id), sqlc.arg(subscription_id), sqlc.arg(resource_pool_id),
         sqlc.arg(price_version_id), sqlc.arg(cost_currency), sqlc.arg(input_rate_nanos_per_million), sqlc.arg(output_rate_nanos_per_million), sqlc.arg(status), sqlc.arg(stream))
 RETURNING *;
 
@@ -322,19 +251,21 @@ FROM requests AS request
 JOIN users AS owner ON owner.id = request.user_id
 JOIN gateway_keys AS key ON key.id = request.gateway_key_id
 JOIN models AS model ON model.id = request.model_id
+JOIN resource_pools AS pool ON pool.id = request.resource_pool_id
 WHERE (sqlc.narg(user_id)::uuid IS NULL OR request.user_id = sqlc.narg(user_id))
   AND (sqlc.narg(gateway_key_id)::uuid IS NULL OR request.gateway_key_id = sqlc.narg(gateway_key_id))
   AND (sqlc.narg(model_id)::uuid IS NULL OR request.model_id = sqlc.narg(model_id))
   AND (sqlc.arg(status)::text = '' OR request.status::text = sqlc.arg(status)::text)
   AND request.accepted_at >= sqlc.arg(from_time)
   AND request.accepted_at < sqlc.arg(to_time)
-  AND (sqlc.arg(search)::text = '' OR concat_ws(' ', owner.display_name, owner.email, key.prefix, model.public_name, request.id::text) ILIKE '%' || sqlc.arg(search)::text || '%')
-  AND (sqlc.arg(resource_domain)::text = '' OR request.resource_domain::text = sqlc.arg(resource_domain)::text);
+  AND (sqlc.arg(search)::text = '' OR concat_ws(' ', owner.display_name, owner.email, key.prefix, model.public_name, pool.name, request.id::text) ILIKE '%' || sqlc.arg(search)::text || '%')
+  AND (sqlc.narg(resource_pool_id)::uuid IS NULL OR request.resource_pool_id = sqlc.narg(resource_pool_id));
 
 -- name: ListRequestLogs :many
 SELECT request.id, request.user_id, owner.display_name AS user_name,
        request.gateway_key_id, key.prefix AS key_prefix,
-       request.model_id, model.public_name AS model_alias, request.resource_domain,
+       request.model_id, model.public_name AS model_alias,
+       request.resource_pool_id, pool.name AS resource_pool_name, pool.slug AS resource_pool_slug,
        request.status, request.stream, request.input_tokens, request.output_tokens,
        request.usage_source, request.error_kind, request.accepted_at, request.completed_at,
        request.updated_at,
@@ -344,21 +275,23 @@ FROM requests AS request
 JOIN users AS owner ON owner.id = request.user_id
 JOIN gateway_keys AS key ON key.id = request.gateway_key_id
 JOIN models AS model ON model.id = request.model_id
+JOIN resource_pools AS pool ON pool.id = request.resource_pool_id
 WHERE (sqlc.narg(user_id)::uuid IS NULL OR request.user_id = sqlc.narg(user_id))
   AND (sqlc.narg(gateway_key_id)::uuid IS NULL OR request.gateway_key_id = sqlc.narg(gateway_key_id))
   AND (sqlc.narg(model_id)::uuid IS NULL OR request.model_id = sqlc.narg(model_id))
   AND (sqlc.arg(status)::text = '' OR request.status::text = sqlc.arg(status)::text)
   AND request.accepted_at >= sqlc.arg(from_time)
   AND request.accepted_at < sqlc.arg(to_time)
-  AND (sqlc.arg(search)::text = '' OR concat_ws(' ', owner.display_name, owner.email, key.prefix, model.public_name, request.id::text) ILIKE '%' || sqlc.arg(search)::text || '%')
-  AND (sqlc.arg(resource_domain)::text = '' OR request.resource_domain::text = sqlc.arg(resource_domain)::text)
+  AND (sqlc.arg(search)::text = '' OR concat_ws(' ', owner.display_name, owner.email, key.prefix, model.public_name, pool.name, request.id::text) ILIKE '%' || sqlc.arg(search)::text || '%')
+  AND (sqlc.narg(resource_pool_id)::uuid IS NULL OR request.resource_pool_id = sqlc.narg(resource_pool_id))
 ORDER BY request.accepted_at DESC, request.id DESC
 LIMIT sqlc.arg(page_size) OFFSET sqlc.arg(page_offset);
 
 -- name: GetRequestLog :one
 SELECT request.id, request.user_id, owner.display_name AS user_name,
        request.gateway_key_id, key.prefix AS key_prefix,
-       request.model_id, model.public_name AS model_alias, request.resource_domain,
+       request.model_id, model.public_name AS model_alias,
+       request.resource_pool_id, pool.name AS resource_pool_name, pool.slug AS resource_pool_slug,
        request.status, request.stream, request.input_tokens, request.output_tokens,
        request.usage_source, request.error_kind, request.accepted_at, request.completed_at,
        request.updated_at,
@@ -368,6 +301,7 @@ FROM requests AS request
 JOIN users AS owner ON owner.id = request.user_id
 JOIN gateway_keys AS key ON key.id = request.gateway_key_id
 JOIN models AS model ON model.id = request.model_id
+JOIN resource_pools AS pool ON pool.id = request.resource_pool_id
 WHERE request.id = sqlc.arg(request_id)
   AND (sqlc.narg(user_id)::uuid IS NULL OR request.user_id = sqlc.narg(user_id));
 
@@ -379,7 +313,8 @@ SELECT attempt.id, attempt.sequence, attempt.status, provider.name AS provider_n
        attempt.usage_source, attempt.created_at
 FROM request_attempts AS attempt
 JOIN provider_credentials AS credential ON credential.id = attempt.credential_id
-JOIN providers AS provider ON provider.id = credential.provider_id
+JOIN resource_pools AS pool ON pool.id = credential.resource_pool_id
+JOIN providers AS provider ON provider.id = pool.provider_id
 WHERE attempt.request_id = sqlc.arg(request_id)
 ORDER BY attempt.sequence, attempt.id;
 

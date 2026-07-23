@@ -1,7 +1,7 @@
 package controlapi
 
 import (
-	"fmt"
+	"errors"
 	"strings"
 	"time"
 
@@ -10,26 +10,26 @@ import (
 )
 
 type requestLogView struct {
-	ID                string               `json:"id"`
-	RequestID         string               `json:"requestId"`
-	AcceptedAt        time.Time            `json:"acceptedAt"`
-	CompletedAt       *time.Time           `json:"completedAt,omitempty"`
-	UpdatedAt         time.Time            `json:"updatedAt"`
-	UserID            string               `json:"userId"`
-	UserName          string               `json:"userName"`
-	GatewayKeyID      string               `json:"gatewayKeyId"`
-	KeyPrefix         string               `json:"keyPrefix"`
-	ModelID           string               `json:"modelId"`
-	ModelAlias        string               `json:"modelAlias"`
-	ResourceDomain    quota.ResourceDomain `json:"resourceDomain"`
-	Status            quota.RequestStatus  `json:"status"`
-	Stream            bool                 `json:"stream"`
-	InputTokens       *int64               `json:"inputTokens,omitempty"`
-	OutputTokens      *int64               `json:"outputTokens,omitempty"`
-	UsageSource       quota.UsageSource    `json:"usageSource"`
-	ErrorKind         *string              `json:"errorKind,omitempty"`
-	AttemptCount      int64                `json:"attemptCount"`
-	LastAttemptStatus *string              `json:"lastAttemptStatus,omitempty"`
+	RequestID        string              `json:"requestId"`
+	AcceptedAt       time.Time           `json:"acceptedAt"`
+	CompletedAt      *time.Time          `json:"completedAt,omitempty"`
+	UpdatedAt        time.Time           `json:"updatedAt"`
+	UserID           string              `json:"userId"`
+	UserName         string              `json:"userName"`
+	GatewayKeyID     string              `json:"apiKeyId"`
+	KeyPrefix        string              `json:"keyPrefix"`
+	ModelID          string              `json:"modelId"`
+	ModelAlias       string              `json:"modelAlias"`
+	ResourcePoolID   string              `json:"resourcePoolId"`
+	ResourcePoolName string              `json:"resourcePoolName"`
+	ResourcePoolSlug string              `json:"resourcePoolSlug"`
+	Status           quota.RequestStatus `json:"status"`
+	Stream           bool                `json:"stream"`
+	InputTokens      *int64              `json:"inputTokens,omitempty"`
+	OutputTokens     *int64              `json:"outputTokens,omitempty"`
+	UsageSource      quota.UsageSource   `json:"usageSource"`
+	ErrorKind        *string             `json:"errorKind,omitempty"`
+	AttemptCount     int64               `json:"attemptCount"`
 }
 
 type requestAttemptView struct {
@@ -74,19 +74,11 @@ func presentRequestLogDetail(principal identity.Principal, detail quota.RequestL
 	}
 	attempts := make([]requestAttemptView, 0, len(detail.Attempts))
 	for _, attempt := range detail.Attempts {
-		view := requestAttemptView{
-			ID: attempt.ID.String(), Sequence: attempt.Sequence, Status: attempt.Status,
-			HTTPStatus: attempt.HTTPStatus, ErrorKind: attempt.ErrorKind, RetryAfterAt: attempt.RetryAfterAt,
-			SentAt: attempt.SentAt, FirstByteAt: attempt.FirstByteAt, CompletedAt: attempt.CompletedAt,
-			InputTokens: attempt.InputTokens, OutputTokens: attempt.OutputTokens,
-			UsageSource: attempt.UsageSource, CreatedAt: attempt.CreatedAt.UTC(),
-		}
+		view := requestAttemptView{ID: attempt.ID.String(), Sequence: attempt.Sequence, Status: attempt.Status, HTTPStatus: attempt.HTTPStatus,
+			ErrorKind: attempt.ErrorKind, RetryAfterAt: attempt.RetryAfterAt, SentAt: attempt.SentAt, FirstByteAt: attempt.FirstByteAt,
+			CompletedAt: attempt.CompletedAt, InputTokens: attempt.InputTokens, OutputTokens: attempt.OutputTokens, UsageSource: attempt.UsageSource, CreatedAt: attempt.CreatedAt.UTC()}
 		if principal.Role == identity.RoleAdministrator {
-			providerName := strings.TrimSpace(attempt.ProviderName)
-			credentialName := strings.TrimSpace(attempt.CredentialName)
-			if providerName == "" || credentialName == "" {
-				return requestLogDetailView{}, fmt.Errorf("quota presentation: attempt %s has incomplete upstream display facts", attempt.ID)
-			}
+			providerName, credentialName := strings.TrimSpace(attempt.ProviderName), strings.TrimSpace(attempt.CredentialName)
 			view.ProviderName, view.CredentialName = &providerName, &credentialName
 		}
 		attempts = append(attempts, view)
@@ -96,20 +88,11 @@ func presentRequestLogDetail(principal identity.Principal, detail quota.RequestL
 
 func presentRequestLog(principal identity.Principal, item quota.RequestLog) (requestLogView, error) {
 	if principal.Role == identity.RoleMember && item.UserID != principal.UserID {
-		return requestLogView{}, fmt.Errorf("quota presentation: member request escaped the authenticated owner scope")
+		return requestLogView{}, errors.New("member request scope invariant violated")
 	}
-	userName := strings.TrimSpace(item.UserName)
-	keyPrefix := strings.TrimSpace(item.KeyPrefix)
-	modelAlias := strings.TrimSpace(item.ModelAlias)
-	if userName == "" || keyPrefix == "" || modelAlias == "" {
-		return requestLogView{}, fmt.Errorf("quota presentation: request %s has incomplete display facts", item.RequestID)
-	}
-	return requestLogView{
-		ID: item.RequestID.String(), RequestID: item.RequestID.String(), AcceptedAt: item.AcceptedAt.UTC(),
-		CompletedAt: item.CompletedAt, UpdatedAt: item.UpdatedAt.UTC(), UserID: item.UserID.String(), UserName: userName,
-		GatewayKeyID: item.GatewayKeyID.String(), KeyPrefix: keyPrefix, ModelID: item.ModelID.String(), ModelAlias: modelAlias,
-		ResourceDomain: item.ResourceDomain, Status: item.Status, Stream: item.Stream,
-		InputTokens: item.InputTokens, OutputTokens: item.OutputTokens, UsageSource: item.UsageSource,
-		ErrorKind: item.ErrorKind, AttemptCount: item.AttemptCount, LastAttemptStatus: item.LastAttemptStatus,
-	}, nil
+	return requestLogView{RequestID: item.RequestID.String(), AcceptedAt: item.AcceptedAt.UTC(), CompletedAt: item.CompletedAt,
+		UpdatedAt: item.UpdatedAt.UTC(), UserID: item.UserID.String(), UserName: item.UserName, GatewayKeyID: item.GatewayKeyID.String(),
+		KeyPrefix: item.KeyPrefix, ModelID: item.ModelID.String(), ModelAlias: item.ModelAlias, ResourcePoolID: item.ResourcePoolID.String(),
+		ResourcePoolName: item.ResourcePoolName, ResourcePoolSlug: item.ResourcePoolSlug, Status: item.Status, Stream: item.Stream,
+		InputTokens: item.InputTokens, OutputTokens: item.OutputTokens, UsageSource: item.UsageSource, ErrorKind: item.ErrorKind, AttemptCount: item.AttemptCount}, nil
 }

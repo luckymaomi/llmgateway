@@ -21,13 +21,12 @@ type ProviderPreset struct {
 }
 
 type ModelPreset struct {
-	PublicName     string
-	UpstreamName   string
-	DisplayName    string
-	ResourceDomain string
-	Capabilities   []string
-	ReasoningMode  string
-	ContextTokens  int64
+	PublicName    string
+	UpstreamName  string
+	DisplayName   string
+	Capabilities  []string
+	ReasoningMode string
+	ContextTokens int64
 }
 
 func (c *Catalog) Presets() []ProviderPreset {
@@ -74,9 +73,6 @@ func validateProviderPreset(preset ProviderPreset) error {
 func validateModelPreset(model ModelPreset) error {
 	if model.PublicName == "" || model.UpstreamName == "" || model.DisplayName == "" || model.ContextTokens < 1 {
 		return fmt.Errorf("model names and context tokens are required")
-	}
-	if model.ResourceDomain != "free" && model.ResourceDomain != "professional" {
-		return fmt.Errorf("model resource domain is invalid")
 	}
 	allowed := map[string]bool{"streaming": true, "tools": true, "reasoning": true, "structured_output": true}
 	seen := make(map[string]struct{}, len(model.Capabilities))

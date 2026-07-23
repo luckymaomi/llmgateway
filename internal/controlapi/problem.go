@@ -5,10 +5,10 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/luckymaomi/llmgateway/internal/configuration"
 	"github.com/luckymaomi/llmgateway/internal/httpserver"
 	"github.com/luckymaomi/llmgateway/internal/identity"
 	"github.com/luckymaomi/llmgateway/internal/registry"
+	"github.com/luckymaomi/llmgateway/internal/subscription"
 )
 
 type problem struct {
@@ -32,27 +32,6 @@ func writeProblem(w http.ResponseWriter, r *http.Request, value problem) {
 	_ = json.NewEncoder(w).Encode(problemEnvelope{Error: value})
 }
 
-func (a *API) writeConfigurationError(w http.ResponseWriter, r *http.Request, err error) {
-	value := problem{Status: http.StatusInternalServerError, Code: "internal_error", Message: "Configuration operation failed.", Retryable: true, Stage: "configuration"}
-	switch {
-	case errors.Is(err, configuration.ErrInvalidInput):
-		value.Status, value.Code, value.Message, value.Retryable = http.StatusBadRequest, "invalid_configuration", "Configuration is invalid.", false
-	case errors.Is(err, configuration.ErrForbidden):
-		value.Status, value.Code, value.Message, value.Retryable = http.StatusForbidden, "forbidden", "The current session cannot manage configuration.", false
-	case errors.Is(err, configuration.ErrNotFound):
-		value.Status, value.Code, value.Message, value.Retryable = http.StatusNotFound, "not_found", "Configuration revision was not found.", false
-	case errors.Is(err, configuration.ErrConflict):
-		value.Status, value.Code, value.Message, value.Retryable = http.StatusConflict, "configuration_conflict", "The active configuration changed.", false
-	case errors.Is(err, configuration.ErrIdempotencyConflict):
-		value.Status, value.Code, value.Message, value.Retryable = http.StatusConflict, "idempotency_conflict", "Idempotency-Key was already used for different configuration input.", false
-	case errors.Is(err, configuration.ErrOutcomeUnknown):
-		value.Status, value.Code, value.Message, value.Retryable = http.StatusServiceUnavailable, "operation_outcome_unknown", "The configuration operation may have committed. Retry with the same Idempotency-Key.", true
-	default:
-		a.logFailure("configuration operation failed", r, err)
-	}
-	writeProblem(w, r, value)
-}
-
 func (a *API) writeRegistryError(w http.ResponseWriter, r *http.Request, err error) {
 	value := problem{Status: http.StatusInternalServerError, Code: "internal_error", Message: "Registry operation failed.", Retryable: true, Stage: "registry"}
 	switch {
@@ -66,24 +45,12 @@ func (a *API) writeRegistryError(w http.ResponseWriter, r *http.Request, err err
 		value.Status, value.Code, value.Message, value.Retryable = http.StatusConflict, "conflict", "Registry facts changed.", false
 	case errors.Is(err, registry.ErrIdempotencyConflict):
 		value.Status, value.Code, value.Message, value.Retryable = http.StatusConflict, "idempotency_conflict", "Idempotency-Key was already used for different registry input.", false
-	case errors.Is(err, registry.ErrProviderEnabled):
-		value.Status, value.Code, value.Message, value.Retryable = http.StatusConflict, "provider_must_be_disabled", "Disable the Provider before changing its type or Base URL.", false
-	case errors.Is(err, registry.ErrValidationUnavailable):
-		value.Status, value.Code, value.Message, value.Retryable = http.StatusServiceUnavailable, "registry_validation_unavailable", "Provider address validation is temporarily unavailable.", true
 	case errors.Is(err, registry.ErrOutcomeUnknown):
-		value.Status, value.Code, value.Message, value.Retryable = http.StatusServiceUnavailable, "operation_outcome_unknown", "The Provider operation may have committed. Retry with the same Idempotency-Key.", true
+		value.Status, value.Code, value.Message, value.Retryable = http.StatusServiceUnavailable, "operation_outcome_unknown", "The resource operation may have committed. Retry with the same Idempotency-Key.", true
 	default:
 		a.logFailure("registry operation failed", r, err)
 	}
 	writeProblem(w, r, value)
-}
-
-func (a *API) writeRegistrySnapshotError(w http.ResponseWriter, r *http.Request, err error) {
-	if errors.Is(err, configuration.ErrInvalidInput) || errors.Is(err, configuration.ErrForbidden) || errors.Is(err, configuration.ErrNotFound) || errors.Is(err, configuration.ErrConflict) {
-		a.writeConfigurationError(w, r, err)
-		return
-	}
-	a.writeRegistryError(w, r, err)
 }
 
 func (a *API) writeIdentityError(w http.ResponseWriter, r *http.Request, err error) {
@@ -93,14 +60,10 @@ func (a *API) writeIdentityError(w http.ResponseWriter, r *http.Request, err err
 		value.Status, value.Code, value.Message, value.Retryable = http.StatusBadRequest, "invalid_request", "Identity input is invalid.", false
 	case errors.Is(err, identity.ErrInvalidCredential):
 		value.Status, value.Code, value.Message, value.Retryable = http.StatusUnauthorized, "invalid_credential", "Authentication failed.", false
-	case errors.Is(err, identity.ErrApprovalRequired):
-		value.Status, value.Code, value.Message, value.Retryable = http.StatusForbidden, "approval_required", "The account is awaiting approval.", false
 	case errors.Is(err, identity.ErrDisabled):
 		value.Status, value.Code, value.Message, value.Retryable = http.StatusForbidden, "account_disabled", "The account is disabled.", false
 	case errors.Is(err, identity.ErrForbidden):
 		value.Status, value.Code, value.Message, value.Retryable = http.StatusForbidden, "forbidden", "The current session cannot perform this operation.", false
-	case errors.Is(err, identity.ErrInvalidInvitation):
-		value.Status, value.Code, value.Message, value.Retryable = http.StatusConflict, "invitation_unavailable", "The invitation cannot be claimed.", false
 	case errors.Is(err, identity.ErrConflict):
 		value.Status, value.Code, value.Message, value.Retryable = http.StatusConflict, "conflict", "Identity facts changed.", false
 	case errors.Is(err, identity.ErrIdempotencyConflict):
@@ -111,6 +74,27 @@ func (a *API) writeIdentityError(w http.ResponseWriter, r *http.Request, err err
 		value.Status, value.Code, value.Message, value.Retryable = http.StatusNotFound, "not_found", "Identity record was not found.", false
 	default:
 		a.logFailure("identity operation failed", r, err)
+	}
+	writeProblem(w, r, value)
+}
+
+func (a *API) writeSubscriptionError(w http.ResponseWriter, r *http.Request, err error) {
+	value := problem{Status: http.StatusInternalServerError, Code: "internal_error", Message: "Subscription operation failed.", Retryable: true, Stage: "subscription"}
+	switch {
+	case errors.Is(err, subscription.ErrInvalidInput):
+		value.Status, value.Code, value.Message, value.Retryable = http.StatusBadRequest, "invalid_request", "Plan or subscription input is invalid.", false
+	case errors.Is(err, subscription.ErrForbidden):
+		value.Status, value.Code, value.Message, value.Retryable = http.StatusForbidden, "forbidden", "The current session cannot perform this subscription operation.", false
+	case errors.Is(err, subscription.ErrNotFound):
+		value.Status, value.Code, value.Message, value.Retryable = http.StatusNotFound, "not_found", "Plan or subscription was not found.", false
+	case errors.Is(err, subscription.ErrConflict):
+		value.Status, value.Code, value.Message, value.Retryable = http.StatusConflict, "conflict", "Plan or subscription facts changed.", false
+	case errors.Is(err, subscription.ErrIdempotencyConflict):
+		value.Status, value.Code, value.Message, value.Retryable = http.StatusConflict, "idempotency_conflict", "Idempotency-Key was already used for different subscription input.", false
+	case errors.Is(err, subscription.ErrOutcomeUnknown):
+		value.Status, value.Code, value.Message, value.Retryable = http.StatusServiceUnavailable, "operation_outcome_unknown", "The subscription operation may have committed. Retry with the same Idempotency-Key.", true
+	default:
+		a.logFailure("subscription operation failed", r, err)
 	}
 	writeProblem(w, r, value)
 }

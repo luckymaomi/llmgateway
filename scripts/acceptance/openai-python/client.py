@@ -53,7 +53,6 @@ def gateway_retry_delay(error: APIStatusError, code: str):
     retryable_codes = {
         "upstream_outcome_uncertain",
         "upstream_circuit_open",
-        "free_pool_unavailable",
         "503",
     }
     if error.status_code not in {429, 503} and code not in retryable_codes:

@@ -64,6 +64,7 @@ const (
 	CredentialStatusActive   CredentialStatus = "active"
 	CredentialStatusCooling  CredentialStatus = "cooling"
 	CredentialStatusDisabled CredentialStatus = "disabled"
+	CredentialStatusRetired  CredentialStatus = "retired"
 )
 
 func (e *CredentialStatus) Scan(src interface{}) error {
@@ -281,46 +282,47 @@ func (ns NullReservationState) Value() (driver.Value, error) {
 	return string(ns.ReservationState), nil
 }
 
-type ResourceDomain string
+type ResourcePoolStatus string
 
 const (
-	ResourceDomainFree         ResourceDomain = "free"
-	ResourceDomainProfessional ResourceDomain = "professional"
+	ResourcePoolStatusActive   ResourcePoolStatus = "active"
+	ResourcePoolStatusDisabled ResourcePoolStatus = "disabled"
+	ResourcePoolStatusRetired  ResourcePoolStatus = "retired"
 )
 
-func (e *ResourceDomain) Scan(src interface{}) error {
+func (e *ResourcePoolStatus) Scan(src interface{}) error {
 	switch s := src.(type) {
 	case []byte:
-		*e = ResourceDomain(s)
+		*e = ResourcePoolStatus(s)
 	case string:
-		*e = ResourceDomain(s)
+		*e = ResourcePoolStatus(s)
 	default:
-		return fmt.Errorf("unsupported scan type for ResourceDomain: %T", src)
+		return fmt.Errorf("unsupported scan type for ResourcePoolStatus: %T", src)
 	}
 	return nil
 }
 
-type NullResourceDomain struct {
-	ResourceDomain ResourceDomain `json:"resource_domain"`
-	Valid          bool           `json:"valid"` // Valid is true if ResourceDomain is not NULL
+type NullResourcePoolStatus struct {
+	ResourcePoolStatus ResourcePoolStatus `json:"resource_pool_status"`
+	Valid              bool               `json:"valid"` // Valid is true if ResourcePoolStatus is not NULL
 }
 
 // Scan implements the Scanner interface.
-func (ns *NullResourceDomain) Scan(value interface{}) error {
+func (ns *NullResourcePoolStatus) Scan(value interface{}) error {
 	if value == nil {
-		ns.ResourceDomain, ns.Valid = "", false
+		ns.ResourcePoolStatus, ns.Valid = "", false
 		return nil
 	}
 	ns.Valid = true
-	return ns.ResourceDomain.Scan(value)
+	return ns.ResourcePoolStatus.Scan(value)
 }
 
 // Value implements the driver Valuer interface.
-func (ns NullResourceDomain) Value() (driver.Value, error) {
+func (ns NullResourcePoolStatus) Value() (driver.Value, error) {
 	if !ns.Valid {
 		return nil, nil
 	}
-	return string(ns.ResourceDomain), nil
+	return string(ns.ResourcePoolStatus), nil
 }
 
 type ResponseStatus string
@@ -367,6 +369,94 @@ func (ns NullResponseStatus) Value() (driver.Value, error) {
 		return nil, nil
 	}
 	return string(ns.ResponseStatus), nil
+}
+
+type ServicePlanStatus string
+
+const (
+	ServicePlanStatusActive   ServicePlanStatus = "active"
+	ServicePlanStatusDisabled ServicePlanStatus = "disabled"
+	ServicePlanStatusArchived ServicePlanStatus = "archived"
+)
+
+func (e *ServicePlanStatus) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = ServicePlanStatus(s)
+	case string:
+		*e = ServicePlanStatus(s)
+	default:
+		return fmt.Errorf("unsupported scan type for ServicePlanStatus: %T", src)
+	}
+	return nil
+}
+
+type NullServicePlanStatus struct {
+	ServicePlanStatus ServicePlanStatus `json:"service_plan_status"`
+	Valid             bool              `json:"valid"` // Valid is true if ServicePlanStatus is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullServicePlanStatus) Scan(value interface{}) error {
+	if value == nil {
+		ns.ServicePlanStatus, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.ServicePlanStatus.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullServicePlanStatus) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.ServicePlanStatus), nil
+}
+
+type SubscriptionStatus string
+
+const (
+	SubscriptionStatusScheduled SubscriptionStatus = "scheduled"
+	SubscriptionStatusActive    SubscriptionStatus = "active"
+	SubscriptionStatusSuspended SubscriptionStatus = "suspended"
+	SubscriptionStatusCanceled  SubscriptionStatus = "canceled"
+	SubscriptionStatusExpired   SubscriptionStatus = "expired"
+)
+
+func (e *SubscriptionStatus) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = SubscriptionStatus(s)
+	case string:
+		*e = SubscriptionStatus(s)
+	default:
+		return fmt.Errorf("unsupported scan type for SubscriptionStatus: %T", src)
+	}
+	return nil
+}
+
+type NullSubscriptionStatus struct {
+	SubscriptionStatus SubscriptionStatus `json:"subscription_status"`
+	Valid              bool               `json:"valid"` // Valid is true if SubscriptionStatus is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullSubscriptionStatus) Scan(value interface{}) error {
+	if value == nil {
+		ns.SubscriptionStatus, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.SubscriptionStatus.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullSubscriptionStatus) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.SubscriptionStatus), nil
 }
 
 type UsageSource string
@@ -457,9 +547,9 @@ func (ns NullUserRole) Value() (driver.Value, error) {
 type UserStatus string
 
 const (
-	UserStatusPending  UserStatus = "pending"
 	UserStatusActive   UserStatus = "active"
 	UserStatusDisabled UserStatus = "disabled"
+	UserStatusDeleted  UserStatus = "deleted"
 )
 
 func (e *UserStatus) Scan(src interface{}) error {
@@ -497,13 +587,6 @@ func (ns NullUserStatus) Value() (driver.Value, error) {
 	return string(ns.UserStatus), nil
 }
 
-type ActiveConfig struct {
-	Singleton  bool               `json:"singleton"`
-	RevisionID uuid.UUID          `json:"revision_id"`
-	Version    int64              `json:"version"`
-	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
-}
-
 type AuditEvent struct {
 	ID          uuid.UUID          `json:"id"`
 	ActorUserID *uuid.UUID         `json:"actor_user_id"`
@@ -513,67 +596,6 @@ type AuditEvent struct {
 	RequestID   *string            `json:"request_id"`
 	Detail      []byte             `json:"detail"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-}
-
-type ConfigMutation struct {
-	ID                 uuid.UUID          `json:"id"`
-	ActorUserID        uuid.UUID          `json:"actor_user_id"`
-	Action             string             `json:"action"`
-	IdempotencyKey     uuid.UUID          `json:"idempotency_key"`
-	RequestFingerprint []byte             `json:"request_fingerprint"`
-	RequestID          string             `json:"request_id"`
-	RevisionID         *uuid.UUID         `json:"revision_id"`
-	Result             []byte             `json:"result"`
-	CreatedAt          pgtype.Timestamptz `json:"created_at"`
-}
-
-type ConfigRevision struct {
-	ID          uuid.UUID          `json:"id"`
-	Revision    *int64             `json:"revision"`
-	Checksum    string             `json:"checksum"`
-	CreatedBy   uuid.UUID          `json:"created_by"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	PublishedAt pgtype.Timestamptz `json:"published_at"`
-	PublishedBy *uuid.UUID         `json:"published_by"`
-}
-
-type ConfigRevisionCredential struct {
-	RevisionID       uuid.UUID      `json:"revision_id"`
-	CredentialID     uuid.UUID      `json:"credential_id"`
-	ProviderID       uuid.UUID      `json:"provider_id"`
-	ResourceDomain   ResourceDomain `json:"resource_domain"`
-	RpmLimit         *int32         `json:"rpm_limit"`
-	TpmLimit         *int64         `json:"tpm_limit"`
-	ConcurrencyLimit *int32         `json:"concurrency_limit"`
-}
-
-type ConfigRevisionModel struct {
-	RevisionID     uuid.UUID          `json:"revision_id"`
-	ModelID        uuid.UUID          `json:"model_id"`
-	ProviderID     uuid.UUID          `json:"provider_id"`
-	PublicName     string             `json:"public_name"`
-	UpstreamName   string             `json:"upstream_name"`
-	DisplayName    string             `json:"display_name"`
-	ResourceDomain ResourceDomain     `json:"resource_domain"`
-	Capabilities   []byte             `json:"capabilities"`
-	CreatedAt      pgtype.Timestamptz `json:"created_at"`
-}
-
-type ConfigRevisionProvider struct {
-	RevisionID uuid.UUID `json:"revision_id"`
-	ProviderID uuid.UUID `json:"provider_id"`
-	Slug       string    `json:"slug"`
-	Name       string    `json:"name"`
-	Kind       string    `json:"kind"`
-	BaseUrl    string    `json:"base_url"`
-}
-
-type ConfigRevisionRoute struct {
-	RevisionID   uuid.UUID `json:"revision_id"`
-	ModelID      uuid.UUID `json:"model_id"`
-	CredentialID uuid.UUID `json:"credential_id"`
-	Priority     int32     `json:"priority"`
-	Weight       int32     `json:"weight"`
 }
 
 type CredentialModel struct {
@@ -593,21 +615,6 @@ type CredentialMutation struct {
 	CredentialID       *uuid.UUID         `json:"credential_id"`
 	Result             []byte             `json:"result"`
 	CreatedAt          pgtype.Timestamptz `json:"created_at"`
-}
-
-type Entitlement struct {
-	ID               uuid.UUID          `json:"id"`
-	UserID           uuid.UUID          `json:"user_id"`
-	Plan             PlanKind           `json:"plan"`
-	ResourceDomain   ResourceDomain     `json:"resource_domain"`
-	ModelID          *uuid.UUID         `json:"model_id"`
-	GrantedTokens    int64              `json:"granted_tokens"`
-	StartsAt         pgtype.Timestamptz `json:"starts_at"`
-	ExpiresAt        pgtype.Timestamptz `json:"expires_at"`
-	ConcurrencyLimit int32              `json:"concurrency_limit"`
-	RpmLimit         *int32             `json:"rpm_limit"`
-	TpmLimit         *int64             `json:"tpm_limit"`
-	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 }
 
 type GatewayKey struct {
@@ -639,33 +646,10 @@ type GatewayKeyMutation struct {
 	CreatedAt          pgtype.Timestamptz `json:"created_at"`
 }
 
-type Invitation struct {
-	ID         uuid.UUID          `json:"id"`
-	CodeDigest []byte             `json:"code_digest"`
-	CodePrefix string             `json:"code_prefix"`
-	CreatedBy  uuid.UUID          `json:"created_by"`
-	ExpiresAt  pgtype.Timestamptz `json:"expires_at"`
-	ClaimedBy  *uuid.UUID         `json:"claimed_by"`
-	ClaimedAt  pgtype.Timestamptz `json:"claimed_at"`
-	RevokedAt  pgtype.Timestamptz `json:"revoked_at"`
-	CreatedAt  pgtype.Timestamptz `json:"created_at"`
-}
-
-type InvitationMutation struct {
-	ID                 uuid.UUID          `json:"id"`
-	ActorUserID        uuid.UUID          `json:"actor_user_id"`
-	IdempotencyKey     uuid.UUID          `json:"idempotency_key"`
-	RequestFingerprint []byte             `json:"request_fingerprint"`
-	RequestID          string             `json:"request_id"`
-	InvitationID       *uuid.UUID         `json:"invitation_id"`
-	Result             []byte             `json:"result"`
-	CreatedAt          pgtype.Timestamptz `json:"created_at"`
-}
-
 type LedgerEvent struct {
 	ID             uuid.UUID          `json:"id"`
 	UserID         uuid.UUID          `json:"user_id"`
-	EntitlementID  uuid.UUID          `json:"entitlement_id"`
+	SubscriptionID uuid.UUID          `json:"subscription_id"`
 	RequestID      *uuid.UUID         `json:"request_id"`
 	ReservationID  *uuid.UUID         `json:"reservation_id"`
 	Kind           LedgerEventKind    `json:"kind"`
@@ -682,7 +666,7 @@ type LedgerEvent struct {
 
 type LedgerReservation struct {
 	ID              uuid.UUID          `json:"id"`
-	EntitlementID   uuid.UUID          `json:"entitlement_id"`
+	SubscriptionID  uuid.UUID          `json:"subscription_id"`
 	RequestID       uuid.UUID          `json:"request_id"`
 	State           ReservationState   `json:"state"`
 	ReservedTokens  int64              `json:"reserved_tokens"`
@@ -694,28 +678,28 @@ type LedgerReservation struct {
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 }
 
-type MemberPasswordResetMutation struct {
-	ID                 uuid.UUID          `json:"id"`
-	ActorUserID        uuid.UUID          `json:"actor_user_id"`
-	IdempotencyKey     uuid.UUID          `json:"idempotency_key"`
-	UserID             uuid.UUID          `json:"user_id"`
-	RequestFingerprint []byte             `json:"request_fingerprint"`
-	RequestID          string             `json:"request_id"`
-	Result             []byte             `json:"result"`
-	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+type MemberMutation struct {
+	ID                     uuid.UUID          `json:"id"`
+	ActorUserID            uuid.UUID          `json:"actor_user_id"`
+	Action                 string             `json:"action"`
+	IdempotencyKey         uuid.UUID          `json:"idempotency_key"`
+	UserID                 *uuid.UUID         `json:"user_id"`
+	RequestFingerprint     []byte             `json:"request_fingerprint"`
+	RequestID              string             `json:"request_id"`
+	EncryptedOneTimeSecret []byte             `json:"encrypted_one_time_secret"`
+	Result                 []byte             `json:"result"`
+	CreatedAt              pgtype.Timestamptz `json:"created_at"`
 }
 
 type Model struct {
-	ID             uuid.UUID          `json:"id"`
-	ProviderID     uuid.UUID          `json:"provider_id"`
-	PublicName     string             `json:"public_name"`
-	UpstreamName   string             `json:"upstream_name"`
-	DisplayName    string             `json:"display_name"`
-	ResourceDomain ResourceDomain     `json:"resource_domain"`
-	Capabilities   []byte             `json:"capabilities"`
-	Enabled        bool               `json:"enabled"`
-	CreatedAt      pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+	ID           uuid.UUID          `json:"id"`
+	ProviderID   uuid.UUID          `json:"provider_id"`
+	PublicName   string             `json:"public_name"`
+	UpstreamName string             `json:"upstream_name"`
+	DisplayName  string             `json:"display_name"`
+	Capabilities []byte             `json:"capabilities"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
 }
 
 type ModelPriceMutation struct {
@@ -741,12 +725,12 @@ type ModelPriceVersion struct {
 
 type Provider struct {
 	ID         uuid.UUID          `json:"id"`
+	CatalogID  string             `json:"catalog_id"`
 	Slug       string             `json:"slug"`
 	Name       string             `json:"name"`
 	Kind       string             `json:"kind"`
 	BaseUrl    string             `json:"base_url"`
-	Enabled    bool               `json:"enabled"`
-	SourceUrl  *string            `json:"source_url"`
+	SourceUrl  string             `json:"source_url"`
 	VerifiedAt pgtype.Timestamptz `json:"verified_at"`
 	CreatedAt  pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
@@ -754,10 +738,9 @@ type Provider struct {
 
 type ProviderCredential struct {
 	ID                  uuid.UUID          `json:"id"`
-	ProviderID          uuid.UUID          `json:"provider_id"`
+	ResourcePoolID      uuid.UUID          `json:"resource_pool_id"`
 	Name                string             `json:"name"`
 	EncryptedSecret     []byte             `json:"encrypted_secret"`
-	ResourceDomain      ResourceDomain     `json:"resource_domain"`
 	Status              CredentialStatus   `json:"status"`
 	RpmLimit            *int32             `json:"rpm_limit"`
 	TpmLimit            *int64             `json:"tpm_limit"`
@@ -771,20 +754,9 @@ type ProviderCredential struct {
 	LastProbeKind       *string            `json:"last_probe_kind"`
 	LastProbeStatus     *string            `json:"last_probe_status"`
 	LastProbeErrorKind  *string            `json:"last_probe_error_kind"`
+	RetiredAt           pgtype.Timestamptz `json:"retired_at"`
 	CreatedAt           pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
-}
-
-type ProviderMutation struct {
-	ID                 uuid.UUID          `json:"id"`
-	ActorUserID        uuid.UUID          `json:"actor_user_id"`
-	Action             string             `json:"action"`
-	IdempotencyKey     uuid.UUID          `json:"idempotency_key"`
-	RequestFingerprint []byte             `json:"request_fingerprint"`
-	RequestID          string             `json:"request_id"`
-	ProviderID         *uuid.UUID         `json:"provider_id"`
-	Result             []byte             `json:"result"`
-	CreatedAt          pgtype.Timestamptz `json:"created_at"`
 }
 
 type Request struct {
@@ -794,9 +766,8 @@ type Request struct {
 	UserID                    uuid.UUID          `json:"user_id"`
 	GatewayKeyID              uuid.UUID          `json:"gateway_key_id"`
 	ModelID                   uuid.UUID          `json:"model_id"`
-	EntitlementID             uuid.UUID          `json:"entitlement_id"`
-	ConfigRevisionID          *uuid.UUID         `json:"config_revision_id"`
-	ResourceDomain            ResourceDomain     `json:"resource_domain"`
+	SubscriptionID            uuid.UUID          `json:"subscription_id"`
+	ResourcePoolID            uuid.UUID          `json:"resource_pool_id"`
 	PriceVersionID            uuid.UUID          `json:"price_version_id"`
 	CostCurrency              string             `json:"cost_currency"`
 	InputRateNanosPerMillion  int64              `json:"input_rate_nanos_per_million"`
@@ -841,6 +812,35 @@ type RequestAttempt struct {
 	CreatedAt           pgtype.Timestamptz `json:"created_at"`
 }
 
+type ResourcePool struct {
+	ID         uuid.UUID          `json:"id"`
+	ProviderID uuid.UUID          `json:"provider_id"`
+	Slug       string             `json:"slug"`
+	Name       string             `json:"name"`
+	Status     ResourcePoolStatus `json:"status"`
+	RetiredAt  pgtype.Timestamptz `json:"retired_at"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
+}
+
+type ResourcePoolModel struct {
+	ResourcePoolID uuid.UUID          `json:"resource_pool_id"`
+	ModelID        uuid.UUID          `json:"model_id"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
+type ResourcePoolMutation struct {
+	ID                 uuid.UUID          `json:"id"`
+	ActorUserID        uuid.UUID          `json:"actor_user_id"`
+	Action             string             `json:"action"`
+	IdempotencyKey     uuid.UUID          `json:"idempotency_key"`
+	RequestFingerprint []byte             `json:"request_fingerprint"`
+	RequestID          string             `json:"request_id"`
+	ResourcePoolID     *uuid.UUID         `json:"resource_pool_id"`
+	Result             []byte             `json:"result"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+}
+
 type ResponseRecord struct {
 	ID                   uuid.UUID          `json:"id"`
 	RequestID            *uuid.UUID         `json:"request_id"`
@@ -864,6 +864,51 @@ type ResponseRecord struct {
 	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
 }
 
+type ServicePlan struct {
+	ID               uuid.UUID          `json:"id"`
+	Slug             string             `json:"slug"`
+	Name             string             `json:"name"`
+	Description      string             `json:"description"`
+	Kind             PlanKind           `json:"kind"`
+	Status           ServicePlanStatus  `json:"status"`
+	CurrentVersionID *uuid.UUID         `json:"current_version_id"`
+	CreatedBy        uuid.UUID          `json:"created_by"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+}
+
+type ServicePlanMutation struct {
+	ID                 uuid.UUID          `json:"id"`
+	ActorUserID        uuid.UUID          `json:"actor_user_id"`
+	Action             string             `json:"action"`
+	IdempotencyKey     uuid.UUID          `json:"idempotency_key"`
+	RequestFingerprint []byte             `json:"request_fingerprint"`
+	RequestID          string             `json:"request_id"`
+	ServicePlanID      *uuid.UUID         `json:"service_plan_id"`
+	Result             []byte             `json:"result"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+}
+
+type ServicePlanVersion struct {
+	ID               uuid.UUID          `json:"id"`
+	ServicePlanID    uuid.UUID          `json:"service_plan_id"`
+	Version          int32              `json:"version"`
+	TokenQuota       int64              `json:"token_quota"`
+	ValidityDays     int32              `json:"validity_days"`
+	ConcurrencyLimit int32              `json:"concurrency_limit"`
+	RpmLimit         *int32             `json:"rpm_limit"`
+	TpmLimit         *int64             `json:"tpm_limit"`
+	CreatedBy        uuid.UUID          `json:"created_by"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+}
+
+type ServicePlanVersionRoute struct {
+	ServicePlanVersionID uuid.UUID          `json:"service_plan_version_id"`
+	ModelID              uuid.UUID          `json:"model_id"`
+	ResourcePoolID       uuid.UUID          `json:"resource_pool_id"`
+	CreatedAt            pgtype.Timestamptz `json:"created_at"`
+}
+
 type Session struct {
 	ID          uuid.UUID          `json:"id"`
 	UserID      uuid.UUID          `json:"user_id"`
@@ -885,6 +930,34 @@ type SiteProfile struct {
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
 }
 
+type Subscription struct {
+	ID                   uuid.UUID          `json:"id"`
+	UserID               uuid.UUID          `json:"user_id"`
+	ServicePlanVersionID uuid.UUID          `json:"service_plan_version_id"`
+	Status               SubscriptionStatus `json:"status"`
+	GrantedTokens        int64              `json:"granted_tokens"`
+	StartsAt             pgtype.Timestamptz `json:"starts_at"`
+	ExpiresAt            pgtype.Timestamptz `json:"expires_at"`
+	Notes                string             `json:"notes"`
+	AssignedBy           uuid.UUID          `json:"assigned_by"`
+	SuspendedAt          pgtype.Timestamptz `json:"suspended_at"`
+	CanceledAt           pgtype.Timestamptz `json:"canceled_at"`
+	CreatedAt            pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+}
+
+type SubscriptionMutation struct {
+	ID                 uuid.UUID          `json:"id"`
+	ActorUserID        uuid.UUID          `json:"actor_user_id"`
+	Action             string             `json:"action"`
+	IdempotencyKey     uuid.UUID          `json:"idempotency_key"`
+	RequestFingerprint []byte             `json:"request_fingerprint"`
+	RequestID          string             `json:"request_id"`
+	SubscriptionID     *uuid.UUID         `json:"subscription_id"`
+	Result             []byte             `json:"result"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+}
+
 type SystemState struct {
 	Singleton      bool               `json:"singleton"`
 	BootstrappedAt pgtype.Timestamptz `json:"bootstrapped_at"`
@@ -898,8 +971,8 @@ type User struct {
 	PasswordHash string             `json:"password_hash"`
 	Role         UserRole           `json:"role"`
 	Status       UserStatus         `json:"status"`
-	ApprovedAt   pgtype.Timestamptz `json:"approved_at"`
 	DisabledAt   pgtype.Timestamptz `json:"disabled_at"`
+	DeletedAt    pgtype.Timestamptz `json:"deleted_at"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
 }

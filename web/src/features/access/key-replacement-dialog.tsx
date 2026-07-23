@@ -55,7 +55,7 @@ export function KeyReplacementDialog({ gatewayKey, onOpenChange }: KeyReplacemen
       onOpenChange={(open) => {
         if (!open) close()
       }}
-      title={created ? '替换 Key 已创建' : '更换 Gateway Key'}
+      title={created ? '替换密钥已创建' : '更换 API 密钥'}
       description={gatewayKey?.name ?? ''}
       dismissible={!mutation.isPending}
       footer={
@@ -67,7 +67,7 @@ export function KeyReplacementDialog({ gatewayKey, onOpenChange }: KeyReplacemen
               取消
             </Button>
             <Button disabled={mutation.isPending} onClick={() => void replace()}>
-              {mutation.isPending ? '创建中' : mutation.isError ? '重试创建' : '创建替换 Key'}
+              {mutation.isPending ? '创建中' : mutation.isError ? '重试创建' : '创建替换密钥'}
             </Button>
           </>
         )
@@ -112,7 +112,7 @@ export function KeyReplacementDialog({ gatewayKey, onOpenChange }: KeyReplacemen
               <dd>{created.key.prefix}</dd>
             </div>
             <div>
-              <dt>原 Key 状态</dt>
+              <dt>原密钥状态</dt>
               <dd>仍可用</dd>
             </div>
             <div>

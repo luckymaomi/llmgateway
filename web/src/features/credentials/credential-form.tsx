@@ -1,343 +1,266 @@
-import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState, type FormEvent, type MouseEvent } from 'react'
-import { useForm, useWatch } from 'react-hook-form'
-import { z } from 'zod'
+import { useMemo, useState, type FormEvent } from 'react'
 
-import { ApiProblem, catalogApi, type CredentialInput } from '@/api'
-import {
-  clearPendingCredentialOperation,
-  storePendingCredentialOperation,
-} from '@/app/pending-operations'
-import { useSession } from '@/app/session'
+import { catalogApi, type Credential, type CredentialModelBinding } from '@/api'
 import { Button } from '@/components/ui/button'
 import { DialogFrame } from '@/components/ui/dialog'
 import { Field, Input, NativeSelect } from '@/components/ui/field'
 import { FormProblem } from '@/features/auth/form-problem'
 
-import { modelBindingsSchema } from './model-binding-form'
-import { ModelBindingsField } from './model-bindings-field'
-
-const optionalPositiveInteger = z
-  .number()
-  .int()
-  .positive()
-  .optional()
-  .or(z.nan().transform(() => undefined))
-
-const schema = z.object({
-  providerId: z.string().min(1, '请选择 Provider'),
-  label: z.string().trim().min(2, '请输入 API Key 名称'),
-  secret: z.string().min(8, 'API Key 至少需要 8 个字符'),
-  resourceDomain: z.enum(['free', 'professional']),
-  modelBindings: modelBindingsSchema,
-  rpmLimit: optionalPositiveInteger,
-  tpmLimit: optionalPositiveInteger,
-  concurrencyLimit: optionalPositiveInteger,
-})
-
-type Values = z.infer<typeof schema>
-type Submission = { input: CredentialInput; idempotencyKey: string }
+type EditableBinding = Omit<CredentialModelBinding, 'modelName'>
 
 export function CredentialForm({
+  credential,
   open,
   onOpenChange,
 }: {
+  credential: Credential | null
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
   const queryClient = useQueryClient()
-  const session = useSession()
-  const [uncertain, setUncertain] = useState<Submission>()
-  const [persistenceFailed, setPersistenceFailed] = useState(false)
-  const form = useForm<Values>({ resolver: zodResolver(schema), defaultValues: defaultValues() })
-  const providerId = useWatch({ control: form.control, name: 'providerId' })
-  const resourceDomain = useWatch({ control: form.control, name: 'resourceDomain' })
-  const modelBindings = useWatch({ control: form.control, name: 'modelBindings' })
-  const providers = useQuery({
-    queryKey: ['providers', 'credential-form'],
-    queryFn: ({ signal }) => catalogApi.providers({ page: 1, pageSize: 100 }, signal),
+  const [resourcePoolId, setResourcePoolId] = useState(credential?.resourcePoolId ?? '')
+  const [name, setName] = useState(credential?.name ?? '')
+  const [secret, setSecret] = useState('')
+  const [rpmLimit, setRpmLimit] = useState(credential?.rpmLimit ?? 0)
+  const [tpmLimit, setTpmLimit] = useState(credential?.tpmLimit ?? 0)
+  const [concurrencyLimit, setConcurrencyLimit] = useState(credential?.concurrencyLimit ?? 0)
+  const [bindings, setBindings] = useState<EditableBinding[]>(
+    credential?.modelBindings.map(({ modelId, priority, weight }) => ({
+      modelId,
+      priority,
+      weight,
+    })) ?? [],
+  )
+  const pools = useQuery({
+    queryKey: ['resource-pools', 'credential-form'],
+    queryFn: ({ signal }) => catalogApi.resourcePools(false, signal),
     enabled: open,
   })
-  const models = useQuery({
-    queryKey: ['models', 'credential-form', providerId, resourceDomain],
-    queryFn: ({ signal }) =>
-      catalogApi.models(
-        { page: 1, pageSize: 100, providerId, resourceDomain, status: 'active' },
-        signal,
-      ),
-    enabled: open && Boolean(providerId),
-  })
+  const selectedPool = useMemo(
+    () => pools.data?.find((pool) => pool.id === resourcePoolId),
+    [pools.data, resourcePoolId],
+  )
+
   const mutation = useMutation({
-    gcTime: 0,
-    mutationFn: (submission: Submission) =>
-      catalogApi.createCredential(submission.input, submission.idempotencyKey),
-    async onSuccess() {
-      clearPendingCredentialOperation(session.userId)
-      await queryClient.invalidateQueries({ queryKey: ['credentials'] })
-      resetAndClose()
-    },
-    onError(error, submission) {
-      if (isUnknownOutcome(error)) {
-        setUncertain(submission)
-      } else {
-        clearPendingCredentialOperation(session.userId)
-        setUncertain(undefined)
+    mutationFn: () => {
+      const limits = {
+        ...(rpmLimit > 0 ? { rpmLimit } : {}),
+        ...(tpmLimit > 0 ? { tpmLimit } : {}),
+        ...(concurrencyLimit > 0 ? { concurrencyLimit } : {}),
       }
+      return credential
+        ? catalogApi.updateCredential(
+            credential.id,
+            {
+              name: name.trim(),
+              secret,
+              modelBindings: bindings,
+              expectedUpdatedAt: credential.updatedAt,
+              ...limits,
+            },
+            crypto.randomUUID(),
+          )
+        : catalogApi.createCredential(
+            {
+              resourcePoolId,
+              name: name.trim(),
+              secret,
+              modelBindings: bindings,
+              ...limits,
+            },
+            crypto.randomUUID(),
+          )
+    },
+    async onSuccess() {
+      setSecret('')
+      await queryClient.invalidateQueries({ queryKey: ['credentials'] })
+      await queryClient.invalidateQueries({ queryKey: ['resource-pools'] })
+      onOpenChange(false)
     },
   })
 
-  function resetAndClose(): void {
-    mutation.reset()
-    setUncertain(undefined)
-    setPersistenceFailed(false)
-    clearPendingCredentialOperation(session.userId)
-    form.reset(defaultValues())
-    onOpenChange(false)
-  }
-
-  function requestClose(): void {
-    if (mutation.isPending || uncertain) return
-    resetAndClose()
-  }
-
-  async function submit(values: Values): Promise<void> {
-    if (uncertain) return
-    const submission = { input: inputFrom(values), idempotencyKey: crypto.randomUUID() }
-    if (
-      !storePendingCredentialOperation(session.userId, {
-        idempotencyKey: submission.idempotencyKey,
-        providerId: submission.input.providerId,
-        label: submission.input.label,
-        resourceDomain: submission.input.resourceDomain,
-        modelBindings: submission.input.modelBindings,
-      })
-    ) {
-      setPersistenceFailed(true)
-      return
-    }
-    setPersistenceFailed(false)
-    setUncertain(undefined)
-    try {
-      await mutation.mutateAsync(submission)
-    } catch {
-      // The mutation state renders the typed error or recovery action.
-    }
-  }
-
-  async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
+  function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    const formElement = event.currentTarget
-    if (formElement.dataset.submissionPending === 'true') return
-    formElement.dataset.submissionPending = 'true'
-    try {
-      await form.handleSubmit(submit)(event)
-    } finally {
-      delete formElement.dataset.submissionPending
-    }
+    if (!resourcePoolId || !name.trim() || (!credential && !secret) || bindings.length === 0) return
+    mutation.mutate()
   }
 
-  async function retryUncertain(event: MouseEvent<HTMLButtonElement>): Promise<void> {
-    if (!uncertain || event.currentTarget.dataset.submissionPending === 'true') return
-    const button = event.currentTarget
-    button.dataset.submissionPending = 'true'
-    try {
-      await mutation.mutateAsync(uncertain)
-    } catch {
-      // The same recovery action remains available while the outcome is unknown.
-    } finally {
-      delete button.dataset.submissionPending
-    }
-  }
-
-  const controlsLocked = mutation.isPending || Boolean(uncertain)
-
+  const locked = mutation.isPending
   return (
     <DialogFrame
       open={open}
-      onOpenChange={(nextOpen) => {
-        if (!nextOpen) requestClose()
-      }}
-      title="添加上游 API Key"
+      onOpenChange={(next) => !locked && onOpenChange(next)}
+      title={credential ? '编辑上游 API Key' : '添加上游 API Key'}
       width="lg"
-      dismissible={!controlsLocked}
+      dismissible={!locked}
       footer={
         <>
           <Button
             type="button"
             variant="secondary"
-            disabled={controlsLocked}
-            onClick={requestClose}
+            disabled={locked}
+            onClick={() => onOpenChange(false)}
           >
             取消
           </Button>
-          {uncertain ? (
-            <Button disabled={mutation.isPending} onClick={(event) => void retryUncertain(event)}>
-              {mutation.isPending ? '正在确认' : '重试原操作'}
-            </Button>
-          ) : (
-            <Button type="submit" form="credential-form" disabled={mutation.isPending}>
-              {mutation.isPending ? '保存中' : '保存'}
-            </Button>
-          )}
+          <Button type="submit" form="credential-form" disabled={locked}>
+            {locked ? '保存中' : '保存'}
+          </Button>
         </>
       }
     >
-      <form
-        id="credential-form"
-        className="form-grid"
-        onSubmit={(event) => void handleSubmit(event)}
-      >
-        <Field
-          label="所属 Provider"
-          htmlFor="credential-provider"
-          error={form.formState.errors.providerId?.message}
-        >
+      <form id="credential-form" className="form-grid" onSubmit={submit}>
+        <Field label="资源池" htmlFor="credential-pool">
           <NativeSelect
-            id="credential-provider"
+            id="credential-pool"
             autoFocus
-            disabled={controlsLocked}
-            {...form.register('providerId', {
-              onChange: () => form.setValue('modelBindings', []),
-            })}
+            value={resourcePoolId}
+            disabled={locked || credential !== null}
+            onChange={(event) => {
+              setResourcePoolId(event.target.value)
+              setBindings([])
+            }}
           >
             <option value="">请选择</option>
-            {providers.data?.items.map((provider) => (
-              <option key={provider.id} value={provider.id}>
-                {provider.name}
+            {(pools.data ?? []).map((pool) => (
+              <option key={pool.id} value={pool.id}>
+                {pool.providerName} · {pool.name}
               </option>
             ))}
           </NativeSelect>
         </Field>
-        <Field label="名称" htmlFor="credential-label" error={form.formState.errors.label?.message}>
-          <Input id="credential-label" readOnly={controlsLocked} {...form.register('label')} />
+        <Field label="名称" htmlFor="credential-name">
+          <Input
+            id="credential-name"
+            value={name}
+            readOnly={locked}
+            onChange={(event) => setName(event.target.value)}
+          />
         </Field>
         <Field
-          label="上游 API Key"
+          label={credential ? '替换上游 API Key' : '上游 API Key'}
           htmlFor="credential-secret"
-          error={form.formState.errors.secret?.message}
+          hint={credential ? '留空表示继续使用当前 secret' : undefined}
         >
           <Input
             id="credential-secret"
             type="password"
             autoComplete="new-password"
-            readOnly={controlsLocked}
-            {...form.register('secret')}
+            value={secret}
+            readOnly={locked}
+            onChange={(event) => setSecret(event.target.value)}
           />
         </Field>
-        <Field
-          label="资源域"
-          htmlFor="credential-domain"
-          error={form.formState.errors.resourceDomain?.message}
-        >
-          <NativeSelect
-            id="credential-domain"
-            disabled={controlsLocked}
-            {...form.register('resourceDomain', {
-              onChange: () => form.setValue('modelBindings', []),
+        <Field label="Provider" htmlFor="credential-provider">
+          <Input
+            id="credential-provider"
+            value={selectedPool?.providerName ?? credential?.providerName ?? ''}
+            readOnly
+          />
+        </Field>
+        <fieldset className="choice-field field--full">
+          <legend>模型路由</legend>
+          <div className="binding-grid">
+            {(selectedPool?.models ?? []).map((model) => {
+              const binding = bindings.find((item) => item.modelId === model.id)
+              return (
+                <div className="binding-row binding-row--weighted" key={model.id}>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={binding !== undefined}
+                      disabled={locked}
+                      onChange={(event) =>
+                        setBindings((current) =>
+                          event.target.checked
+                            ? [...current, { modelId: model.id, priority: 0, weight: 1 }]
+                            : current.filter((item) => item.modelId !== model.id),
+                        )
+                      }
+                    />
+                    <span>{model.publicName}</span>
+                  </label>
+                  <label className="binding-row__value">
+                    <span>优先级</span>
+                    <Input
+                      aria-label={`${model.publicName} 优先级`}
+                      type="number"
+                      min={0}
+                      value={binding?.priority ?? 0}
+                      disabled={!binding || locked}
+                      onChange={(event) =>
+                        updateBinding(model.id, 'priority', Number(event.target.value))
+                      }
+                    />
+                  </label>
+                  <label className="binding-row__value">
+                    <span>权重</span>
+                    <Input
+                      aria-label={`${model.publicName} 权重`}
+                      type="number"
+                      min={1}
+                      value={binding?.weight ?? 1}
+                      disabled={!binding || locked}
+                      onChange={(event) =>
+                        updateBinding(model.id, 'weight', Number(event.target.value))
+                      }
+                    />
+                  </label>
+                </div>
+              )
             })}
-          >
-            <option value="free">免费资源域</option>
-            <option value="professional">专业资源域</option>
-          </NativeSelect>
-        </Field>
-        <Field
-          label="模型路由"
-          htmlFor="credential-models"
-          className="credential-routing-field"
-          error={form.formState.errors.modelBindings?.message}
-        >
-          <>
-            <ModelBindingsField
-              id="credential-models"
-              models={models.data?.items ?? []}
-              value={modelBindings}
-              disabled={controlsLocked}
-              onChange={(bindings) =>
-                form.setValue('modelBindings', bindings, { shouldValidate: true })
-              }
-            />
-            {providerId && !models.isLoading && models.data?.items.length === 0 ? (
-              <span className="field__hint">该 Provider 与资源域下没有可用模型。</span>
-            ) : null}
-          </>
-        </Field>
-        <Field label="RPM" htmlFor="credential-rpm" error={form.formState.errors.rpmLimit?.message}>
+          </div>
+          {resourcePoolId === '' ? (
+            <p className="choice-field__empty">选择资源池后显示可用模型</p>
+          ) : pools.isLoading ? (
+            <p className="choice-field__empty">正在读取资源池模型</p>
+          ) : (selectedPool?.models.length ?? 0) === 0 ? (
+            <p className="choice-field__empty">该资源池当前没有可用模型</p>
+          ) : null}
+        </fieldset>
+        <Field label="RPM" htmlFor="credential-rpm" hint="0 表示不额外限制">
           <Input
             id="credential-rpm"
             type="number"
-            min={1}
-            readOnly={controlsLocked}
-            {...form.register('rpmLimit', { valueAsNumber: true })}
+            min={0}
+            value={rpmLimit}
+            readOnly={locked}
+            onChange={(event) => setRpmLimit(Number(event.target.value))}
           />
         </Field>
-        <Field label="TPM" htmlFor="credential-tpm" error={form.formState.errors.tpmLimit?.message}>
+        <Field label="TPM" htmlFor="credential-tpm" hint="0 表示不额外限制">
           <Input
             id="credential-tpm"
             type="number"
-            min={1}
-            readOnly={controlsLocked}
-            {...form.register('tpmLimit', { valueAsNumber: true })}
+            min={0}
+            value={tpmLimit}
+            readOnly={locked}
+            onChange={(event) => setTpmLimit(Number(event.target.value))}
           />
         </Field>
-        <Field
-          label="并发上限"
-          htmlFor="credential-concurrency"
-          error={form.formState.errors.concurrencyLimit?.message}
-        >
+        <Field label="并发上限" htmlFor="credential-concurrency" hint="0 表示不额外限制">
           <Input
             id="credential-concurrency"
             type="number"
-            min={1}
-            readOnly={controlsLocked}
-            {...form.register('concurrencyLimit', { valueAsNumber: true })}
+            min={0}
+            value={concurrencyLimit}
+            readOnly={locked}
+            onChange={(event) => setConcurrencyLimit(Number(event.target.value))}
           />
         </Field>
-        {uncertain ? (
-          <div className="inline-problem" role="alert">
-            结果暂时无法确认。重试原操作会使用相同的幂等键，不会创建第二条凭据。
-          </div>
-        ) : (
-          <>
-            {persistenceFailed ? (
-              <div className="inline-problem" role="alert">
-                浏览器无法保存待确认操作，本次未提交。请允许当前标签页使用会话存储后重试。
-              </div>
-            ) : null}
-            <FormProblem error={mutation.error ?? providers.error ?? models.error} />
-          </>
-        )}
+        <FormProblem error={mutation.error ?? pools.error} />
       </form>
     </DialogFrame>
   )
-}
 
-function defaultValues(): Values {
-  return {
-    providerId: '',
-    label: '',
-    secret: '',
-    resourceDomain: 'free',
-    modelBindings: [],
+  function updateBinding(modelId: string, field: 'priority' | 'weight', value: number) {
+    setBindings((current) =>
+      current.map((binding) =>
+        binding.modelId === modelId
+          ? { ...binding, [field]: Math.max(field === 'weight' ? 1 : 0, value) }
+          : binding,
+      ),
+    )
   }
-}
-
-function inputFrom(values: Values): CredentialInput {
-  return {
-    providerId: values.providerId,
-    label: values.label.trim(),
-    secret: values.secret,
-    resourceDomain: values.resourceDomain,
-    modelBindings: values.modelBindings,
-    ...(values.rpmLimit !== undefined ? { rpmLimit: values.rpmLimit } : {}),
-    ...(values.tpmLimit !== undefined ? { tpmLimit: values.tpmLimit } : {}),
-    ...(values.concurrencyLimit !== undefined ? { concurrencyLimit: values.concurrencyLimit } : {}),
-  }
-}
-
-function isUnknownOutcome(error: unknown): boolean {
-  return (
-    error instanceof ApiProblem &&
-    (error.code === 'operation_outcome_unknown' || error.code === 'network_unavailable')
-  )
 }

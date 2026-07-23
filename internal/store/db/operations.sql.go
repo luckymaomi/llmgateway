@@ -14,51 +14,68 @@ import (
 
 const getAdministratorResourceSummary = `-- name: GetAdministratorResourceSummary :one
 SELECT
-  (SELECT count(*) FROM providers) AS provider_count,
-  (SELECT count(*) FROM providers WHERE enabled) AS enabled_provider_count,
+  (SELECT count(*) FROM resource_pools WHERE status <> 'retired') AS resource_pool_count,
+  (SELECT count(*) FROM resource_pools WHERE status = 'active') AS active_resource_pool_count,
+  (SELECT count(DISTINCT provider_id) FROM resource_pools WHERE status <> 'retired') AS connected_provider_count,
   (SELECT count(*) FROM models) AS model_count,
-  (SELECT count(*) FROM provider_credentials) AS credential_count,
+  (SELECT count(*) FROM provider_credentials WHERE status <> 'retired') AS credential_count,
   (SELECT count(*) FROM provider_credentials WHERE status = 'active') AS active_credential_count,
   (SELECT count(*) FROM provider_credentials WHERE status = 'cooling') AS cooling_credential_count,
+  (SELECT count(*) FROM provider_credentials WHERE last_probe_status = 'succeeded') AS successful_credential_probe_count,
   (SELECT count(*) FROM users WHERE role = 'member' AND status = 'active') AS active_member_count,
-  (SELECT count(*) FROM users WHERE role = 'member' AND status = 'pending') AS pending_member_count,
-  (SELECT count(*) FROM gateway_keys key WHERE key.revoked_at IS NULL AND (key.expires_at IS NULL OR key.expires_at > $1)) AS active_gateway_key_count,
-  (SELECT count(*) FROM entitlements entitlement WHERE entitlement.starts_at <= $1 AND entitlement.expires_at > $1) AS active_entitlement_count,
-  EXISTS (SELECT 1 FROM active_config WHERE singleton = true) AS has_active_configuration,
-  EXISTS (SELECT 1 FROM model_price_versions WHERE effective_at <= $1) AS has_model_price
+  (SELECT count(*) FROM gateway_keys key JOIN users member ON member.id = key.user_id
+   WHERE member.status = 'active' AND key.revoked_at IS NULL
+     AND (key.expires_at IS NULL OR key.expires_at > $1)) AS active_gateway_key_count,
+  (SELECT count(*) FROM service_plans WHERE status = 'active' AND current_version_id IS NOT NULL) AS active_service_plan_count,
+  (SELECT count(*) FROM subscriptions subscription
+   WHERE subscription.status IN ('scheduled', 'active')
+     AND subscription.starts_at <= $1 AND subscription.expires_at > $1) AS active_subscription_count,
+  EXISTS (
+    SELECT 1 FROM resource_pools pool
+    JOIN provider_credentials credential ON credential.resource_pool_id = pool.id
+    WHERE pool.status = 'active' AND credential.status = 'active'
+  ) AS has_active_upstream,
+  EXISTS (SELECT 1 FROM model_price_versions WHERE effective_at <= $1) AS has_model_price,
+  EXISTS (SELECT 1 FROM requests WHERE status = 'completed') AS has_completed_request
 `
 
 type GetAdministratorResourceSummaryRow struct {
-	ProviderCount          int64 `json:"provider_count"`
-	EnabledProviderCount   int64 `json:"enabled_provider_count"`
-	ModelCount             int64 `json:"model_count"`
-	CredentialCount        int64 `json:"credential_count"`
-	ActiveCredentialCount  int64 `json:"active_credential_count"`
-	CoolingCredentialCount int64 `json:"cooling_credential_count"`
-	ActiveMemberCount      int64 `json:"active_member_count"`
-	PendingMemberCount     int64 `json:"pending_member_count"`
-	ActiveGatewayKeyCount  int64 `json:"active_gateway_key_count"`
-	ActiveEntitlementCount int64 `json:"active_entitlement_count"`
-	HasActiveConfiguration bool  `json:"has_active_configuration"`
-	HasModelPrice          bool  `json:"has_model_price"`
+	ResourcePoolCount              int64 `json:"resource_pool_count"`
+	ActiveResourcePoolCount        int64 `json:"active_resource_pool_count"`
+	ConnectedProviderCount         int64 `json:"connected_provider_count"`
+	ModelCount                     int64 `json:"model_count"`
+	CredentialCount                int64 `json:"credential_count"`
+	ActiveCredentialCount          int64 `json:"active_credential_count"`
+	CoolingCredentialCount         int64 `json:"cooling_credential_count"`
+	SuccessfulCredentialProbeCount int64 `json:"successful_credential_probe_count"`
+	ActiveMemberCount              int64 `json:"active_member_count"`
+	ActiveGatewayKeyCount          int64 `json:"active_gateway_key_count"`
+	ActiveServicePlanCount         int64 `json:"active_service_plan_count"`
+	ActiveSubscriptionCount        int64 `json:"active_subscription_count"`
+	HasActiveUpstream              bool  `json:"has_active_upstream"`
+	HasModelPrice                  bool  `json:"has_model_price"`
+	HasCompletedRequest            bool  `json:"has_completed_request"`
 }
 
 func (q *Queries) GetAdministratorResourceSummary(ctx context.Context, observedAt pgtype.Timestamptz) (GetAdministratorResourceSummaryRow, error) {
 	row := q.db.QueryRow(ctx, getAdministratorResourceSummary, observedAt)
 	var i GetAdministratorResourceSummaryRow
 	err := row.Scan(
-		&i.ProviderCount,
-		&i.EnabledProviderCount,
+		&i.ResourcePoolCount,
+		&i.ActiveResourcePoolCount,
+		&i.ConnectedProviderCount,
 		&i.ModelCount,
 		&i.CredentialCount,
 		&i.ActiveCredentialCount,
 		&i.CoolingCredentialCount,
+		&i.SuccessfulCredentialProbeCount,
 		&i.ActiveMemberCount,
-		&i.PendingMemberCount,
 		&i.ActiveGatewayKeyCount,
-		&i.ActiveEntitlementCount,
-		&i.HasActiveConfiguration,
+		&i.ActiveServicePlanCount,
+		&i.ActiveSubscriptionCount,
+		&i.HasActiveUpstream,
 		&i.HasModelPrice,
+		&i.HasCompletedRequest,
 	)
 	return i, err
 }
@@ -69,10 +86,8 @@ SELECT
     FILTER (WHERE attempt.sent_at IS NOT NULL AND attempt.first_byte_at IS NOT NULL))::bigint, 0)::bigint AS first_byte_p95_ms,
   COALESCE((percentile_cont(0.95) WITHIN GROUP (ORDER BY extract(epoch FROM (attempt.completed_at - attempt.sent_at)) * 1000)
     FILTER (WHERE attempt.sent_at IS NOT NULL AND attempt.completed_at IS NOT NULL))::bigint, 0)::bigint AS total_p95_ms
-FROM request_attempts attempt
-JOIN requests request ON request.id = attempt.request_id
-WHERE attempt.created_at >= $1
-  AND attempt.created_at < $2
+FROM request_attempts attempt JOIN requests request ON request.id = attempt.request_id
+WHERE attempt.created_at >= $1 AND attempt.created_at < $2
   AND ($3::uuid IS NULL OR request.user_id = $3)
 `
 
@@ -96,21 +111,28 @@ func (q *Queries) GetAttemptLatencySummary(ctx context.Context, arg GetAttemptLa
 
 const getMemberAccessSummary = `-- name: GetMemberAccessSummary :one
 SELECT
-  (SELECT count(*) FROM gateway_keys key WHERE key.user_id = $1 AND key.revoked_at IS NULL AND (key.expires_at IS NULL OR key.expires_at > $2)) AS active_gateway_key_count,
-  (SELECT count(*) FROM entitlements entitlement WHERE entitlement.user_id = $1 AND entitlement.starts_at <= $2 AND entitlement.expires_at > $2) AS active_entitlement_count,
+  (SELECT count(*) FROM gateway_keys key
+   WHERE key.user_id = $1 AND key.revoked_at IS NULL
+     AND (key.expires_at IS NULL OR key.expires_at > $2)) AS active_gateway_key_count,
+  (SELECT count(*) FROM subscriptions subscription
+   WHERE subscription.user_id = $1
+     AND subscription.status IN ('scheduled', 'active')
+     AND subscription.starts_at <= $2 AND subscription.expires_at > $2) AS active_subscription_count,
   COALESCE((
     SELECT sum(balance.tokens)
-    FROM entitlements entitlement
+    FROM subscriptions subscription
     CROSS JOIN LATERAL (
       SELECT COALESCE(sum(event.token_delta), 0)::bigint AS tokens
-      FROM ledger_events event
-      WHERE event.entitlement_id = entitlement.id
+      FROM ledger_events event WHERE event.subscription_id = subscription.id
     ) balance
-    WHERE entitlement.user_id = $1
-      AND entitlement.starts_at <= $2
-      AND entitlement.expires_at > $2
+    WHERE subscription.user_id = $1
+      AND subscription.status IN ('scheduled', 'active')
+      AND subscription.starts_at <= $2 AND subscription.expires_at > $2
   ), 0)::bigint AS remaining_tokens,
-  (SELECT min(entitlement.expires_at)::timestamptz FROM entitlements entitlement WHERE entitlement.user_id = $1 AND entitlement.starts_at <= $2 AND entitlement.expires_at > $2) AS nearest_entitlement_expiry
+  (SELECT min(subscription.expires_at)::timestamptz FROM subscriptions subscription
+   WHERE subscription.user_id = $1
+     AND subscription.status IN ('scheduled', 'active')
+     AND subscription.starts_at <= $2 AND subscription.expires_at > $2) AS nearest_subscription_expiry
 `
 
 type GetMemberAccessSummaryParams struct {
@@ -119,10 +141,10 @@ type GetMemberAccessSummaryParams struct {
 }
 
 type GetMemberAccessSummaryRow struct {
-	ActiveGatewayKeyCount    int64              `json:"active_gateway_key_count"`
-	ActiveEntitlementCount   int64              `json:"active_entitlement_count"`
-	RemainingTokens          int64              `json:"remaining_tokens"`
-	NearestEntitlementExpiry pgtype.Timestamptz `json:"nearest_entitlement_expiry"`
+	ActiveGatewayKeyCount     int64              `json:"active_gateway_key_count"`
+	ActiveSubscriptionCount   int64              `json:"active_subscription_count"`
+	RemainingTokens           int64              `json:"remaining_tokens"`
+	NearestSubscriptionExpiry pgtype.Timestamptz `json:"nearest_subscription_expiry"`
 }
 
 func (q *Queries) GetMemberAccessSummary(ctx context.Context, arg GetMemberAccessSummaryParams) (GetMemberAccessSummaryRow, error) {
@@ -130,24 +152,22 @@ func (q *Queries) GetMemberAccessSummary(ctx context.Context, arg GetMemberAcces
 	var i GetMemberAccessSummaryRow
 	err := row.Scan(
 		&i.ActiveGatewayKeyCount,
-		&i.ActiveEntitlementCount,
+		&i.ActiveSubscriptionCount,
 		&i.RemainingTokens,
-		&i.NearestEntitlementExpiry,
+		&i.NearestSubscriptionExpiry,
 	)
 	return i, err
 }
 
 const getRequestWindowSummary = `-- name: GetRequestWindowSummary :one
-SELECT
-  count(*) AS request_count,
+SELECT count(*) AS request_count,
   count(*) FILTER (WHERE status = 'completed') AS completed_count,
   count(*) FILTER (WHERE status IN ('failed', 'canceled')) AS failed_count,
   count(*) FILTER (WHERE status = 'uncertain') AS uncertain_count,
   COALESCE(sum(input_tokens) FILTER (WHERE input_tokens IS NOT NULL), 0)::bigint AS input_tokens,
   COALESCE(sum(output_tokens) FILTER (WHERE output_tokens IS NOT NULL), 0)::bigint AS output_tokens
 FROM requests
-WHERE accepted_at >= $1
-  AND accepted_at < $2
+WHERE accepted_at >= $1 AND accepted_at < $2
   AND ($3::uuid IS NULL OR user_id = $3)
 `
 
@@ -183,13 +203,11 @@ func (q *Queries) GetRequestWindowSummary(ctx context.Context, arg GetRequestWin
 const listRequestErrors = `-- name: ListRequestErrors :many
 SELECT COALESCE(error_kind, 'unknown') AS error_kind, count(*) AS request_count
 FROM requests
-WHERE accepted_at >= $1
-  AND accepted_at < $2
+WHERE accepted_at >= $1 AND accepted_at < $2
   AND status IN ('failed', 'canceled', 'uncertain')
   AND ($3::uuid IS NULL OR user_id = $3)
 GROUP BY COALESCE(error_kind, 'unknown')
-ORDER BY request_count DESC, error_kind
-LIMIT 8
+ORDER BY request_count DESC, error_kind LIMIT 8
 `
 
 type ListRequestErrorsParams struct {
@@ -227,13 +245,11 @@ const listRequestTrend = `-- name: ListRequestTrend :many
 WITH buckets AS (
   SELECT generate_series($1::timestamptz, $2::timestamptz - interval '1 hour', interval '1 hour') AS bucket
 ), facts AS (
-  SELECT date_trunc('hour', accepted_at) AS bucket,
-         count(*) AS request_count,
+  SELECT date_trunc('hour', accepted_at) AS bucket, count(*) AS request_count,
          COALESCE(sum(input_tokens) FILTER (WHERE input_tokens IS NOT NULL), 0)::bigint AS input_tokens,
          COALESCE(sum(output_tokens) FILTER (WHERE output_tokens IS NOT NULL), 0)::bigint AS output_tokens
   FROM requests
-  WHERE accepted_at >= $1
-    AND accepted_at < $2
+  WHERE accepted_at >= $1 AND accepted_at < $2
     AND ($3::uuid IS NULL OR user_id = $3)
   GROUP BY date_trunc('hour', accepted_at)
 )
@@ -241,9 +257,7 @@ SELECT buckets.bucket::timestamptz AS bucket,
        COALESCE(facts.request_count, 0)::bigint AS request_count,
        COALESCE(facts.input_tokens, 0)::bigint AS input_tokens,
        COALESCE(facts.output_tokens, 0)::bigint AS output_tokens
-FROM buckets
-LEFT JOIN facts USING (bucket)
-ORDER BY buckets.bucket
+FROM buckets LEFT JOIN facts USING (bucket) ORDER BY buckets.bucket
 `
 
 type ListRequestTrendParams struct {

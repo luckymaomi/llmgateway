@@ -35,7 +35,7 @@ func RecoverAdministratorAccess(ctx context.Context, database *sql.DB, email, pa
 	if role != string(identity.RoleAdministrator) {
 		return AdministratorRecoveryResult{}, identity.ErrForbidden
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE users SET password_hash = $1, status = 'active', disabled_at = NULL, approved_at = coalesce(approved_at, now()), updated_at = now() WHERE id = $2`, passwordHash, userID)
+	result, err := tx.ExecContext(ctx, `UPDATE users SET password_hash = $1, status = 'active', disabled_at = NULL, updated_at = now() WHERE id = $2`, passwordHash, userID)
 	if err != nil {
 		return AdministratorRecoveryResult{}, err
 	}

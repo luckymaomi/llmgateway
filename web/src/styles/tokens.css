@@ -34,9 +34,11 @@
   --sidebar-muted: #98aaa4;
   --sidebar-active: #2a3b37;
   --focus: #167dce;
-  --shadow-sm: 0 1px 2px rgb(24 33 42 / 8%);
-  --shadow-md: 0 12px 32px rgb(24 33 42 / 18%);
-  --radius: 6px;
+  --shadow-sm: 0 2px 8px rgb(24 33 42 / 7%);
+  --shadow-md: 0 18px 48px rgb(24 33 42 / 20%);
+  --radius: 8px;
+  --radius-control: 8px;
+  --radius-dialog: 8px;
   --sidebar-width: 240px;
   --sidebar-collapsed: 72px;
   --header-height: 56px;

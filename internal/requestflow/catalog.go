@@ -22,5 +22,5 @@ func (s *CatalogService) Models(ctx context.Context, gatewayKeyID uuid.UUID) ([]
 	if gatewayKeyID == uuid.Nil {
 		return nil, ErrModelNotAuthorized
 	}
-	return s.repository.ListPublishedModels(ctx, gatewayKeyID)
+	return s.repository.ListAvailableModels(ctx, gatewayKeyID)
 }

@@ -18,111 +18,55 @@ function Invoke-ControlJSON {
     -Headers $headers -ContentType "application/json" -Body $encoded -TimeoutSec 180
 }
 
-function New-Provider {
+function New-ResourcePool {
   param(
+    [Parameter(Mandatory = $true)][string] $ProviderID,
     [Parameter(Mandatory = $true)][string] $Slug,
     [Parameter(Mandatory = $true)][string] $Name,
-    [Parameter(Mandatory = $true)][string] $Kind,
-    [Parameter(Mandatory = $true)][string] $ProviderBaseURL
+    [Parameter(Mandatory = $true)][string] $ModelID
   )
 
-  return (Invoke-ControlJSON -Method Post -Path "/api/control/providers" -Idempotent -Body @{
-      slug = $Slug; name = $Name; kind = $Kind; baseUrl = $ProviderBaseURL
+  return (Invoke-ControlJSON -Method Post -Path "/api/control/resource-pools" -Idempotent -Body @{
+      providerId = $ProviderID; slug = $Slug; name = $Name; modelIds = @($ModelID)
     }).data
 }
 
-function New-Model {
+function New-ModelPrice {
   param(
-    [Parameter(Mandatory = $true)][string] $ProviderID,
-    [Parameter(Mandatory = $true)][string] $Alias,
-    [Parameter(Mandatory = $true)][string] $UpstreamModelID,
-    [ValidateSet("", "toggle", "effort", "hybrid")][string] $ReasoningMode = "",
+    [Parameter(Mandatory = $true)][string] $ModelID,
     [string] $Currency = "USD",
     [string] $InputPricePerMillionTokens = "0",
     [string] $OutputPricePerMillionTokens = "0"
   )
 
-  $capabilities = [System.Collections.Generic.List[string]]::new()
-  $capabilities.Add("streaming")
-  $capabilities.Add("tools")
-  if ($ReasoningMode) { $capabilities.Add("reasoning") }
-  $body = @{
-    providerId = $ProviderID
-    alias = $Alias
-    upstreamModelId = $UpstreamModelID
-    resourceDomain = "free"
-    capabilities = @($capabilities)
-    contextTokens = 131072
-  }
-  if ($ReasoningMode) { $body.reasoningMode = $ReasoningMode }
-  $model = (Invoke-ControlJSON -Method Post -Path "/api/control/models" -Body $body).data
-  $null = Invoke-ControlJSON -Method Post -Path "/api/control/model-prices" -Idempotent -Body @{
-    modelId = $model.id
+  return (Invoke-ControlJSON -Method Post -Path "/api/control/model-prices" -Idempotent -Body @{
+    modelId = $ModelID
     currency = $Currency
     inputPricePerMillionTokens = $InputPricePerMillionTokens
     outputPricePerMillionTokens = $OutputPricePerMillionTokens
     effectiveAt = (Get-Date).ToUniversalTime().AddMinutes(-1).ToString("o")
-  }
-  return $model
+  }).data
 }
 
 function New-Credential {
   param(
-    [Parameter(Mandatory = $true)][string] $ProviderID,
+    [Parameter(Mandatory = $true)][string] $ResourcePoolID,
     [Parameter(Mandatory = $true)][string] $Name,
     [Parameter(Mandatory = $true)][string] $Secret,
     [Parameter(Mandatory = $true)][string] $ModelID,
     [Parameter(Mandatory = $true)][int] $Priority,
-    [Parameter(Mandatory = $true)][int] $Weight,
-    [string[]] $AdditionalModelIDs = @()
+    [Parameter(Mandatory = $true)][int] $Weight
   )
 
-  $bindings = [System.Collections.Generic.List[object]]::new()
-  $bindings.Add(@{ modelId = $ModelID; priority = $Priority; weight = $Weight })
-  foreach ($additionalModelID in $AdditionalModelIDs) {
-    $bindings.Add(@{ modelId = $additionalModelID; priority = $Priority; weight = $Weight })
-  }
   return (Invoke-ControlJSON -Method Post -Path "/api/control/credentials" -Idempotent -Body @{
-      providerId = $ProviderID
-      label = $Name
+      resourcePoolId = $ResourcePoolID
+      name = $Name
       secret = $Secret
-      resourceDomain = "free"
-      modelBindings = @($bindings)
+      modelBindings = @(@{ model_id = $ModelID; priority = $Priority; weight = $Weight })
       rpmLimit = 60
       tpmLimit = 1000000
       concurrencyLimit = 4
     }).data
-}
-
-function Enable-Provider {
-  param([Parameter(Mandatory = $true)] $Provider)
-
-  $result = Invoke-ControlJSON -Method Put -Path "/api/control/providers/$($Provider.id)/status" -Idempotent -Body @{
-    enabled = $true; expectedUpdatedAt = $Provider.updatedAt
-  }
-  if ($result.data.status -ne "enabled") { throw "A real Provider did not become enabled." }
-}
-
-function New-Entitlement {
-  param(
-    [Parameter(Mandatory = $true)][string] $OwnerID,
-    [Parameter(Mandatory = $true)][string] $ModelID
-  )
-
-  $result = Invoke-ControlJSON -Method Post -Path "/api/control/entitlements" -Idempotent -Body @{
-    ownerId = $OwnerID
-    planKind = "token"
-    resourceDomain = "free"
-    modelId = $ModelID
-    grantedTokens = 1000000
-    concurrencyLimit = 4
-    rpmLimit = 120
-    tpmLimit = 1000000
-    startsAt = (Get-Date).ToUniversalTime().AddMinutes(-1).ToString("o")
-    expiresAt = (Get-Date).ToUniversalTime().AddDays(1).ToString("o")
-    reason = "Real Provider acceptance"
-  }
-  if ($result.data.modelId -ne $ModelID) { throw "A real Provider entitlement was not persisted." }
 }
 
 function Invoke-SDKClient {
@@ -237,7 +181,7 @@ function Invoke-GatewayJSONWithExplicitReissue {
       }
       $retryable = $status -eq 429 -or
         ($status -eq 409 -and $code -eq "upstream_outcome_uncertain") -or
-        ($status -eq 503 -and @("upstream_circuit_open", "free_pool_unavailable", "503") -contains $code)
+        ($status -eq 503 -and @("upstream_circuit_open", "503") -contains $code)
       $delaySeconds = Get-GatewayRetryDelaySeconds -Response $response
       if (-not $retryable -or $null -eq $delaySeconds) { throw }
       if ($attempt -eq $MaxAttempts) {
@@ -393,67 +337,89 @@ try {
   $script:AdminCSRF = $setup.data.csrfToken
   $setup.data.initialPassword = $null
 
-  $agnes = New-Provider -Slug "real-agnes" -Name "Real Agnes" -Kind "agnes" -ProviderBaseURL "https://apihub.agnes-ai.com/v1"
-  $compatible = New-Provider -Slug "real-compatible" -Name "Real Agnes Compatible" -Kind "openai-compatible" -ProviderBaseURL "https://apihub.agnes-ai.com/v1"
-  $zhipu = New-Provider -Slug "real-zhipu" -Name "Real Zhipu" -Kind "zhipu" -ProviderBaseURL "https://open.bigmodel.cn/api/paas/v4"
-  $gemini = New-Provider -Slug "real-gemini" -Name "Real Google Gemini" -Kind "gemini" -ProviderBaseURL "https://generativelanguage.googleapis.com/v1beta/openai"
-  $silicon = New-Provider -Slug "real-siliconflow" -Name "Real SiliconFlow" -Kind "openai-compatible" -ProviderBaseURL "https://api.siliconflow.cn/v1"
+  $providerCatalog = Invoke-RestMethod -Uri "$script:BaseURL/api/control/providers" -WebSession $script:AdminSession -TimeoutSec 30
+  $modelCatalog = Invoke-RestMethod -Uri "$script:BaseURL/api/control/models" -WebSession $script:AdminSession -TimeoutSec 30
+  $agnes = @($providerCatalog.data | Where-Object { $_.catalog_id -eq "agnes" }) | Select-Object -First 1
+  $zhipu = @($providerCatalog.data | Where-Object { $_.catalog_id -eq "zhipu" }) | Select-Object -First 1
+  $gemini = @($providerCatalog.data | Where-Object { $_.catalog_id -eq "gemini" }) | Select-Object -First 1
+  $silicon = @($providerCatalog.data | Where-Object { $_.catalog_id -eq "siliconflow" }) | Select-Object -First 1
+  $agnesModel = @($modelCatalog.data | Where-Object { $_.provider_id -eq $agnes.id -and $_.public_name -eq "agnes-2.0-flash" }) | Select-Object -First 1
+  $zhipuModel = @($modelCatalog.data | Where-Object { $_.provider_id -eq $zhipu.id -and $_.public_name -eq "glm-5.2" }) | Select-Object -First 1
+  $geminiModel = @($modelCatalog.data | Where-Object { $_.provider_id -eq $gemini.id -and $_.public_name -eq "gemini-3.5-flash" }) | Select-Object -First 1
+  $siliconModel = @($modelCatalog.data | Where-Object { $_.provider_id -eq $silicon.id -and $_.public_name -eq "qwen3.5-9b" }) | Select-Object -First 1
+  if (@(@($agnes, $zhipu, $gemini, $silicon, $agnesModel, $zhipuModel, $geminiModel, $siliconModel) | Where-Object { $null -eq $_ }).Count -gt 0) {
+    throw "The code-owned Provider and model catalog did not expose the four verified real entry points."
+  }
 
-  $agnesModel = New-Model -ProviderID $agnes.id -Alias "real-agnes-chat" -UpstreamModelID "agnes-2.0-flash" -ReasoningMode "toggle"
-  $compatibleModel = New-Model -ProviderID $compatible.id -Alias "real-compatible-chat" -UpstreamModelID "agnes-2.0-flash"
-  $zhipuModel = New-Model -ProviderID $zhipu.id -Alias "real-zhipu-chat" -UpstreamModelID "glm-5.2" -ReasoningMode "hybrid"
-  $geminiModel = New-Model -ProviderID $gemini.id -Alias "real-gemini-chat" -UpstreamModelID "gemini-3.5-flash" `
-    -ReasoningMode "effort" -InputPricePerMillionTokens "1.5" -OutputPricePerMillionTokens "9"
-  $siliconModel = New-Model -ProviderID $silicon.id -Alias "real-siliconflow-chat" -UpstreamModelID "Qwen/Qwen3.5-9B" `
-    -ReasoningMode "toggle" -Currency "CNY" -InputPricePerMillionTokens "1.5" -OutputPricePerMillionTokens "12"
+  $agnesPool = New-ResourcePool -ProviderID $agnes.id -Slug "real-agnes" -Name "Real Agnes" -ModelID $agnesModel.id
+  $zhipuPool = New-ResourcePool -ProviderID $zhipu.id -Slug "real-zhipu" -Name "Real Zhipu" -ModelID $zhipuModel.id
+  $geminiPool = New-ResourcePool -ProviderID $gemini.id -Slug "real-gemini" -Name "Real Google Gemini" -ModelID $geminiModel.id
+  $siliconPool = New-ResourcePool -ProviderID $silicon.id -Slug "real-siliconflow" -Name "Real SiliconFlow" -ModelID $siliconModel.id
+  if (@(@($agnesPool, $zhipuPool, $geminiPool, $siliconPool) | Where-Object { $_.status -ne "active" }).Count -gt 0) {
+    throw "A real Provider resource pool did not become active."
+  }
+
+  $null = New-ModelPrice -ModelID $agnesModel.id
+  $null = New-ModelPrice -ModelID $zhipuModel.id
+  $null = New-ModelPrice -ModelID $geminiModel.id -InputPricePerMillionTokens "1.5" -OutputPricePerMillionTokens "9"
+  $null = New-ModelPrice -ModelID $siliconModel.id -Currency "CNY" -InputPricePerMillionTokens "1.5" -OutputPricePerMillionTokens "12"
 
   for ($index = 0; $index -lt 3; $index++) {
-    New-Credential -ProviderID $agnes.id -Name "Agnes dedicated $($index + 1)" -Secret $agnesKeys[$index] `
+    New-Credential -ResourcePoolID $agnesPool.id -Name "Agnes dedicated $($index + 1)" -Secret $agnesKeys[$index] `
       -ModelID $agnesModel.id -Priority (($index + 1) * 10) -Weight 100 | Out-Null
-    New-Credential -ProviderID $compatible.id -Name "Agnes compatible $($index + 1)" -Secret $agnesKeys[$index] `
-      -ModelID $compatibleModel.id -Priority (($index + 1) * 10) -Weight 100 | Out-Null
   }
-  New-Credential -ProviderID $zhipu.id -Name "Zhipu quota 1" -Secret $zhipuQuotaKeys[0] -ModelID $zhipuModel.id -Priority 10 -Weight 100 | Out-Null
-  New-Credential -ProviderID $zhipu.id -Name "Zhipu success" -Secret $zhipuSuccessKeys[0] -ModelID $zhipuModel.id -Priority 30 -Weight 100 | Out-Null
-  New-Credential -ProviderID $zhipu.id -Name "Zhipu quota 3" -Secret $zhipuQuotaKeys[1] -ModelID $zhipuModel.id -Priority 20 -Weight 100 | Out-Null
-  New-Credential -ProviderID $gemini.id -Name "Gemini dedicated 1" -Secret $geminiKeys[0] -ModelID $geminiModel.id -Priority 10 -Weight 100 | Out-Null
-  New-Credential -ProviderID $silicon.id -Name "SiliconFlow dedicated 1" -Secret $siliconKeys[0] -ModelID $siliconModel.id -Priority 10 -Weight 100 | Out-Null
+  New-Credential -ResourcePoolID $zhipuPool.id -Name "Zhipu quota 1" -Secret $zhipuQuotaKeys[0] -ModelID $zhipuModel.id -Priority 10 -Weight 100 | Out-Null
+  New-Credential -ResourcePoolID $zhipuPool.id -Name "Zhipu success" -Secret $zhipuSuccessKeys[0] -ModelID $zhipuModel.id -Priority 30 -Weight 100 | Out-Null
+  New-Credential -ResourcePoolID $zhipuPool.id -Name "Zhipu quota 3" -Secret $zhipuQuotaKeys[1] -ModelID $zhipuModel.id -Priority 20 -Weight 100 | Out-Null
+  New-Credential -ResourcePoolID $geminiPool.id -Name "Gemini dedicated 1" -Secret $geminiKeys[0] -ModelID $geminiModel.id -Priority 10 -Weight 100 | Out-Null
+  New-Credential -ResourcePoolID $siliconPool.id -Name "SiliconFlow dedicated 1" -Secret $siliconKeys[0] -ModelID $siliconModel.id -Priority 10 -Weight 100 | Out-Null
 
-  Enable-Provider -Provider $agnes
-  Enable-Provider -Provider $compatible
-  Enable-Provider -Provider $zhipu
-  Enable-Provider -Provider $gemini
-  Enable-Provider -Provider $silicon
-
-  $active = Invoke-RestMethod -Uri "$script:BaseURL/api/control/configuration/active" -WebSession $script:AdminSession -TimeoutSec 30
-  $revision = Invoke-RestMethod -Method Post -Uri "$script:BaseURL/api/control/configuration/revisions" -WebSession $script:AdminSession `
-    -Headers @{ "X-CSRF-Token" = $script:AdminCSRF; "Idempotency-Key" = [guid]::NewGuid().ToString() } -TimeoutSec 30
-  if ($revision.data.providerCount -ne 5 -or $revision.data.modelCount -ne 5 -or $revision.data.credentialCount -ne 11 -or $revision.data.routeCount -ne 11) {
-    throw "Real Provider configuration capture did not contain the complete four-kind catalog."
+  $plan = Invoke-ControlJSON -Method Post -Path "/api/control/plans" -Idempotent -Body @{
+    slug = "real-provider-plan"
+    name = "Real Provider Plan"
+    description = "Isolated real Provider acceptance"
+    kind = "token"
+    tokenQuota = 1000000
+    validityDays = 1
+    concurrencyLimit = 4
+    rpmLimit = 120
+    tpmLimit = 1000000
+    routes = @(
+      @{ modelId = $agnesModel.id; resourcePoolId = $agnesPool.id },
+      @{ modelId = $zhipuModel.id; resourcePoolId = $zhipuPool.id },
+      @{ modelId = $geminiModel.id; resourcePoolId = $geminiPool.id },
+      @{ modelId = $siliconModel.id; resourcePoolId = $siliconPool.id }
+    )
   }
-  $publication = Invoke-ControlJSON -Method Post -Path "/api/control/configuration/revisions/$($revision.data.id)/publish" -Idempotent -Body @{
-    expectedActiveVersion = [int64]$active.data.version
+  if ($plan.data.current_version.version -ne 1 -or @($plan.data.current_version.routes).Count -ne 4) {
+    throw "Real Provider plan publication did not freeze the four catalog routes."
   }
-  if ($publication.data.phase -ne "completed") { throw "Real Provider configuration publication did not complete." }
-
-  foreach ($model in @($agnesModel, $compatibleModel, $zhipuModel, $geminiModel, $siliconModel)) {
-    New-Entitlement -OwnerID $setup.data.userId -ModelID $model.id
+  $subscription = Invoke-ControlJSON -Method Post -Path "/api/control/subscriptions" -Idempotent -Body @{
+    userId = $setup.data.userId
+    servicePlanId = $plan.data.id
+    grantedTokens = 1000000
+    startsAt = (Get-Date).ToUniversalTime().AddMinutes(-1).ToString("o")
+    expiresAt = (Get-Date).ToUniversalTime().AddDays(1).ToString("o")
+    notes = "Real Provider acceptance"
+  }
+  if ($subscription.data.status -ne "active" -or $subscription.data.service_plan_version_id -ne $plan.data.current_version.id) {
+    throw "Real Provider subscription did not freeze the published plan version."
   }
   $keyResult = Invoke-ControlJSON -Method Post -Path "/api/control/keys" -Idempotent -Body @{
     ownerId = $setup.data.userId
     name = "Real Provider SDK"
-    authorizedModelIds = @($agnesModel.id, $compatibleModel.id, $zhipuModel.id, $geminiModel.id, $siliconModel.id)
+    authorizedModelIds = @($agnesModel.id, $zhipuModel.id, $geminiModel.id, $siliconModel.id)
     expiresAt = $null
   }
   $script:GatewayKey = $keyResult.data.secret
   if (-not $script:GatewayKey -or -not $script:GatewayKey.StartsWith("llmg_")) {
-    throw "Real Provider Gateway Key was not issued."
+    throw "Real Provider API key was not issued."
   }
 
   Push-Location (Join-Path $root "scripts\acceptance\openai-go")
   try {
-    $goSummary = Invoke-SDKClient -SDK go -SuccessModel $siliconModel.alias -StreamModel $siliconModel.alias `
-      -ReasoningMode "toggle" -ErrorModel $zhipuModel.alias -PythonPath $pythonPath
+    $goSummary = Invoke-SDKClient -SDK go -SuccessModel $siliconModel.public_name -StreamModel $siliconModel.public_name `
+      -ReasoningMode "toggle" -ErrorModel $zhipuModel.public_name -PythonPath $pythonPath
   } finally {
     Pop-Location
   }
@@ -465,14 +431,14 @@ try {
   Push-Location (Join-Path $root "scripts\acceptance\openai-python")
   try {
     $env:LLMGATEWAY_SDK_EXPLICIT_REISSUE = "true"
-    $pythonSummary = Invoke-SDKClient -SDK python -SuccessModel $siliconModel.alias -StreamModel $agnesModel.alias `
-      -ReasoningMode "toggle" -ErrorModel $zhipuModel.alias -PythonPath $pythonPath
+    $pythonSummary = Invoke-SDKClient -SDK python -SuccessModel $siliconModel.public_name -StreamModel $agnesModel.public_name `
+      -ReasoningMode "toggle" -ErrorModel $zhipuModel.public_name -PythonPath $pythonPath
   } finally {
     Pop-Location
   }
 
   $dedicatedToolBody = @{
-    model = $agnesModel.alias
+    model = $agnesModel.public_name
     messages = @(@{ role = "user"; content = "Call lookup for Beijing. Do not answer directly." })
     tools = @(@{ type = "function"; function = @{
           name = "lookup"; description = "Look up a city"
@@ -490,7 +456,7 @@ try {
   }
 
   $dedicatedReasoningBody = @{
-    model = $agnesModel.alias
+    model = $agnesModel.public_name
     messages = @(@{ role = "user"; content = "Reply with exactly OK after thinking." })
     thinking = @{ type = "enabled" }
     max_tokens = 64
@@ -504,26 +470,12 @@ try {
     throw "The dedicated Agnes thinking request did not complete with usage through the Gateway."
   }
 
-  $compatibleChatBody = @{
-    model = $compatibleModel.alias
-    messages = @(@{ role = "user"; content = "Reply with exactly OK." })
-    max_tokens = 256
-  } | ConvertTo-Json -Depth 5 -Compress
-  $compatibleChatResult = Invoke-GatewayJSONWithExplicitReissue -Path "/v1/chat/completions" -Body $compatibleChatBody
-  if (-not $compatibleChatResult.Succeeded) {
-    throw "The OpenAI-compatible chat remained unavailable after bounded explicit reissue."
-  }
-  $compatibleChat = $compatibleChatResult.Data
-  if (@($compatibleChat.choices).Count -eq 0 -or $compatibleChat.usage.total_tokens -lt 1) {
-    throw "The OpenAI-compatible adapter did not complete a real chat with usage."
-  }
-
   $geminiTools = @(@{ type = "function"; function = @{
         name = "lookup"; description = "Look up a city"
         parameters = @{ type = "object"; properties = @{ city = @{ type = @("string", "null") } }; required = @("city", "unknown") }
       } })
   $geminiToolBody = @{
-    model = $geminiModel.alias
+    model = $geminiModel.public_name
     messages = @(@{ role = "user"; content = "Use the lookup tool for Beijing." })
     tools = $geminiTools
     tool_choice = "required"
@@ -540,7 +492,7 @@ try {
       throw "The Gemini adapter did not preserve the tool-call thought signature."
     }
     $geminiReplayBody = @{
-      model = $geminiModel.alias
+      model = $geminiModel.public_name
       messages = @(
         @{ role = "user"; content = "Use the lookup tool for Beijing." },
         @{ role = "assistant"; content = $null; tool_calls = @($geminiCall[0]) },
@@ -560,7 +512,7 @@ try {
   }
 
   $chatBody = @{
-    model = $zhipuModel.alias
+    model = $zhipuModel.public_name
     messages = @(@{ role = "user"; content = "Reply with exactly OK." })
     max_tokens = 32
   } | ConvertTo-Json -Depth 5 -Compress
@@ -572,7 +524,7 @@ try {
 
   $docker = Get-LLMGatewayDockerCommand
   $zhipuFacts = & $docker exec $postgres.Container psql -v ON_ERROR_STOP=1 -U llmgateway -d llmgateway_provider -Atc `
-    "SELECT string_agg(name || ':' || status::text || ':' || coalesce(last_error_kind, 'ok'), ',' ORDER BY name) FROM provider_credentials WHERE provider_id = '$($zhipu.id)'"
+    "SELECT string_agg(credential.name || ':' || credential.status::text || ':' || coalesce(credential.last_error_kind, 'ok'), ',' ORDER BY credential.name) FROM provider_credentials credential JOIN resource_pools pool ON pool.id = credential.resource_pool_id WHERE pool.provider_id = '$($zhipu.id)'"
   if ($LASTEXITCODE -ne 0 -or $zhipuFacts -ne "Zhipu quota 1:cooling:quota,Zhipu quota 3:cooling:quota,Zhipu success:active:ok") {
     throw "Real Zhipu quota exclusion and healthy credential takeover did not persist."
   }
@@ -590,7 +542,7 @@ try {
     if ($geminiCostSegments.Count -ne 5 -or [int]$geminiCostSegments[0] -lt 2 -or $geminiCostSegments[4] -ne "true") {
       throw "Real Gemini authoritative usage did not reconcile to the frozen official paid-tier cost snapshot: $geminiCostFacts"
     }
-    $geminiSummary = Invoke-RestMethod -Uri "$script:BaseURL/api/control/costs?search=real-gemini-chat&page=1&pageSize=20" -WebSession $script:AdminSession -TimeoutSec 30
+    $geminiSummary = Invoke-RestMethod -Uri "$script:BaseURL/api/control/costs?search=gemini-3.5-flash&page=1&pageSize=20" -WebSession $script:AdminSession -TimeoutSec 30
     $geminiSummaryItem = @($geminiSummary.data.items | Where-Object { $_.modelId -eq $geminiModel.id }) | Select-Object -First 1
     if (-not $geminiSummaryItem -or $geminiSummaryItem.totalCostNanos -ne $geminiCostSegments[3]) {
       throw "Administrator cost aggregation did not reconcile to the real Gemini request ledger."
@@ -623,7 +575,7 @@ try {
   if ($siliconCostSegments.Count -ne 5 -or [int]$siliconCostSegments[0] -lt 2 -or $siliconCostSegments[4] -ne "true") {
     throw "Real SiliconFlow authoritative usage did not reconcile to the frozen official cost snapshot: $siliconCostFacts"
   }
-  $siliconSummary = Invoke-RestMethod -Uri "$script:BaseURL/api/control/costs?search=real-siliconflow-chat&page=1&pageSize=20" -WebSession $script:AdminSession -TimeoutSec 30
+  $siliconSummary = Invoke-RestMethod -Uri "$script:BaseURL/api/control/costs?search=qwen3.5-9b&page=1&pageSize=20" -WebSession $script:AdminSession -TimeoutSec 30
   $siliconSummaryItem = @($siliconSummary.data.items | Where-Object { $_.modelId -eq $siliconModel.id }) | Select-Object -First 1
   if (-not $siliconSummaryItem -or $siliconSummaryItem.totalCostNanos -ne $siliconCostSegments[3]) {
     throw "Administrator cost aggregation did not reconcile to the real SiliconFlow request ledger."

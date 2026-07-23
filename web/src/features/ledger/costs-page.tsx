@@ -44,31 +44,43 @@ export function CostsPage() {
     () => [
       { accessorKey: 'userName', header: '用户' },
       {
-        accessorKey: 'plan',
-        header: '额度类型',
-        cell: ({ row }) => (row.original.plan === 'coding' ? '编程' : 'Token'),
+        accessorKey: 'servicePlanName',
+        header: '套餐',
+        cell: ({ row }) => (
+          <div>
+            <strong>{row.original.servicePlanName}</strong>
+            <small className="table-subline">
+              {row.original.planKind === 'coding' ? 'Coding Plan' : 'Token Plan'}
+            </small>
+          </div>
+        ),
       },
       { accessorKey: 'modelAlias', header: '模型' },
       { accessorKey: 'providerName', header: 'Provider' },
+      { accessorKey: 'resourcePoolName', header: '资源池' },
       {
         accessorKey: 'requestCount',
         header: '请求',
         cell: ({ row }) => formatNumber(row.original.requestCount),
+        meta: { align: 'right' },
       },
       {
         accessorKey: 'inputTokens',
         header: '输入 Token',
         cell: ({ row }) => formatNumber(row.original.inputTokens),
+        meta: { align: 'right' },
       },
       {
         accessorKey: 'outputTokens',
         header: '输出 Token',
         cell: ({ row }) => formatNumber(row.original.outputTokens),
+        meta: { align: 'right' },
       },
       {
         accessorKey: 'totalCostNanos',
         header: '采购成本',
         cell: ({ row }) => formatMoneyNanos(row.original.totalCostNanos, row.original.currency),
+        meta: { align: 'right' },
       },
     ],
     [],
@@ -78,7 +90,11 @@ export function CostsPage() {
       <PageHeader
         title="上游成本"
         actions={
-          <Button icon={<Plus size={16} />} onClick={() => setFormOpen(true)}>
+          <Button
+            icon={<Plus size={16} />}
+            data-onboarding="create-price"
+            onClick={() => setFormOpen(true)}
+          >
             新增价格
           </Button>
         }
@@ -98,17 +114,6 @@ export function CostsPage() {
           pageSize={prices.data?.pageSize ?? 20}
           total={prices.data?.total ?? 0}
           onPageChange={setPricePage}
-          renderMobile={(item) => (
-            <div className="mobile-summary">
-              <strong>{item.modelAlias}</strong>
-              <span>
-                {item.currency} · {formatDateTime(item.effectiveAt)}
-              </span>
-              <span>
-                输入 {item.inputPricePerMillionTokens} · 输出 {item.outputPricePerMillionTokens}
-              </span>
-            </div>
-          )}
         />
       </PageSection>
       <PageSection title="采购成本汇总">
@@ -123,7 +128,7 @@ export function CostsPage() {
           data={summaries.data?.items ?? []}
           columns={summaryColumns}
           getRowId={(item) =>
-            `${item.userId}:${item.entitlementId}:${item.modelId}:${item.currency}`
+            `${item.userId}:${item.subscriptionId}:${item.modelId}:${item.resourcePoolId}:${item.currency}`
           }
           loading={summaries.isLoading}
           fetching={summaries.isFetching}
@@ -134,15 +139,6 @@ export function CostsPage() {
           pageSize={summaries.data?.pageSize ?? state.pageSize}
           total={summaries.data?.total ?? 0}
           onPageChange={setPage}
-          renderMobile={(item) => (
-            <div className="mobile-summary">
-              <strong>{item.modelAlias}</strong>
-              <span>
-                {item.userName} · {item.providerName}
-              </span>
-              <span>{formatMoneyNanos(item.totalCostNanos, item.currency)}</span>
-            </div>
-          )}
         />
       </PageSection>
       <PriceForm open={formOpen} onOpenChange={setFormOpen} />

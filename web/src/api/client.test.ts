@@ -7,7 +7,7 @@ import { streamGatewayKeyTest } from './gateway-key-test'
 import type { GatewayKeyTestEvent } from './types'
 
 describe('same-origin control API', () => {
-  it('decodes ordered Gateway Key test facts from an SSE response', async () => {
+  it('decodes ordered API key test facts from an SSE response', async () => {
     const events: GatewayKeyTestEvent[] = [
       {
         type: 'phase',
@@ -22,7 +22,7 @@ describe('same-origin control API', () => {
     const body = events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join('')
     server.use(
       http.post(
-        'http://llmgateway.test/api/control/gateway-key-test/runs',
+        'http://llmgateway.test/api/control/api-key-test/runs',
         () => new HttpResponse(body, { headers: { 'Content-Type': 'text/event-stream' } }),
       ),
     )
@@ -30,7 +30,7 @@ describe('same-origin control API', () => {
 
     await streamGatewayKeyTest(
       {
-        gatewayKeyId: 'key-1',
+        apiKeyId: 'key-1',
         model: 'gpt-main',
         message: 'Hello',
       },
