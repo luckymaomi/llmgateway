@@ -77,7 +77,7 @@ export function OperationsPage() {
         />
         <Metric
           icon={<KeyRound size={16} />}
-          label="可用上游 Key"
+          label="可用上游 API Key"
           value={`${overview.data.resources.activeCredentialCount} / ${overview.data.resources.credentialCount}`}
         />
       </div>

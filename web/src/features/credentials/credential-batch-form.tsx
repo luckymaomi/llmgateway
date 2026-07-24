@@ -69,7 +69,7 @@ export function CredentialBatchForm({
     <DialogFrame
       open={open}
       onOpenChange={(next) => !next && close()}
-      title={results ? '批量导入结果' : '批量导入上游 API Key'}
+      title={results ? '添加结果' : '添加上游 API Key'}
       width="lg"
       dismissible={!mutation.isPending}
       footer={
@@ -81,7 +81,7 @@ export function CredentialBatchForm({
               取消
             </Button>
             <Button type="submit" form="credential-batch-form" disabled={mutation.isPending}>
-              {mutation.isPending ? '导入中' : '开始导入'}
+              {mutation.isPending ? '添加中' : '添加'}
             </Button>
           </>
         )
@@ -94,7 +94,7 @@ export function CredentialBatchForm({
               <span>第 {result.line} 行</span>
               <strong>{result.name}</strong>
               <span>{batchStatus[result.status]}</span>
-              <code>{result.errorKind ?? ''}</code>
+              <span>{result.errorKind ? batchErrorLabel(result.errorKind) : ''}</span>
             </div>
           ))}
         </div>
@@ -104,14 +104,15 @@ export function CredentialBatchForm({
             <NativeSelect
               id="batch-pool"
               autoFocus
+              required
               value={resourcePoolId}
               disabled={mutation.isPending}
               onChange={(event) => setResourcePoolId(event.target.value)}
             >
-              <option value="">请选择</option>
+              <option value="">选择资源池</option>
               {(pools.data ?? []).map((item) => (
                 <option key={item.id} value={item.id}>
-                  {item.providerName} · {item.name}
+                  {item.name}
                 </option>
               ))}
             </NativeSelect>
@@ -120,11 +121,13 @@ export function CredentialBatchForm({
             label="逐行粘贴"
             htmlFor="batch-lines"
             className="field--full"
-            hint="每行一个 Key；也可使用 名称,Key"
+            hint="每行格式：名称,上游 API Key。名称可省略；只粘贴一行就是添加一个 Key。"
           >
             <Textarea
               id="batch-lines"
+              required
               rows={12}
+              placeholder={'主 Key,sk-xxxxxxxx\n备用 Key,sk-yyyyyyyy\nsk-zzzzzzzz'}
               value={lines}
               readOnly={mutation.isPending}
               onChange={(event) => setLines(event.target.value)}
@@ -143,7 +146,10 @@ function parseLines(value: string): Array<{ name: string; secret: string }> {
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line, index) => {
-      const separator = line.indexOf(',')
+      const separators = [line.indexOf(','), line.indexOf('，'), line.indexOf('\t')].filter(
+        (position) => position > 0,
+      )
+      const separator = separators.length > 0 ? Math.min(...separators) : -1
       return separator > 0
         ? { name: line.slice(0, separator).trim(), secret: line.slice(separator + 1).trim() }
         : { name: `Key ${index + 1}`, secret: line }
@@ -152,3 +158,10 @@ function parseLines(value: string): Array<{ name: string; secret: string }> {
 }
 
 const batchStatus = { created: '已创建', skipped: '已跳过', rejected: '已拒绝' } as const
+
+function batchErrorLabel(kind: string): string {
+  if (kind === 'invalid_input') return '名称或 Key 不符合要求'
+  if (kind === 'conflict') return 'Key 已存在或数据发生冲突'
+  if (kind === 'persistence_failed') return '保存失败，请重试'
+  return '未能添加'
+}

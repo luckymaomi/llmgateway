@@ -12,7 +12,6 @@ import (
 )
 
 type planInput struct {
-	Slug             string                `json:"slug"`
 	Name             string                `json:"name"`
 	Description      string                `json:"description"`
 	Kind             subscription.PlanKind `json:"kind"`
@@ -61,7 +60,7 @@ func (a *API) publishPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	item, err := a.subscriptions.PublishPlan(r.Context(), principalFromContext(r.Context()), subscription.PlanDraft{
-		ID: planID, Slug: input.Slug, Name: input.Name, Description: input.Description, Kind: input.Kind,
+		ID: planID, Name: input.Name, Description: input.Description, Kind: input.Kind,
 		TokenQuota: input.TokenQuota, ValidityDays: input.ValidityDays, ConcurrencyLimit: input.ConcurrencyLimit,
 		RPMLimit: input.RPMLimit, TPMLimit: input.TPMLimit, Routes: routes,
 	}, mutation)

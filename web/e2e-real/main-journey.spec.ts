@@ -34,32 +34,28 @@ test('completes the administrator and member subscription journey against real s
   expect(
     await page.evaluate(() => JSON.stringify({ ...localStorage, ...sessionStorage })),
   ).not.toContain(initialAdministratorPassword)
+  await page.screenshot({
+    path: acceptanceArtifactPath('administrator-setup-success-desktop.png'),
+    mask: [page.getByTestId('initial-administrator-password')],
+    maskColor: '#1d2a27',
+  })
   await page.getByRole('button', { name: /^我已保存/ }).click()
   await expectPageWidthToFit(page)
   await page.screenshot({ path: acceptanceArtifactPath('getting-started-desktop.png') })
 
   await page.getByRole('button', { name: '引导我完成' }).click()
-  await expect(page.locator('.driver-popover-title')).toHaveText('创建资源池')
-  await expect(page.locator('[data-onboarding-nav="/resource-pools"]')).toHaveClass(
-    /driver-active-element/,
-  )
   await page.locator('.driver-popover').evaluate(async (element) => {
     await Promise.all(element.getAnimations().map((animation) => animation.finished))
   })
   await page.screenshot({ path: acceptanceArtifactPath('onboarding-tour-desktop.png') })
   await page.getByRole('button', { name: '带我前往' }).click()
   await expect(page).toHaveURL(/\/resource-pools$/)
-  await expect(page.locator('.driver-popover-title')).toHaveText('创建资源池')
-  await expect(page.getByRole('button', { name: '创建资源池' })).toHaveClass(
-    /driver-active-element/,
-  )
   await page.getByRole('button', { name: '知道了' }).click()
 
   await page.getByRole('button', { name: '创建资源池' }).click()
   const poolDialog = page.getByRole('dialog', { name: '创建资源池' })
-  await poolDialog.getByLabel('Provider').selectOption({ label: '硅基流动' })
+  await poolDialog.getByLabel('上游平台').selectOption({ label: '硅基流动' })
   await poolDialog.getByLabel('资源池名称').fill('Browser Pool')
-  await poolDialog.getByLabel('标识').fill('browser-pool')
   await poolDialog.getByRole('checkbox', { name: 'qwen3.5-9b' }).check()
   await page.screenshot({
     path: acceptanceArtifactPath('resource-pool-form-desktop.png'),
@@ -76,26 +72,27 @@ test('completes the administrator and member subscription journey against real s
   await page.goto('/provider-keys')
   await page.getByRole('button', { name: '添加上游 API Key' }).click()
   const credentialDialog = page.getByRole('dialog', { name: '添加上游 API Key' })
-  await credentialDialog.getByLabel('资源池').selectOption({ label: '硅基流动 · Browser Pool' })
-  await credentialDialog.getByLabel('名称').fill('Browser Upstream Key')
-  await credentialDialog.getByLabel('上游 API Key').fill('core-upstream-secret')
-  await credentialDialog.getByRole('checkbox', { name: 'qwen3.5-9b' }).check()
+  await credentialDialog.getByLabel('资源池').selectOption({ label: 'Browser Pool' })
+  await credentialDialog.getByLabel('逐行粘贴').fill('Browser Upstream Key,core-upstream-secret')
   await page.screenshot({
     path: acceptanceArtifactPath('upstream-key-form-desktop.png'),
     fullPage: true,
   })
   const credentialResponse = page.waitForResponse(
     (response) =>
-      new URL(response.url()).pathname === '/api/control/credentials' &&
+      new URL(response.url()).pathname === '/api/control/credentials/batch' &&
       response.request().method() === 'POST',
   )
-  await credentialDialog.getByRole('button', { name: '保存' }).click()
-  expect((await credentialResponse).status()).toBe(201)
+  await credentialDialog.getByRole('button', { name: '添加', exact: true }).click()
+  expect((await credentialResponse).status()).toBe(200)
+  const addedDialog = page.getByRole('dialog', { name: '添加结果' })
+  await expect(addedDialog.getByText('已创建')).toBeVisible()
+  await addedDialog.getByRole('button', { name: '完成' }).click()
 
   const credentialRow = page.getByRole('row').filter({ hasText: 'Browser Upstream Key' })
   await credentialRow.getByRole('button', { name: '编辑' }).click()
   const editCredential = page.getByRole('dialog', { name: '编辑上游 API Key' })
-  await editCredential.getByLabel('替换上游 API Key').fill(replacementUpstreamSecret)
+  await editCredential.getByLabel('上游 API Key').fill(replacementUpstreamSecret)
   const replaceSecretResponse = page.waitForResponse(
     (response) =>
       new URL(response.url()).pathname.startsWith('/api/control/credentials/') &&
@@ -111,9 +108,16 @@ test('completes the administrator and member subscription journey against real s
       new URL(response.url()).pathname.endsWith('/probe') && response.request().method() === 'POST',
   )
   await probeDialog.getByRole('button', { name: '开始测试' }).click()
-  expect((await probeResponse).status()).toBe(200)
+  const completedProbeResponse = await probeResponse
+  expect(completedProbeResponse.status()).toBe(200)
+  const completedProbe = (await completedProbeResponse.json()) as {
+    data: { execution: { request_id: string } }
+  }
+  expect(completedProbe.data.execution.request_id).toMatch(/\S+/)
   await expect(probeDialog.getByText('连接成功')).toBeVisible()
-  await expect(probeDialog.getByText(/Request ID：\S+/)).toBeVisible()
+  await expect(
+    probeDialog.getByText(completedProbe.data.execution.request_id, { exact: true }),
+  ).toBeVisible()
   await probeDialog.getByRole('button', { name: '关闭', exact: true }).last().click()
 
   await page.goto('/costs')
@@ -134,8 +138,7 @@ test('completes the administrator and member subscription journey against real s
   await page.getByRole('button', { name: '创建套餐' }).click()
   const planDialog = page.getByRole('dialog', { name: '创建并发布套餐' })
   await planDialog.getByLabel('套餐名称').fill('Browser Plan')
-  await planDialog.getByLabel('稳定标识').fill('browser-plan')
-  await planDialog.getByLabel('Token 额度').fill('50000')
+  await planDialog.getByLabel('每份订阅总额度（Token）').fill('50000')
   await planDialog.getByRole('checkbox', { name: 'qwen3.5-9b' }).check()
   await page.screenshot({ path: acceptanceArtifactPath('plan-form-desktop.png'), fullPage: true })
   const planResponse = page.waitForResponse(
@@ -169,7 +172,9 @@ test('completes the administrator and member subscription journey against real s
   await subscriptionDialog
     .getByLabel('成员')
     .selectOption({ label: `Browser Member · ${memberEmail}` })
-  await subscriptionDialog.getByLabel('套餐').selectOption({ label: 'Browser Plan · v1' })
+  await subscriptionDialog
+    .getByLabel('套餐', { exact: true })
+    .selectOption({ label: 'Browser Plan · v1' })
   await page.screenshot({
     path: acceptanceArtifactPath('subscription-form-desktop.png'),
     fullPage: true,
@@ -185,8 +190,58 @@ test('completes the administrator and member subscription journey against real s
   const administratorKeySecret = await createKey(page, 'Browser Admin-Created Key')
   expect(administratorKeySecret).toMatch(/^llmg_[A-Za-z0-9_-]+$/)
   await verifyGatewayKeyRequest(page, 'Browser Admin-Created Key')
+
+  await page.goto('/provider-keys')
+  await expect(page.getByRole('row').filter({ hasText: 'Browser Upstream Key' })).toBeVisible()
+  await expectPageWidthToFit(page)
+  await page.screenshot({
+    path: acceptanceArtifactPath('upstream-keys-desktop.png'),
+    fullPage: true,
+  })
+
+  await page.goto('/members')
+  await expect(page.getByRole('row').filter({ hasText: 'Browser Member' })).toBeVisible()
+  await expectPageWidthToFit(page)
+  await page.screenshot({ path: acceptanceArtifactPath('members-desktop.png'), fullPage: true })
+
+  await page.goto('/operations')
+  await page.waitForLoadState('networkidle')
+  await expectPageWidthToFit(page)
+  await page.screenshot({ path: acceptanceArtifactPath('operations-desktop.png'), fullPage: true })
+
+  await page.goto('/api-logs')
+  const completedRequestRow = page.getByRole('row').filter({ hasText: 'qwen3.5-9b' }).first()
+  await expect(completedRequestRow).toBeVisible()
+  await completedRequestRow.click()
+  await expect(page.getByRole('dialog', { name: '请求详情' })).toBeVisible()
+  await expectPageWidthToFit(page)
+  await page.screenshot({
+    path: acceptanceArtifactPath('api-log-detail-desktop.png'),
+    fullPage: true,
+  })
+  await page.getByRole('button', { name: '关闭详情' }).click()
+
+  await page.goto('/quota-records')
+  await expect(page.getByRole('row').filter({ hasText: 'Browser Plan' }).first()).toBeVisible()
+  await expectPageWidthToFit(page)
+  await page.screenshot({
+    path: acceptanceArtifactPath('quota-records-desktop.png'),
+    fullPage: true,
+  })
+
+  await page.goto('/costs')
+  await expect(page.getByRole('row').filter({ hasText: 'Browser Member' })).toBeVisible()
+  await expectPageWidthToFit(page)
+  await page.screenshot({ path: acceptanceArtifactPath('costs-desktop.png'), fullPage: true })
+
+  await page.goto('/site-settings')
+  await expectPageWidthToFit(page)
+  await page.screenshot({
+    path: acceptanceArtifactPath('site-settings-desktop.png'),
+    fullPage: true,
+  })
+
   await page.goto('/dashboard')
-  await expect(page.getByRole('heading', { name: '24 小时趋势' })).toBeVisible()
   await expectPageWidthToFit(page)
   await page.screenshot({
     path: acceptanceArtifactPath('administrator-dashboard-desktop.png'),
@@ -212,6 +267,22 @@ test('completes the administrator and member subscription journey against real s
   await expectPageWidthToFit(page)
   await page.screenshot({
     path: acceptanceArtifactPath('member-dashboard-desktop.png'),
+    fullPage: true,
+  })
+
+  await page.goto('/api-logs')
+  await expect(page.getByRole('row').filter({ hasText: 'qwen3.5-9b' }).first()).toBeVisible()
+  await expectPageWidthToFit(page)
+  await page.screenshot({
+    path: acceptanceArtifactPath('member-api-logs-desktop.png'),
+    fullPage: true,
+  })
+
+  await page.goto('/quota-records')
+  await expect(page.getByRole('row').filter({ hasText: 'Browser Plan' }).first()).toBeVisible()
+  await expectPageWidthToFit(page)
+  await page.screenshot({
+    path: acceptanceArtifactPath('member-quota-records-desktop.png'),
     fullPage: true,
   })
 

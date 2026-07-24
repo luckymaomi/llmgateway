@@ -114,6 +114,7 @@ export function MemberForm({
             <Input
               id="member-name"
               autoFocus
+              required
               value={displayName}
               readOnly={mutation.isPending}
               onChange={(event) => setDisplayName(event.target.value)}
@@ -123,6 +124,7 @@ export function MemberForm({
             <Input
               id="member-email"
               type="email"
+              required
               value={email}
               readOnly={mutation.isPending}
               onChange={(event) => setEmail(event.target.value)}

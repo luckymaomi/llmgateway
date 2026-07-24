@@ -60,6 +60,11 @@ function New-MutationHeaders {
   }
 }
 
+function ConvertTo-UTF8Hex {
+  param([Parameter(Mandatory = $true)][string] $Value)
+  return [System.BitConverter]::ToString([System.Text.Encoding]::UTF8.GetBytes($Value)).Replace("-", "").ToLowerInvariant()
+}
+
 Push-Location (Join-Path $PSScriptRoot "..")
 $runID = New-LLMGatewayTestRunID -Purpose "core"
 $postgres = $null
@@ -211,17 +216,26 @@ try {
   $model = @($models.data | Where-Object { $_.provider_id -eq $provider.id }) | Select-Object -First 1
   if ($null -eq $provider -or $null -eq $model) { throw "The code-owned Provider and model catalog was not available." }
 
+  $naturalPoolName = -join ([char[]]@(0x6838, 0x5FC3, 0x6C60))
+  $naturalPoolBody = [System.Text.Encoding]::UTF8.GetBytes((@{
+      providerId = $provider.id; name = $naturalPoolName; modelIds = @($model.id)
+    } | ConvertTo-Json -Depth 5))
   $pool = Invoke-RestMethod -Method Post -Uri "$baseURL/api/control/resource-pools" -WebSession $adminSession `
-    -Headers (New-MutationHeaders -CSRF $adminCSRF) -ContentType "application/json" `
-    -Body (@{ providerId = $provider.id; slug = "core-pool"; name = "Core Pool"; modelIds = @($model.id) } | ConvertTo-Json -Depth 5)
-  if ($pool.data.slug -ne "core-pool" -or $pool.data.status -ne "active") { throw "Resource pool creation did not become live." }
+    -Headers (New-MutationHeaders -CSRF $adminCSRF) -ContentType "application/json; charset=utf-8" -Body $naturalPoolBody
+  if ($pool.data.status -ne "active") { throw "Resource pool creation did not become live." }
+  $storedPoolNameHex = & $docker exec $postgres.Container psql -v ON_ERROR_STOP=1 -U llmgateway -d llmgateway_core -Atc `
+    "SELECT encode(convert_to(name, 'UTF8'), 'hex') FROM resource_pools WHERE id = '$($pool.data.id)'"
+  if ($LASTEXITCODE -ne 0 -or $storedPoolNameHex -ne (ConvertTo-UTF8Hex -Value $naturalPoolName)) {
+    throw "Resource pool creation did not preserve its natural-language name."
+  }
 
   $credentialSecret = "core-upstream-secret"
-  $credential = Invoke-RestMethod -Method Post -Uri "$baseURL/api/control/credentials" -WebSession $adminSession `
+  $credentialBatch = Invoke-RestMethod -Method Post -Uri "$baseURL/api/control/credentials/batch" -WebSession $adminSession `
     -Headers (New-MutationHeaders -CSRF $adminCSRF) -ContentType "application/json" `
-    -Body (@{ resourcePoolId = $pool.data.id; name = "Core Upstream Key"; secret = $credentialSecret; modelBindings = @(@{ model_id = $model.id; priority = 10; weight = 100 }); rpmLimit = 60; tpmLimit = 50000; concurrencyLimit = 2 } | ConvertTo-Json -Depth 6)
-  if ($credential.data.status -ne "active" -or $credential.data.model_bindings.Count -ne 1) { throw "Upstream API Key creation did not persist routing eligibility." }
-  $probe = Invoke-RestMethod -Method Post -Uri "$baseURL/api/control/credentials/$($credential.data.id)/probe" -WebSession $adminSession `
+    -Body (@{ resourcePoolId = $pool.data.id; items = @(@{ name = "Core Upstream Key"; secret = $credentialSecret }); modelBindings = @(@{ model_id = $model.id; priority = 10; weight = 100 }); rpmLimit = 60; tpmLimit = 50000; concurrencyLimit = 2 } | ConvertTo-Json -Depth 6)
+  $credential = @($credentialBatch.data | Select-Object -First 1)[0]
+  if ($credential.status -ne "created" -or $credential.credential.status -ne "active" -or $credential.credential.model_bindings.Count -ne 1) { throw "Upstream API Key creation did not persist routing eligibility." }
+  $probe = Invoke-RestMethod -Method Post -Uri "$baseURL/api/control/credentials/$($credential.credential.id)/probe" -WebSession $adminSession `
     -Headers @{ "X-CSRF-Token" = $adminCSRF } -ContentType "application/json" `
     -Body (@{ modelId = $model.id } | ConvertTo-Json)
   if ($probe.data.execution.status -ne "succeeded" -or [string]::IsNullOrWhiteSpace([string]$probe.data.execution.request_id)) {
@@ -232,10 +246,20 @@ try {
     -Headers (New-MutationHeaders -CSRF $adminCSRF) -ContentType "application/json" `
     -Body (@{ modelId = $model.id; currency = "USD"; inputPricePerMillionTokens = "0.1"; outputPricePerMillionTokens = "0.2"; effectiveAt = (Get-Date).ToUniversalTime().AddMinutes(-1).ToString("o") } | ConvertTo-Json)
 
+  $naturalPlanName = -join ([char[]]@(0x6838, 0x5FC3, 0x5957, 0x9910))
+  $naturalPlanBody = [System.Text.Encoding]::UTF8.GetBytes((@{
+      name = $naturalPlanName; description = ""; kind = "token"; tokenQuota = 50000; validityDays = 30
+      concurrencyLimit = 2; rpmLimit = 60; tpmLimit = 50000
+      routes = @(@{ modelId = $model.id; resourcePoolId = $pool.data.id })
+    } | ConvertTo-Json -Depth 6))
   $plan = Invoke-RestMethod -Method Post -Uri "$baseURL/api/control/plans" -WebSession $adminSession `
-    -Headers (New-MutationHeaders -CSRF $adminCSRF) -ContentType "application/json" `
-    -Body (@{ slug = "core-plan"; name = "Core Plan"; description = ""; kind = "token"; tokenQuota = 50000; validityDays = 30; concurrencyLimit = 2; rpmLimit = 60; tpmLimit = 50000; routes = @(@{ modelId = $model.id; resourcePoolId = $pool.data.id }) } | ConvertTo-Json -Depth 6)
+    -Headers (New-MutationHeaders -CSRF $adminCSRF) -ContentType "application/json; charset=utf-8" -Body $naturalPlanBody
   if ($plan.data.current_version.version -ne 1 -or $plan.data.current_version.routes.Count -ne 1) { throw "Plan publication did not create one immutable routed version." }
+  $storedPlanNameHex = & $docker exec $postgres.Container psql -v ON_ERROR_STOP=1 -U llmgateway -d llmgateway_core -Atc `
+    "SELECT encode(convert_to(name, 'UTF8'), 'hex') FROM service_plans WHERE id = '$($plan.data.id)'"
+  if ($LASTEXITCODE -ne 0 -or $storedPlanNameHex -ne (ConvertTo-UTF8Hex -Value $naturalPlanName)) {
+    throw "Plan publication did not preserve its natural-language name."
+  }
 
   $createdMember = Invoke-RestMethod -Method Post -Uri "$baseURL/api/control/members" -WebSession $adminSession `
     -Headers (New-MutationHeaders -CSRF $adminCSRF) -ContentType "application/json" `

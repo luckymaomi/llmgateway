@@ -1,152 +1,97 @@
-# 封闭式商业多模型订阅平台断裂式重建
+# 真实上游连通性与人工验收修复
 
 ## 需求文档
 
-- 用户与场景：单实例服务约 200～300 名受控成员；管理员在线下完成交易后，在线创建成员、发布套餐、分配订阅、维护合法上游 API Key，成员使用自己的 API 密钥调用统一模型 API。
-- 要解决的问题：当前产品仍以邀请码、资源域、逐成员 entitlement、Provider 安装和捕获/校验/发布配置为主流程；成员和上游 API Key 缺少完整 CRUD 与批量导入；控制台信息架构、表单对齐和操作反馈不符合实际任务。
-- 当前阶段范围：断裂式重建产品规范、唯一数据库基线、商业领域、控制 API、数据面资格读取、正式桌面控制台、主旅程和事实文档；保留并适配公共协议、Provider adapter、admission、路由算法、冷却/熔断、安全重试、流式状态机、账本原子性、安全、观测和部署地基。
-- 可验收完成标准：全新管理员可以从上下文式新手指引依次维护资源池和上游 API Key、发布套餐、创建成员并分配订阅、创建成员 API 密钥，随后通过统一 API 完成受额度保护的真实请求；所有对象具备当前产品需要的增删改查和明确错误出口，成员越权失败关闭。
-- 控制台体验边界：参考 Sub2API 已验证的桌面任务组织、弹窗密度、圆角、表单间距、套餐展示与状态反馈机制，但不复制 LGPL-3.0 源码，也不引入公共注册、消费者 OAuth/Session 账号池或在线支付；选择框、字段说明和后续内容必须保持明确的垂直节奏，不能拥挤、重叠或把页面主体推出桌面视口。
+- 用户与场景：管理员在 Windows 本地控制台维护合法上游 API Key，必须先能通过产品自身的“测试”操作收到真实 Provider 响应，再继续套餐、成员、订阅和统一 API 主旅程。
+- 当前问题：真实上游连通性从未通过；浏览器测试使用受控 Provider，只证明内部协议，不证明真实外部连接。人工截图还证明表格对齐、行操作、表单密度、字段命名和反馈文案仍以开发者视角组织。
+- 产品边界：保持封闭式成员治理，不增加公共注册、OAuth/Session 账号池、在线支付或独立 Provider 页面；参考 Sub2API 的任务组织、间距、圆角和反馈机制，不复制 LGPL-3.0 源码。
+- 完成标准：产品入口使用数据库中已保存的上游 Key 收到真实上游成功响应并展示模型、耗时、Token 与 Request ID；随后重做人工清单中已暴露的管理员任务体验，完成真实桌面浏览器复测，最后 `python .\start_test.py full` 通过。
 
 ## 当前事实
 
-- 当前工作区位于 `master`，基于 `620499a`，保留本轮断裂式重建的大范围未提交改动；未执行 reset、commit、push、部署或发布。
-- 唯一数据库基线只表达 `resource_pools`、`service_plans`、不可变套餐版本、`subscriptions` 和引用订阅/资源池的请求与账本；sqlc 输出稳定，migration up/down/rebuild 与统一 `full` 均已通过。
-- identity 已具备管理员直接创建、编辑、停用和删除成员；registry 已具备只读 Provider catalog、资源池 CRUD、上游 API Key 单个/批量导入、secret 更换、状态、退役和探测；subscription 已具备不可变套餐版本与订阅分配/调整，真实桌面主旅程和核心集成均已通过。
-- quota、requestflow、routing、coordination、costing 与 operations 已统一消费 subscription/resource pool；旧 resource domain、configuration revision、entitlement、invitation 和 Provider 安装消费者已从当前运行时代码、schema、脚本与控制台删除。
-- 控制 API 与控制台只表达成员、资源池、上游 API Key、套餐、订阅、成员 API 密钥、请求、账本、成本和设置；前端 format/lint/typecheck/test/build 与生产嵌入构建均通过。
-- Provider 不再拥有独立控制台页面或导航；内部 catalog 及 `GET /providers`、`GET /models` 只作为资源池校验和表单数据源。
-- 2026-07-23 接力复核确认：前端 format/lint/typecheck/build、`go test ./...`、新核心脚本和真实有头 Chromium 主旅程已有通过证据；`scripts/test-provider-real.ps1` 已改为消费 code-owned catalog，并通过资源池、上游 API Key、模型价格、不可变套餐版本和管理员订阅建立现场资格链，PowerShell AST、相关 Go owner 包与差异检查通过，外部 Provider 档未运行。
-- 2026-07-23 CSS 清理后重新运行 `pnpm.cmd --dir web run format`、`lint`、`typecheck` 和 `build`，四项均通过；生产构建输出当前资源池、上游 API Key、套餐、订阅、成员、API 密钥、运营与新手指引页面，不再包含独立 Provider 页面 chunk。
-- 2026-07-23 CSS 清理后的 `scripts/test-browser-real.ps1` 再次实际通过（21.9 秒，其中 Playwright 6.4 秒）；1280x720 有头 Chromium 证据确认表单双列间距、40px 选择控件、模型/资源池绑定行、弹窗自身滚动、遮罩聚焦与页面主体宽度均未重叠或横向溢出。脚本后的 SQL 同时复核资源池、凭据 secret 更换/探测、不可变套餐版本、成员订阅、双角色 API 密钥、6 Token 结算和退出会话。
-- 2026-07-23 `scripts/test-observability.ps1` 实际通过（86.5 秒）：固定版本 Prometheus `promtool` 识别 6 条规则，Grafana 13.1.1 成功导入并读回 operations dashboard，当前 `resource_pool` 标签合同有效。
-- 初次 `pnpm.cmd run typecheck` 暴露的 API request body 泛型、缺失套餐/订阅页面和旧消费者问题已经修复；当前前端完整 verify 与统一 `full` 重复通过。
-- 现有 Public API、Canonical Model、Provider adapters、路由、冷却/熔断、有界安全重试、PostgreSQL 原子 quota/usage 账本、Valkey 协调、execution fencing、崩溃恢复、secret 加密、SSRF、观测、部署和备份已有生产级实现与测试，应保留并适配。
-- 参考 Sub2API `f94c693`（LGPL-3.0）与 New API `eb303d6`（AGPL-3.0）只研究机制，不复制源码。可采用机制是套餐定义与成员订阅分离、成员行直接分配、批量导入逐条反馈；拒绝金额浮点数、套餐硬删除破坏历史语义、消费者 OAuth/Session 账号池、跨组回退和测试绑定页面结构。
-- owner 提供的 Agnes 失败证据：有效 Key 探测在约 8 ms 返回 `provider_temporary`，Request ID `e4d47998ac59ff6737a67ff849b44dc1`；本地现有日志没有该 Request ID，不能判定 Key 无效，重建后探测必须保留稳定类别、可行动信息和 Request ID。
-- 未知项：真实 Provider 现场行为只能在不读取或打印 secret 的统一 provider 档中验证；视觉审美由 owner 验收，Agent 只验证结构、尺寸、不溢出、状态和交互。
+- 人工截图中的 Agnes 探测在约 `10 ms` 内返回 `provider_temporary`，证明失败发生在请求发出前或连接建立阶段，不是正常上游生成失败。
+- 本机 DNS 为 Agnes、智谱、硅基流动和 Gemini 同时返回 Meta/Clash Fake-IP：IPv4 `198.18.0.0/15` 与 IPv6 `fdfe:dcba:9876::/64`。
+- `scripts/dev.ps1` 只把 IPv4 Fake-IP 网段写入 `LLMGATEWAY_ALLOWED_RESOLVED_NETWORKS`。SSRF owner 会校验域名解析出的全部地址，因此合法 IPv4 通过后仍被未允许的 Fake IPv6 立即拒绝。
+- 探测执行器把所有非超时传输失败压成 `provider_temporary`，丢失了“解析被安全策略拒绝、解析失败、连接失败、TLS 失败”的稳定诊断，管理员无法采取正确动作。
+- 当前探测实际构造一次最小生成请求并等待响应；真实成功必须来自该产品入口，不能用 adapter 单测、fake Provider 或旧 full 结果替代。
+- 人工截图确认：资源池数字表头与数值对齐不一致；资源池和成员行操作平铺成一长排；上游 Key 表单把 Provider 与资源池名称拼接；模型路由、选择框和说明拥挤；初始化成功页层级与间距不足。
+- 当前未提交的生命周期修复、人工测试文档和截图属于 owner 工作，必须保留并在本任务上增量修改。
+- 当前上游资源、套餐、订阅、成员、API 密钥和运营页面的两轮断裂式 UI 重做已通过 format、lint、typecheck、生产 build 与真实桌面 Chromium 主旅程；视觉审美仍由 owner 按人工清单最终确认。
+- 2026-07-23 owner 人工复测发现创建智谱资源池时，表单允许把中文填入“资源池标识”，服务端随后因 slug 仅接受小写英文、数字和连字符而返回通用 `invalid_input`；页面把它直接展示成英文 `Registry input is invalid.`。这不是模型选择失败，而是内部持久标识被错误暴露给管理员维护，且提交前没有形成一致合同。同类问题也存在于套餐表单的“套餐标识（内部）”，两处必须一起删除，用户可见名称继续允许自然中文或英文。
+- 上游 API Key 页面同时提供“单个添加”和“批量导入”两个创建入口，但逐行粘贴天然覆盖单条输入；重复入口增加选择成本。正确任务是一个“添加上游 API Key”入口，输入区明确示例格式，1 行创建 1 条，多行批量创建，并逐项反馈 created/skipped/rejected。
 
 ## 失败证据
 
-- 2026-07-23 定向运行 `go test ./internal/quota ./internal/requestflow ./internal/routing ./internal/coordination ./internal/store`：旧测试仍引用 `Entitlement` / `ResourceDomain`，旧成本与 operations repository 仍读取已删除字段，证明后端处于不可编译的断裂中间态。
-- 2026-07-23 运行 `pnpm.cmd run typecheck`：首批错误覆盖 API request body 泛型、缺失套餐/订阅页面和仍参与编译的邀请、资源域、Provider/模型编辑、配置 revision、entitlement 与旧 onboarding tour，证明前端尚未完成断裂式删除。
-
-- 管理员第二次编辑上游 API Key 时无法可靠替换 secret，废弃 Key 无删除/退役入口，多个 Key 只能逐个添加。
-- 有效 Agnes Key 的连接测试被压缩为不可行动的 `provider_temporary`，用户只能看到“可以重试”，无法区分本地网络策略、上游状态、鉴权或 wire 合同。
-- 管理员必须理解“资源域、捕获、校验、发布 revision”才能让已配置 Key 生效；这与“配置合法资源后立即可用”的产品合同冲突。
-- 管理员不能直接创建成员，只能先发邀请码；套餐不存在，额度以零散 entitlement 直接分配，无法表达可复用产品与不可变历史版本。
-- Provider、成员、凭据和额度页面绑定旧对象，表格/表单/操作列缺少统一稳定高度与居中容器，常见动作不完整。
-- 真实桌面验收还需重点检查 CSS 密度：选择框、字段说明、状态和后续内容不能挤成一团；圆角保持克制，主内容区应充分利用桌面宽度，表单和表格必须有明确间距层级。
-- 2026-07-23 owner 补充验收：新手指引必须使用遮罩和聚焦框锚定当前真实操作位置；现有页面虽按持久事实给出下一任务，但驱动组件缺失，尚未达到该交互合同。
-- 2026-07-23 新核心集成旅程首先暴露 6 个测试夹具仍写入已删除的 `users.approved_at`，以及 execution fixture 清理未先删除复合外键 request attempt；现已按唯一基线修正，未引入兼容字段。
-- 真实探测进一步证明后端执行对象未返回 `request_id` 且可能序列化 `response_text`；现已由 registry service 注入当前 Request ID，并明确禁止正文进入控制 API JSON。
-- 2026-07-23 接力静态检查确认真实 Provider 档曾调用已删除的 `/providers` 写接口、模型写接口、`/configuration/revisions` 和 `/entitlements`；已断裂式删除这些调用并完成当前 schema/API 的逐段复核，不保留旧测试专用兼容端点。
-- 2026-07-23 首次运行 operations 隔离验收在离线管理员恢复处返回 PostgreSQL `column "approved_at" does not exist`；根因是 `internal/store/administrator_recovery.go` 的权威更新 SQL 仍写已从唯一基线删除的字段，已直接移除该写入，未恢复兼容列。
-- 2026-07-23 `full` 前静态复核发现 `scripts/test-core.ps1` 仍用已删除的 `TestPersistentQuotaLifecycleAndConcurrentReservations` 名称过滤 quota 集成测试；Go 的零匹配会返回成功，使旧 core 证据漏跑并发订阅额度用例。脚本已改为当前 `TestPersistentSubscriptionQuotaIsIdempotentAndAtomic`，并对所有 `go test -run` 引用与现有函数完成逐项匹配。
-- 修正测试过滤器后重新运行 `scripts/test-core.ps1` 实际通过（20.2 秒），输出明确显示订阅额度、request execution fencing 与 Valkey 三组定向测试均真实执行，而非零匹配绿灯。
-- 2026-07-23 首次统一 `full` 在 migration rebuild 首个失败：`00001_baseline.sql` 的 Down 先删除 `models`，但 `gateway_key_models` 仍保留外键引用。已按当前外键图把 API 密钥模型绑定和 API 密钥逆序删除移到模型之前，不使用 `CASCADE` 掩盖依赖遗漏。
-- 修正后单独运行 `scripts/test-migrations.ps1` 实际通过（7.2 秒），唯一基线 up、down、rebuild 的逆序依赖完整成立。
+- 真实桌面表单选择“智谱 GLM”和 `GLM-5.2`，资源池名称填写中文、资源池标识填写中文后，`POST /api/control/resource-pools` 返回 `invalid_input`，弹窗只显示英文通用错误和 Request ID，管理员无法判断失败字段或完成创建。
 
 ## 最终目标
 
-- 产品只有一个单实例、两个角色和五类核心业务对象：成员、套餐及版本、成员订阅、成员 API 密钥、上游资源池及上游 API Key。
-- Provider catalog 是代码拥有的内部能力目录；管理员不安装或单独浏览 Provider，只在创建资源池时选择平台能力。合法资源写入 PostgreSQL 后在同一事务边界生效，不存在人工配置发布状态机。
-- 套餐版本一经发布不可变；编辑产生新版本，既有订阅继续引用原版本。订阅拥有额度、周期、模型/资源池资格和速率限制，账本只引用订阅。
-- 请求资格链固定为 `API 密钥 -> 活动成员 -> 活动订阅 -> 套餐版本 -> 模型/资源池 -> 合格上游 API Key -> Provider adapter -> usage 结算`。
-- 上游 API Key 支持单个与按行批量导入、secret 更换、探测、启用、停用、退役；完整 secret 不回显，退役后不再调度，历史 attempt 保留脱敏引用。
-- 管理员直接创建、编辑、停用和删除成员；删除是保留审计/账本引用的终态，不允许登录或调用。初始密码和重置密码只显示一次。
-- 控制台只支持桌面，按任务组织并保留上下文式遮罩新手指引；引导根据真实持久状态聚焦当前操作位置，页面不拥有第二套权限、额度、健康或完成度事实。
+- 开发环境允许本机实际使用的精确 Fake-IP v4/v6 网段，同时继续拒绝回环、元数据、未授权私网和其他保留地址。
+- 探测返回稳定、脱敏且可执行的结果：成功、鉴权失败、额度不足、限流、Provider 临时失败、DNS 解析失败、出站策略拒绝、连接/TLS 失败、超时或结果未知；不展示上游正文和 secret。
+- 上游 API Key 列表直接呈现 Key 名称与所属资源池，不拼出让用户误读的技术标签；常用动作有明确主次，危险和低频动作收进菜单。
+- DataTable 统一文字左对齐、数字右对齐、状态和操作居中，宽表只在自身滚动；表单使用稳定的 label/control 网格和足够间距，圆角不超过 8px。
+- 套餐和订阅字段以管理员业务语言表达。技术稳定标识不要求普通管理员理解；额度、有效期、限速和模型授权说明其实际效果。
+- 人工清单保留用户原始反馈，并追加修复后的真实证据与复测结果。
 
 ## 不做范围
 
-- 公共注册、邀请码、组织/租户/企业隔离、在线支付、充值、开票、自动售卖、消费者 OAuth/Session 账号池、批量注册、接码、养号、跨上游条款绕过。
-- Kubernetes、多地域主动高可用、移动端控制台、图像/视频/语音/Embedding/Rerank 协议。
-- 为旧 schema、旧 API、旧路由、旧页面、本机开发数据或旧测试建立 migration、别名、转发、双读双写和兼容壳。
-- 纯 CSS、颜色、文案、按钮位置和 DOM 结构的长期测试。
+- 不读取、打印或上传 `key.txt`，不在日志、数据库查询结果、截图或测试输出中暴露任何 secret。
+- 不用真实 Provider 测试替代可重复的公共协议测试，也不为颜色、布局、圆角、文案和按钮排列新增自动化测试。
+- 不增加自定义 Provider、独立 Provider 页面、兼容旧页面或旧领域语义。
+- 不部署、发布或删除当前开发数据库；owner 已明确授权在全部验收完成后 commit 并 push 当前分支。
 
-## 设计
+## 设计与 Owner
 
-### 事实 Owner
-
-- Provider Catalog：`internal/providers` 拥有支持的 Provider、固定端点、能力和现场验证元数据；控制台只读投影。
-- Resource Pool / Credential：PostgreSQL 资源池、模型绑定和上游 API Key 拥有实时调度资格；`registry` 强制 provider 匹配、状态、priority、weight、限额、冷却、探测和退役。
-- Plan / Subscription：新 `subscription` 领域拥有套餐、不可变发布版本、模型/资源池范围、成员订阅状态和周期；quota 账本只消费活动订阅容量。
-- Identity and Access：`identity` 拥有管理员直接开户、成员状态、会话和成员 API 密钥；服务端 capability 独立强制。
-- Request Workflow / Ledger：现有 requestflow、quota、execution、routing、coordination 继续拥有接受、预留、发送、恢复和结算；改为消费 live registry 与 subscription 资格，不消费配置 revision。
-- Operations / Onboarding：operations 只组合各 owner 的计数和健康；新手指引只根据持久事实推导下一任务，不保存进度。
-
-### 数据与控制流
-
-- 基线删除邀请、资源域和配置 revision 表；新增 `resource_pools`、`service_plans`、`service_plan_versions`、版本模型/资源池连接与 `subscriptions`，并把 credential、request、ledger 外键切换到新 owner。
-- 内置 Provider 和已核验模型由确定性 seed 与代码 catalog 对齐；管理员维护资源池及凭据，不创建 adapter 类型。
-- 成员创建、套餐发布、订阅分配、Key 创建和凭据批量导入均使用幂等 mutation 与事务；提交未知时按 mutation 结果协调，不盲目重复副作用。
-- 请求解析模型时同时验证 API 密钥范围和活动订阅版本；接受事务锁定合格订阅、冻结价格与资源池资格，随后只在该资源池内选择候选。
-- 订阅到期、停用成员、撤销 Key、停用/退役凭据只阻止新请求；已接受请求按持久 claim、发送事实和账本状态完成或恢复。
-
-### 安全与数据
-
-- 上游 secret 使用现有版本化 AEAD，批量导入响应和审计不包含 secret；成员 API 密钥、会话和 CSRF 只保存 pepper 摘要。
-- 成员删除保留历史外键与审计，清除活动会话并禁止新调用；唯一管理员不能由在线成员删除流程移除。
-- 探测使用 SSRF-safe transport，错误返回稳定 kind、可行动摘要、retryable 和 Request ID；不返回上游正文、secret 或敏感 header。
-- 页面和日志不持久化一次性密码、完整 API 密钥、上游 secret 或请求/响应正文。
-
-### 关键取舍
-
-- 采用“保留稳定数据面、重建产品层”，因为公共协议、调度、账本、恢复和安全已经是独立可靠 owner；全仓清空会重写高风险正确性而不增加产品价值。
-- 采用 live registry 原子生效，删除人工 revision 发布；当前资源对象的每次写入都是单一事务，不存在必须跨多个草稿对象统一发布的真实需求。
-- 采用套餐不可变版本而非直接修改 entitlement，保证既有订阅的额度和模型合同不会被后台编辑悄悄改写。
-- 采用资源池作为明确资格边界，拒绝匿名跨池 fallback；同一订阅版本可以显式授权多个池，但一次请求冻结选定池，耗尽时不暗中消费其他池。
-- 采用软终态删除成员和上游凭据，保留账本、attempt 和审计引用；不以物理级联删除破坏运营事实。
+- 出站网络允许范围：`config.Security` 与 `security.URLValidator` 是生产事实 owner；`scripts/dev.ps1` 只注入本机开发所需的精确 Fake-IP 前缀。
+- 探测结果：`credentialprobe.Executor` 拥有传输阶段分类，Provider adapter 拥有 HTTP/wire 错误分类，registry 只持久化稳定结果，前端 API 边界负责 snake_case 到 camelCase 映射。
+- 页面任务：领域页面只组合 API 权威事实；DataTable/表单基础组件拥有对齐、滚动、控件高度和菜单行为，页面不各写一套字段转换或布局补丁。
+- 真实验收：数据库中用户已保存的凭据只经解密 owner 进入探测执行器；验证只观察状态、错误种类、耗时、模型和 Request ID，不读取 secret。
 
 ## 生产级切片
 
-- [x] 规范与唯一基线：最高规约、事实文档、Skill、计划、schema 和生成合同只表达新产品，不留旧表/状态/API。
-- [x] 上游资源闭环：Provider catalog 仅作为资源池表单数据源，资源池与上游 API Key 单个/批量 CRUD、探测、冷却、退役和 live routing 完整成立。
-- [x] 成员订阅闭环：管理员直接开户与成员 CRUD、套餐不可变版本、订阅分配/停用/到期、成员 API 密钥和额度账本完整成立。
-- [x] 请求与恢复闭环：公共 API 按订阅和资源池资格接受，限流、候选选择、usage、成本、取消、uncertain、强杀恢复与隔离的 owner 定向测试继续成立。
-- [x] 桌面控制台闭环：新信息架构、上下文式遮罩新手指引、统一表单/表格对齐、空/错/加载/完成状态和管理员/成员主旅程成立。
-- [x] 交付闭环：删除旧测试和文档，运行定向检查与统一 full，检查敏感信息、生成漂移和工作区边界。
-
-## 实施任务
-
-- [x] 完整读取规约、事实文档、README、三个 Skill、旧计划并调查工作区、参考许可证和核心链路。
-- [x] 固化当前失败、采用/拒绝机制、唯一 owner、断裂边界和验证策略。
-- [x] 同步 AGENTS、spec、dev、项目 Skill 与计划中的当前产品合同，删除独立 Provider 页面与导航的旧事实。
-- [x] 重建唯一数据库基线、核心 SQL 查询和 sqlc 生成物。
-- [x] 重建 identity、subscription、registry、quota、requestflow、operations 和 control API 消费者。
-- [x] 删除服务端 invitation、resource domain、configuration revision 与 entitlement 领域及全部消费者。
-- [x] 重建正式桌面控制台和按真实持久状态定位的遮罩式新手指引。
-- [x] 删除绑定旧产品或纯页面形状的测试，保留并迁移只保护权限、套餐版本、批量导入、额度、路由和恢复结果的证据；`full` 前已逐项静态核对测试过滤器与当前函数名。
-- [x] 同步 README、部署/运行手册、RELEASE 与 history 的当前事实。
-- [x] 运行一分钟内定向检查，再运行 owner 已明确授权的统一 `full`；从首个真实根因继续修复。
-- [x] 检查差异、生成漂移、敏感信息、许可证和残留旧语义，记录未验证外部事实。
+- [x] 人工证据与完整链路调查：读取清单和截图，确认失败位置、DNS 双栈 Fake-IP、开发配置与 SSRF 校验 owner。
+- [x] 真实上游连通闭环：修正双栈开发代理网段和稳定传输分类；数据库中现有 Agnes Key 经正式控制 API/解密/transport/adapter 在 `1147 ms` 返回成功，记录 `253` 输入、`8` 输出 Token 与 Request ID，临时验收会话和辅助文件已删除。
+- [x] 上游资源管理体验：重做上游 API Key/资源池表单、名称、批量结果、探测反馈、操作菜单和表格对齐；按 Chromium 截图删除重复平台字段，并把 secret 输入恢复为整行宽度。
+- [x] 套餐、订阅与成员治理体验：重写技术化字段与说明，疏理模型授权和额度输入，重做成员行操作。
+- [x] 初始化、指引和核心页面一致性：修复初始化成功页，复核遮罩指引、仪表盘、运行状态、日志、额度、成本和设置的任务出口；敏感初始化截图使用浏览器遮罩。
+- [x] 全量验证：事实文档和人工清单已同步；前端 verify、`go vet ./...`、`go test ./...`、探测/SSRF/Provider 定向测试、sqlc 漂移检查、进程清理、真实桌面旅程和授权的 `full` 均已通过。
+- [x] 自然名称与系统标识修复：资源池和套餐均由服务端按幂等键生成稳定唯一标识，控制 API 与前端删除技术标识输入；core 使用中文资源池/套餐名称通过，真实桌面资源池创建、套餐发布与持久化通过。
+- [x] 上游 API Key 单一入口：已删除重复的单个创建路由和页面入口；逐行粘贴表单同时承载 1 条和多条创建，字段下展示 `名称,上游 API Key` 示例，真实浏览器以一行完成创建后继续通过编辑替换 secret 与探测。
 
 ## 恶劣路径矩阵
 
-| 边界 | 接受/提交事实 | 失败状态 | 恢复 owner | 重放与幂等 | 验证证据 |
-| --- | --- | --- | --- | --- | --- |
-| 重复成员/套餐/订阅/Key 操作 | mutation 与业务写入同事务 | conflict 或原结果 | 对应领域 repository | 同 key 同 fingerprint 返回原结果，异 fingerprint 拒绝 | 定向 repository/control 测试 |
-| 批量上游 Key 导入 | 每项状态显式返回，secret 不回显 | 单项 rejected，不伪造全成 | registry | 批次 mutation 可协调；重复项跳过 | registry 集成与真实页面 |
-| 客户端断连/取消 | 已接受请求和预留已持久化 | canceled/uncertain | requestflow/quota | 取消、释放、恢复幂等 | 现有核心/浏览器旅程 |
-| 上游超时、429、5xx | attempt 记录发送边界 | failed/cooling/uncertain | resilience/registry | 仅安全边界有界重试 | Provider wire 与 requestflow 测试 |
-| 部分流/未知副作用 | streaming/sending 已持久化 | uncertain，不拼接响应 | execution/requestflow | 不自动重放 | 流式与强杀恢复测试 |
-| 并发额度竞争 | subscription 行和 ledger 原子预留 | quota_exhausted | quota | 事务重试且不超扣 | PostgreSQL 并发测试 |
-| 成员/订阅/凭据中途停用 | 新请求资格实时读取；旧请求已冻结 | 后续拒绝，旧请求按发送事实收口 | identity/subscription/registry/requestflow | 状态操作幂等 | 定向集成测试 |
-| PostgreSQL/Valkey 故障 | 无法取得持久事实或共享租约 | fail closed | store/coordination | 不绕过容量，恢复从 PostgreSQL 重建 | core/full |
+| 边界 | 稳定结果 | 恢复动作 | 验证证据 |
+| --- | --- | --- | --- |
+| Fake-IP 双栈解析 | 精确允许本机 v4/v6 Fake-IP；其他私网仍拒绝 | 修正开发前缀或本机 DNS/TUN | URL policy 定向测试与真实探测 |
+| DNS 失败/策略拒绝 | 分类明确，不伪装成普通 Provider 临时失败 | 检查域名、网络或允许前缀 | 脱敏错误类别与 Request ID |
+| 连接/TLS/超时 | 区分未建立连接与结果未知 | 允许重试或等待确认 | 定向执行器测试与真实失败注入 |
+| 401/403/402/429/5xx | 由 adapter 归类鉴权、权限、额度、限流和临时失败 | 替换 Key、处理合同或稍后重试 | Provider wire 测试与产品结果 |
+| 探测成功 | 收到并解析真实生成响应，保存成功状态 | 无 | 产品入口、持久状态和页面三方一致 |
+| 危险行操作 | 默认收起，明确二次确认 | 取消无副作用，可重试 | 桌面浏览器人工验收 |
+| 表单长内容/宽表 | 不重叠、不推动页面主体 | 控件/表格自身滚动 | 多种桌面宽度截图与尺寸检查 |
 
 ## 验证计划
 
-- 定向检查：`gofmt`、`go test` 受影响 package、`go tool sqlc generate` 漂移、前端 format/lint/typecheck/build；单项预计一分钟以内。
-- 完整验证：owner 已在当前任务明确授权运行 `python .\start_test.py full`，允许长时间等待并从首个真实失败继续修复。
-- 竞态/并发验证：保留 quota 原子预留、idempotency、credential 状态竞争、execution fencing 和强杀恢复的最强层证据。
-- 目标平台：full 中的生产前端、Go 构建、Windows 服务、TLS 双实例、备份恢复；不建立移动场景。
-- 隔离的真实 Provider 验收：只有 provider/adapter 或探测 wire 改变且本机存在 owner 管理的凭据时运行统一 provider 档；不读取或打印 `key.txt`。
-- 安全与敏感信息检查：secret 扫描、响应/日志脱敏、SSRF、权限越权、依赖许可证、`git diff --check`。
+- 修改前先完整通读相关测试，删除或改写仍绑定 fake 成功、旧路由、旧字段或页面形状的断言。
+- 定向后端：URL policy、credential probe、Provider adapter、registry 持久化与服务端权限；不新增 CSS/文案测试。
+- 定向前端：format、lint、typecheck、build；浏览器只验真实管理员/成员任务、权限和产品结果。
+- 真实外部：启动开发环境，使用数据库中已保存的合法 Key 从控制台探测，确认成功响应、模型、耗时、Token、Request ID 与持久状态；不输出 secret。
+- 最终：人工截图复核完成后运行用户明确授权的 `python .\start_test.py full`，从首个真实根因持续修复直到通过。
+
+## 实施任务
+
+- [x] 完整读取当前规格、开发标准、README、执行计划和三个项目 Skill，并核验工作区与运行进程。
+- [x] 从首个真实 TypeScript 错误修复行操作菜单的可选布尔属性边界，`pnpm.cmd run typecheck` 已通过。
+- [x] 对照固定版 Sub2API 与本项目组件 owner，完成全部桌面页面、表格、表单和弹窗的静态结构审查、两轮实现及初始化、运行状态、日志详情、额度、成本、成员列表、设置页和成员视角的真实 Chromium 复核。
+- [x] 审查并清理旧产品消费者、旧路由、旧字段和只绑定页面形状的测试；真实浏览器旅程不再断言引导库 CSS 类、弹层标题、仪表盘区块标题或探测结果 DOM 类，只保留任务跳转、接口结果、持久化与权限结果。
+- [x] 更新人工清单与事实文档；前端、真实 Provider、管理员/成员浏览器主旅程、定向 Go 与 sqlc 漂移检查已通过。
+- [x] 完整通读 `full` 编排、浏览器主旅程、核心链、迁移、恢复、观测、Windows 服务及其 SQL/HTTP 引用，未发现旧领域链路；`python .\start_test.py full` 已一次通过。
+- [x] 修复 owner 人工复测发现的资源池/套餐内部标识泄漏与通用英文错误，更新控制 API 消费者、稳定业务测试和事实文档；把上游 API Key 创建收敛为一个逐行粘贴入口。
+- [ ] 完成最终敏感信息、差异、文档链接、`full`、commit 与 push 收口。
 
 ## 收口
 
-- 完成事实：断裂式重建、桌面控制台、测试迁移、事实文档和统一本机验收已收口；Provider catalog 不存在独立页面或导航，当前资格链从 API 密钥到订阅、套餐版本、资源池、上游 API Key 与 usage 结算完整成立。
-- 实际命令与结果：前端 `format/lint/typecheck/test/build`、`go vet ./...`、`go test ./...`、sqlc 前后哈希、PowerShell AST、`git diff --check`、真实有头 Chromium、core、operations、observability 和 migration round-trip 均通过。首次 `full` 从 migration Down 外键顺序首个失败继续，修复并定向复测后，`python .\start_test.py full` 于 2026-07-23 实际通过，用时 `0:07:47.972830`，日志 `.build\test-logs\20260723T115542076364Z-full.log`；覆盖 Windows SCM、生产 TLS 双 Gateway 滚动恢复、恢复到新数据库、加密空环境灾备、Restic 损坏检测和 Windows/Linux amd64 构建矩阵。full 后无隔离测试容器或 SCM 测试服务残留；交接时 `python .\start_dev.py --no-browser` 已启动，控制台 `http://127.0.0.1:5173` 与 Gateway `http://127.0.0.1:8080` 均实际就绪。
-- 未验证项：本轮未运行会使用现场凭据的 `provider` 档，也未读取 `key.txt`；真实 Agnes 旧 `provider_temporary` 缺少当时服务端日志，不能归因于 Key。正式域名、DNS、证书、外部监控、异地备份仓库和生产主机不在本机 full 证据内。
-- 剩余风险：Provider 模型、价格、额度和网络是易变外部事实，上线前仍需按正式变更窗口运行真实 Provider 与目标环境验收；视觉审美最终由 owner 判断，本轮只证明桌面结构、尺寸、不溢出、状态和交互。
-- commit/push/部署状态：owner 已明确授权本次 commit 与 push；不执行部署或发布。
+- 完成事实：真实上游双栈代理根因、稳定探测错误、开发进程生命周期、桌面管理员/成员任务、人工清单与事实文档已闭环；Provider 仍只作为代码内置 catalog 能力出现在资源池表单，没有独立页面或导航。
+- 实际命令与结果：前端 format/lint/typecheck/test/build、定向 Go、sqlc 漂移、`stop_dev.py`、有头 Chromium 主旅程均通过；`python .\start_test.py full` 于 2026-07-23 一次通过，用时 `0:09:30.586946`，日志 `.build\test-logs\20260723T142001324440Z-full.log`。full 后无隔离测试容器或 SCM 服务残留，开发环境随后以 `--no-browser` 启动并通过 5173/8080 就绪检查。
+- 未验证外部事实与剩余风险：本轮没有运行会读取现场凭据的完整 `provider` 档；只通过产品自身探测链路验证 Agnes 当次真实连接。正式域名、主机、证书、外部监控、异地备份和其他 Provider 当日合同仍需目标环境验证；视觉审美最终由 owner 人工验收。
+- commit/push/部署状态：owner 已明确授权本次 commit 与 push，最终差异检查后执行；不部署或发布。

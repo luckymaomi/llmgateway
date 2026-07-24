@@ -13,7 +13,8 @@ export function FormProblem({ error }: { error: unknown }) {
 
 function problemMessage(code: string, fallback: string): string {
   if (code === 'conflict') return '数据已被其他操作更新，请确认最新事实后再试。'
-  if (code === 'provider_must_be_disabled') return '请先停用 Provider，再修改类型或 Base URL。'
-  if (code === 'registry_validation_unavailable') return '暂时无法核验 Provider 地址，请稍后重试。'
+  if (code === 'invalid_input') return '填写内容不符合要求，请检查后再试。'
+  if (code === 'forbidden') return '当前账号不能执行这项操作。'
+  if (code === 'not_found') return '要操作的内容已不存在，请刷新后再试。'
   return fallback
 }

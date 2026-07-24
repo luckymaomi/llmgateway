@@ -2,9 +2,12 @@ package credentialprobe
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"strings"
 	"time"
 
@@ -67,14 +70,7 @@ func (e *Executor) Execute(ctx context.Context, target registry.CredentialProbeT
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		result.Status = "failed"
-		if probeOutcomeUnknown(err) {
-			result.Status = "uncertain"
-			result.ErrorKind = stringPointer(string(canonical.ErrorUncertain))
-		} else {
-			result.ErrorKind = stringPointer(string(canonical.ErrorProviderTemporary))
-			result.Retryable = true
-		}
+		result.Status, result.ErrorKind, result.Retryable = classifyTransportFailure(err)
 		return withLatency(result, startedAt)
 	}
 	defer response.Body.Close()
@@ -142,6 +138,33 @@ func retryableKind(kind string) bool {
 
 func probeOutcomeUnknown(err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+func classifyTransportFailure(err error) (string, *string, bool) {
+	if probeOutcomeUnknown(err) {
+		return "uncertain", stringPointer("probe_timeout_or_canceled"), false
+	}
+	if errors.Is(err, security.ErrURLResolution) {
+		return "failed", stringPointer("dns_resolution_failed"), true
+	}
+	if errors.Is(err, security.ErrUnsafeURL) {
+		return "failed", stringPointer("outbound_address_blocked"), false
+	}
+
+	var unknownAuthority x509.UnknownAuthorityError
+	var hostnameError x509.HostnameError
+	var invalidCertificate x509.CertificateInvalidError
+	var recordHeader tls.RecordHeaderError
+	if errors.As(err, &unknownAuthority) || errors.As(err, &hostnameError) ||
+		errors.As(err, &invalidCertificate) || errors.As(err, &recordHeader) {
+		return "failed", stringPointer("tls_handshake_failed"), false
+	}
+
+	var networkError net.Error
+	if errors.As(err, &networkError) {
+		return "failed", stringPointer("upstream_connection_failed"), true
+	}
+	return "failed", stringPointer("provider_transport_failed"), true
 }
 
 func canonicalErrorKind(err error) string {

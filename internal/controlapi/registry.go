@@ -54,7 +54,6 @@ func (a *API) listResourcePools(w http.ResponseWriter, r *http.Request) {
 func (a *API) createResourcePool(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		ProviderID uuid.UUID   `json:"providerId"`
-		Slug       string      `json:"slug"`
 		Name       string      `json:"name"`
 		ModelIDs   []uuid.UUID `json:"modelIds"`
 	}
@@ -66,7 +65,7 @@ func (a *API) createResourcePool(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	item, err := a.registry.CreateResourcePool(r.Context(), principalFromContext(r.Context()), registry.NewResourcePool{ProviderID: input.ProviderID, Slug: input.Slug, Name: input.Name, ModelIDs: input.ModelIDs}, mutation)
+	item, err := a.registry.CreateResourcePool(r.Context(), principalFromContext(r.Context()), registry.NewResourcePool{ProviderID: input.ProviderID, Name: input.Name, ModelIDs: input.ModelIDs}, mutation)
 	if err != nil {
 		a.writeRegistryError(w, r, err)
 		return
@@ -125,7 +124,6 @@ func (a *API) setResourcePoolStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 type credentialInput struct {
-	ResourcePoolID    uuid.UUID                         `json:"resourcePoolId"`
 	Name              string                            `json:"name"`
 	Secret            string                            `json:"secret"`
 	RPMLimit          *int32                            `json:"rpmLimit"`
@@ -143,26 +141,6 @@ func (a *API) listCredentials(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeData(w, http.StatusOK, items)
-}
-
-func (a *API) createCredential(w http.ResponseWriter, r *http.Request) {
-	var input credentialInput
-	if err := decodeJSON(w, r, &input); err != nil {
-		writeDecodeError(w, r, err)
-		return
-	}
-	mutation, ok := registryMutationRequest(w, r)
-	if !ok {
-		input.Secret = ""
-		return
-	}
-	item, err := a.registry.CreateCredential(r.Context(), principalFromContext(r.Context()), registry.NewCredential{ResourcePoolID: input.ResourcePoolID, Name: input.Name, RPMLimit: input.RPMLimit, TPMLimit: input.TPMLimit, ConcurrencyLimit: input.ConcurrencyLimit, ModelBindings: input.ModelBindings}, input.Secret, mutation)
-	input.Secret = ""
-	if err != nil {
-		a.writeRegistryError(w, r, err)
-		return
-	}
-	writeData(w, http.StatusCreated, item)
 }
 
 func (a *API) importCredentials(w http.ResponseWriter, r *http.Request) {

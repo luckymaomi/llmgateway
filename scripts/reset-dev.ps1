@@ -1,50 +1,12 @@
 [CmdletBinding()]
 param(
-  [switch] $ConfirmDataLoss,
-  [ValidateRange(1, 65535)]
-  [int] $GatewayPort = 8080,
-  [ValidateRange(1, 65535)]
-  [int] $WebPort = 5173
+  [switch] $ConfirmDataLoss
 )
 
 $ErrorActionPreference = "Stop"
 
 . "$PSScriptRoot\docker.ps1"
-
-function Assert-LLMGatewayPortClosed {
-  param(
-    [Parameter(Mandatory = $true)][int] $Port,
-    [Parameter(Mandatory = $true)][string] $Label
-  )
-
-  $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
-  try {
-    $listener.Start()
-  } catch {
-    throw "$Label port 127.0.0.1:$Port is still in use. Stop start_dev.py with Ctrl+C before resetting data."
-  } finally {
-    $listener.Stop()
-  }
-}
-
-function Assert-NoLLMGatewayDevelopmentProcess {
-  $root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
-  $buildRoot = [System.IO.Path]::GetFullPath((Join-Path $root ".build")).TrimEnd('\') + '\'
-  foreach ($process in @(Get-Process -Name "gateway" -ErrorAction SilentlyContinue)) {
-    try {
-      $path = [string] $process.Path
-    } catch {
-      $path = ""
-    }
-    if (-not $path.StartsWith($buildRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
-      continue
-    }
-    $relativePath = $path.Substring($buildRoot.Length)
-    if ($relativePath -match '^dev-[^\\]+\\gateway\.exe$') {
-      throw "LLMGateway development process $($process.Id) is still running. Stop start_dev.py with Ctrl+C before resetting data."
-    }
-  }
-}
+. "$PSScriptRoot\dev-processes.ps1"
 
 function Get-LLMGatewayDockerLabels {
   param(
@@ -125,20 +87,16 @@ function Assert-LLMGatewayResourceAbsent {
 if (-not $ConfirmDataLoss) {
   throw "Data reset requires the explicit -ConfirmDataLoss switch."
 }
-if ($GatewayPort -eq $WebPort) {
-  throw "GatewayPort and WebPort must be different."
-}
 
-Assert-NoLLMGatewayDevelopmentProcess
-Assert-LLMGatewayPortClosed -Port $GatewayPort -Label "Gateway"
-Assert-LLMGatewayPortClosed -Port $WebPort -Label "Web"
+$root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
+Stop-LLMGatewayDevelopmentProcesses -Root $root
 
 Assert-LLMGatewayOwnedContainerIfPresent -Name "llmgateway-postgres" -Service "postgres"
 Assert-LLMGatewayOwnedContainerIfPresent -Name "llmgateway-valkey" -Service "valkey"
 Assert-LLMGatewayOwnedVolumeIfPresent -Name "llmgateway_postgres" -LogicalName "llmgateway_postgres"
 Assert-LLMGatewayOwnedVolumeIfPresent -Name "llmgateway_valkey" -LogicalName "llmgateway_valkey"
 
-Push-Location (Join-Path $PSScriptRoot "..")
+Push-Location $root
 try {
   Write-Host "Removing LLMGateway development containers and named data volumes..."
   Invoke-LLMGatewayDocker compose down --volumes

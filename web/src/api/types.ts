@@ -190,7 +190,6 @@ export interface ResourcePool {
 
 export interface ResourcePoolInput {
   providerId: string
-  slug: string
   name: string
   modelIds: string[]
 }
@@ -237,22 +236,23 @@ export interface Credential {
   modelBindings: CredentialModelBinding[]
 }
 
-export interface CredentialInput {
-  resourcePoolId: string
+export interface CredentialUpdateInput {
   name: string
   secret: string
   modelBindings: Array<Omit<CredentialModelBinding, 'modelName'>>
   rpmLimit?: number
   tpmLimit?: number
   concurrencyLimit?: number
-}
-
-export interface CredentialUpdateInput extends Omit<CredentialInput, 'resourcePoolId'> {
   expectedUpdatedAt: string
 }
 
-export interface CredentialBatchInput extends Omit<CredentialInput, 'name' | 'secret'> {
+export interface CredentialBatchInput {
+  resourcePoolId: string
   items: Array<{ name: string; secret: string }>
+  modelBindings: Array<Omit<CredentialModelBinding, 'modelName'>>
+  rpmLimit?: number
+  tpmLimit?: number
+  concurrencyLimit?: number
 }
 
 export interface CredentialBatchResult {
@@ -357,7 +357,6 @@ export interface ServicePlan {
 }
 
 export interface PlanInput {
-  slug: string
   name: string
   description: string
   kind: PlanKind

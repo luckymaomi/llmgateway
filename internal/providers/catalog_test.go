@@ -39,7 +39,7 @@ func TestDefaultCatalogBuildsEveryPublishedProviderKind(t *testing.T) {
 	}
 }
 
-func TestDefaultCatalogPublishesIndependentInstallableProviderPresets(t *testing.T) {
+func TestDefaultCatalogPublishesIndependentCodeOwnedPlatformPresets(t *testing.T) {
 	presets := DefaultCatalog().Presets()
 	if len(presets) != 4 {
 		t.Fatalf("Provider presets = %#v, want four verified entry points", presets)

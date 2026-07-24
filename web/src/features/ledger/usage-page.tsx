@@ -87,24 +87,31 @@ export function UsagePage() {
         cell: ({ row }) => <code>{row.original.keyPrefix}…</code>,
       },
       { accessorKey: 'modelAlias', header: '模型' },
-      {
-        accessorKey: 'resourcePoolName',
-        header: '资源池',
-      },
+      ...(session.role === 'member'
+        ? []
+        : [
+            {
+              accessorKey: 'resourcePoolName',
+              header: '资源池',
+            } as ColumnDef<RequestLog, unknown>,
+          ]),
       {
         id: 'tokens',
         header: 'Token',
         cell: ({ row }) => tokenSummary(row.original),
+        meta: { align: 'right' },
       },
       {
         id: 'latency',
         header: '耗时',
         cell: ({ row }) => formatDuration(requestDuration(row.original)),
+        meta: { align: 'right' },
       },
       {
         accessorKey: 'status',
         header: '状态',
         cell: ({ row }) => <StatusBadge status={row.original.status} />,
+        meta: { align: 'center' },
       },
       {
         accessorKey: 'requestId',
@@ -188,18 +195,20 @@ export function UsagePage() {
                   </option>
                 ))}
               </NativeSelect>
-              <NativeSelect
-                aria-label="资源池筛选"
-                value={resourcePoolId}
-                onChange={(event) => resetPage(() => setResourcePoolId(event.target.value))}
-              >
-                <option value="">全部资源池</option>
-                {(pools.data ?? []).map((pool) => (
-                  <option key={pool.id} value={pool.id}>
-                    {pool.name}
-                  </option>
-                ))}
-              </NativeSelect>
+              {session.role === 'administrator' ? (
+                <NativeSelect
+                  aria-label="资源池筛选"
+                  value={resourcePoolId}
+                  onChange={(event) => resetPage(() => setResourcePoolId(event.target.value))}
+                >
+                  <option value="">全部资源池</option>
+                  {(pools.data ?? []).map((pool) => (
+                    <option key={pool.id} value={pool.id}>
+                      {pool.name}
+                    </option>
+                  ))}
+                </NativeSelect>
+              ) : null}
             </>
           }
         />

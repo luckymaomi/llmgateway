@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react'
 
 import { catalogApi, type ResourcePool, type ResourcePoolStatus } from '@/api'
 import { DataTable, type ColumnDef } from '@/components/data-table/data-table'
+import { RowActionItem, RowActionMenu, TableAction } from '@/components/data-table/row-actions'
 import { Page, PageHeader, PageSection } from '@/components/layout'
 import { StatusBadge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -47,16 +48,16 @@ export function ResourcePoolsPage() {
           </div>
         ),
       },
-      { accessorKey: 'providerName', header: 'Provider' },
+      { accessorKey: 'providerName', header: '上游平台' },
       {
         id: 'models',
         header: '模型',
-        cell: ({ row }) => row.original.models.map((model) => model.publicName).join('、'),
+        cell: ({ row }) => row.original.models.map((model) => model.displayName).join('、'),
       },
-      { accessorKey: 'credentialCount', header: '上游 Key', meta: { align: 'right' } },
+      { accessorKey: 'credentialCount', header: '上游 Key 总数', meta: { align: 'right' } },
       {
         accessorKey: 'activeCredentialCount',
-        header: '活动 Key',
+        header: '可用 Key',
         meta: { align: 'right' },
       },
       {
@@ -72,42 +73,36 @@ export function ResourcePoolsPage() {
         cell: ({ row }) => (
           <div className="row-actions row-actions--center">
             {row.original.status !== 'retired' ? (
-              <Button
-                size="sm"
-                variant="quiet"
-                icon={<Pencil size={14} />}
+              <TableAction
+                label="编辑"
+                icon={<Pencil size={16} />}
                 onClick={() => setEditing(row.original)}
-              >
-                编辑
-              </Button>
+              />
             ) : null}
             {row.original.status === 'active' ? (
-              <Button
-                size="sm"
-                variant="quiet"
-                icon={<Power size={14} />}
+              <TableAction
+                label="停用"
+                tone="warning"
+                icon={<Power size={16} />}
                 onClick={() => setStatusTarget({ pool: row.original, status: 'disabled' })}
-              >
-                停用
-              </Button>
+              />
             ) : row.original.status === 'disabled' ? (
               <>
-                <Button
-                  size="sm"
-                  variant="quiet"
-                  icon={<Play size={14} />}
+                <TableAction
+                  label="启用"
+                  tone="positive"
+                  icon={<Play size={16} />}
                   onClick={() => setStatusTarget({ pool: row.original, status: 'active' })}
-                >
-                  启用
-                </Button>
-                <Button
-                  size="sm"
-                  variant="quiet"
-                  icon={<Archive size={14} />}
-                  onClick={() => setStatusTarget({ pool: row.original, status: 'retired' })}
-                >
-                  退役
-                </Button>
+                />
+                <RowActionMenu>
+                  <RowActionItem
+                    icon={<Archive size={15} />}
+                    danger
+                    onSelect={() => setStatusTarget({ pool: row.original, status: 'retired' })}
+                  >
+                    退役资源池
+                  </RowActionItem>
+                </RowActionMenu>
               </>
             ) : null}
           </div>

@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react'
 
 import { subscriptionsApi, type PlanStatus, type ServicePlan } from '@/api'
 import { DataTable, type ColumnDef } from '@/components/data-table/data-table'
+import { RowActionItem, RowActionMenu, TableAction } from '@/components/data-table/row-actions'
 import { Page, PageHeader, PageSection } from '@/components/layout'
 import { StatusBadge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -50,7 +51,7 @@ export function PlansPage() {
       {
         accessorKey: 'kind',
         header: '类型',
-        cell: ({ row }) => (row.original.kind === 'coding' ? 'Coding Plan' : 'Token Plan'),
+        cell: ({ row }) => (row.original.kind === 'coding' ? '编程套餐' : '通用 Token 套餐'),
       },
       {
         id: 'version',
@@ -61,7 +62,7 @@ export function PlansPage() {
       },
       {
         id: 'quota',
-        header: 'Token 额度',
+        header: '总额度（Token）',
         cell: ({ row }) => formatNumber(row.original.currentVersion?.tokenQuota ?? 0),
         meta: { align: 'right' },
       },
@@ -85,41 +86,35 @@ export function PlansPage() {
         cell: ({ row }) =>
           row.original.status !== 'archived' ? (
             <div className="row-actions row-actions--center">
-              <Button
-                size="sm"
-                variant="quiet"
-                icon={<Pencil size={14} />}
+              <TableAction
+                label="新版本"
+                icon={<Pencil size={16} />}
                 onClick={() => setEditing(row.original)}
-              >
-                发布新版本
-              </Button>
+              />
               {row.original.status === 'active' ? (
-                <Button
-                  size="sm"
-                  variant="quiet"
-                  icon={<Power size={14} />}
+                <TableAction
+                  label="停用"
+                  tone="warning"
+                  icon={<Power size={16} />}
                   onClick={() => setStatusTarget({ plan: row.original, status: 'disabled' })}
-                >
-                  停用
-                </Button>
+                />
               ) : (
                 <>
-                  <Button
-                    size="sm"
-                    variant="quiet"
-                    icon={<Play size={14} />}
+                  <TableAction
+                    label="启用"
+                    tone="positive"
+                    icon={<Play size={16} />}
                     onClick={() => setStatusTarget({ plan: row.original, status: 'active' })}
-                  >
-                    启用
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="quiet"
-                    icon={<Archive size={14} />}
-                    onClick={() => setStatusTarget({ plan: row.original, status: 'archived' })}
-                  >
-                    归档
-                  </Button>
+                  />
+                  <RowActionMenu>
+                    <RowActionItem
+                      icon={<Archive size={15} />}
+                      danger
+                      onSelect={() => setStatusTarget({ plan: row.original, status: 'archived' })}
+                    >
+                      归档套餐
+                    </RowActionItem>
+                  </RowActionMenu>
                 </>
               )}
             </div>

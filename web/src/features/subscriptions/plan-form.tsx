@@ -29,7 +29,6 @@ export function PlanForm({
 }) {
   const queryClient = useQueryClient()
   const version = plan?.currentVersion
-  const [slug, setSlug] = useState(plan?.slug ?? '')
   const [name, setName] = useState(plan?.name ?? '')
   const [description, setDescription] = useState(plan?.description ?? '')
   const [kind, setKind] = useState<PlanKind>(plan?.kind ?? 'token')
@@ -47,10 +46,14 @@ export function PlanForm({
     enabled: open,
   })
   const models = useMemo(() => {
-    const byId = new Map<string, { id: string; name: string }>()
+    const byId = new Map<string, { id: string; name: string; publicName: string }>()
     for (const pool of pools.data ?? []) {
       for (const model of pool.models) {
-        byId.set(model.id, { id: model.id, name: model.publicName })
+        byId.set(model.id, {
+          id: model.id,
+          name: model.displayName,
+          publicName: model.publicName,
+        })
       }
     }
     return Array.from(byId.values()).sort((left, right) => left.name.localeCompare(right.name))
@@ -59,7 +62,6 @@ export function PlanForm({
   const mutation = useMutation({
     mutationFn: () => {
       const input: PlanInput = {
-        slug: slug.trim(),
         name: name.trim(),
         description: description.trim(),
         kind,
@@ -81,7 +83,6 @@ export function PlanForm({
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (
-      !slug.trim() ||
       !name.trim() ||
       tokenQuota < 1 ||
       validityDays < 1 ||
@@ -123,44 +124,44 @@ export function PlanForm({
           <Input
             id="plan-name"
             autoFocus
+            required
             value={name}
             readOnly={locked}
             onChange={(event) => setName(event.target.value)}
           />
         </Field>
-        <Field label="稳定标识" htmlFor="plan-slug" hint="创建后保持不变">
-          <Input
-            id="plan-slug"
-            value={slug}
-            readOnly={locked || plan !== null}
-            onChange={(event) => setSlug(event.target.value.toLowerCase())}
-          />
-        </Field>
-        <Field label="套餐类型" htmlFor="plan-kind">
+        <Field label="套餐用途" htmlFor="plan-kind">
           <NativeSelect
             id="plan-kind"
+            required
             value={kind}
             disabled={locked}
             onChange={(event) => setKind(event.target.value as PlanKind)}
           >
-            <option value="token">Token Plan</option>
-            <option value="coding">Coding Plan</option>
+            <option value="token">通用 Token 套餐</option>
+            <option value="coding">编程套餐</option>
           </NativeSelect>
         </Field>
-        <Field label="Token 额度" htmlFor="plan-tokens">
+        <Field
+          label="每份订阅总额度（Token）"
+          htmlFor="plan-tokens"
+          hint="输入和输出 Token 都会从这份额度中扣除"
+        >
           <Input
             id="plan-tokens"
             type="number"
+            required
             min={1}
             value={tokenQuota}
             readOnly={locked}
             onChange={(event) => setTokenQuota(Number(event.target.value))}
           />
         </Field>
-        <Field label="有效天数" htmlFor="plan-validity">
+        <Field label="订阅有效天数" htmlFor="plan-validity">
           <Input
             id="plan-validity"
             type="number"
+            required
             min={1}
             max={3650}
             value={validityDays}
@@ -168,17 +169,18 @@ export function PlanForm({
             onChange={(event) => setValidityDays(Number(event.target.value))}
           />
         </Field>
-        <Field label="并发上限" htmlFor="plan-concurrency">
+        <Field label="同时请求上限" htmlFor="plan-concurrency">
           <Input
             id="plan-concurrency"
             type="number"
+            required
             min={1}
             value={concurrencyLimit}
             readOnly={locked}
             onChange={(event) => setConcurrencyLimit(Number(event.target.value))}
           />
         </Field>
-        <Field label="RPM" htmlFor="plan-rpm" hint="0 表示不额外限制">
+        <Field label="每分钟请求上限（RPM）" htmlFor="plan-rpm" hint="0 表示不额外限制">
           <Input
             id="plan-rpm"
             type="number"
@@ -188,7 +190,7 @@ export function PlanForm({
             onChange={(event) => setRpmLimit(Number(event.target.value))}
           />
         </Field>
-        <Field label="TPM" htmlFor="plan-tpm" hint="0 表示不额外限制">
+        <Field label="每分钟 Token 上限（TPM）" htmlFor="plan-tpm" hint="0 表示不额外限制">
           <Input
             id="plan-tpm"
             type="number"
@@ -208,7 +210,8 @@ export function PlanForm({
           />
         </Field>
         <fieldset className="choice-field field--full">
-          <legend>模型与资源池</legend>
+          <legend>套餐包含的模型</legend>
+          <p className="choice-field__hint">勾选成员可用的模型，并指定请求只能使用哪个资源池</p>
           <div className="binding-grid">
             {models.map((model) => {
               const route = routes.find((item) => item.modelId === model.id)
@@ -233,7 +236,10 @@ export function PlanForm({
                         )
                       }
                     />
-                    <span>{model.name}</span>
+                    <span>
+                      {model.name}
+                      <small className="table-subline">{model.publicName}</small>
+                    </span>
                   </label>
                   <NativeSelect
                     aria-label={`${model.name} 资源池`}
@@ -251,7 +257,7 @@ export function PlanForm({
                   >
                     {modelPools.map((pool) => (
                       <option key={pool.id} value={pool.id}>
-                        {pool.providerName} · {pool.name}
+                        {pool.name}
                       </option>
                     ))}
                   </NativeSelect>
@@ -263,6 +269,9 @@ export function PlanForm({
             <p className="choice-field__empty">正在读取资源池模型</p>
           ) : models.length === 0 ? (
             <p className="choice-field__empty">当前没有可发布到套餐的资源池模型</p>
+          ) : null}
+          {models.length > 0 && routes.length === 0 ? (
+            <span className="field__error">至少选择一个模型并指定资源池</span>
           ) : null}
         </fieldset>
         <FormProblem error={mutation.error ?? pools.error} />

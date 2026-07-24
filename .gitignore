@@ -4,6 +4,10 @@
 !.env.example
 /key.txt
 
+# Local manual acceptance screenshots
+/assets/
+/manual-test-screenshots/
+
 # Kitty runtime state
 .kitty/
 

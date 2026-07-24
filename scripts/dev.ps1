@@ -22,7 +22,7 @@ function Assert-LLMGatewayLoopbackPortAvailable {
   try {
     $listener.Start()
   } catch {
-    throw "$Label port 127.0.0.1:$Port is unavailable. Pass a different port to dev.ps1."
+    throw "$Label port 127.0.0.1:$Port is unavailable. Run python .\stop_dev.py to stop an old LLMGateway run. If the port belongs to another program, pass a different port to start_dev.py."
   } finally {
     $listener.Stop()
   }
@@ -368,7 +368,10 @@ try {
     $env:LLMGATEWAY_VALKEY_PASSWORD = $valkeyPassword
     $env:LLMGATEWAY_VALKEY_DATABASE = "0"
     $env:LLMGATEWAY_COOKIE_SECURE = "false"
-    $env:LLMGATEWAY_ALLOWED_RESOLVED_NETWORKS = "198.18.0.0/15"
+    # Meta/Clash Fake-IP DNS is dual-stack on Windows. These are local proxy
+    # ranges, not Provider or user IP allowlists; public upstream IPs remain
+    # free to change and are re-resolved for every outbound request.
+    $env:LLMGATEWAY_ALLOWED_RESOLVED_NETWORKS = "198.18.0.0/15,fdfe:dcba:9876::/64"
     $gatewayProcess = Start-Process -FilePath $gatewayBinary -WorkingDirectory $root `
       -NoNewWindow -PassThru
   } finally {

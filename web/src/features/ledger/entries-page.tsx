@@ -2,6 +2,7 @@ import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { useMemo } from 'react'
 
 import { ledgerApi, type LedgerEntry } from '@/api'
+import { useSession } from '@/app/session'
 import { DataTable, type ColumnDef } from '@/components/data-table/data-table'
 import { TableToolbar } from '@/components/data-table/table-toolbar'
 import { Page, PageHeader, PageSection } from '@/components/layout'
@@ -9,6 +10,7 @@ import { useListSearch } from '@/hooks/use-list-search'
 import { formatDateTime, formatSignedTokens } from '@/lib/format'
 
 export function EntriesPage() {
+  const session = useSession()
   const { state, setPage, setSearch } = useListSearch()
   const query = useQuery({
     queryKey: ['ledger-entries', state],
@@ -22,7 +24,9 @@ export function EntriesPage() {
         header: '时间',
         cell: ({ row }) => formatDateTime(row.original.occurredAt),
       },
-      { accessorKey: 'ownerName', header: '用户' },
+      ...(session.role === 'member'
+        ? []
+        : [{ accessorKey: 'ownerName', header: '成员' } as ColumnDef<LedgerEntry, unknown>]),
       { accessorKey: 'servicePlanName', header: '套餐' },
       { accessorKey: 'kind', header: '事件', cell: ({ row }) => entryLabel[row.original.kind] },
       {
@@ -43,7 +47,7 @@ export function EntriesPage() {
         cell: ({ row }) => (row.original.requestId ? <code>{row.original.requestId}</code> : '—'),
       },
     ],
-    [],
+    [session.role],
   )
   return (
     <Page>
@@ -52,7 +56,7 @@ export function EntriesPage() {
         <TableToolbar
           search={state.search}
           onSearchChange={setSearch}
-          searchLabel="搜索用户、原因或 Request ID"
+          searchLabel="搜索成员、原因或 Request ID"
         />
         <DataTable
           ariaLabel="额度变更记录"

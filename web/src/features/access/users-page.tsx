@@ -4,6 +4,12 @@ import { useMemo, useState } from 'react'
 
 import { accessApi, type UserAccount } from '@/api'
 import { DataTable, type ColumnDef } from '@/components/data-table/data-table'
+import {
+  RowActionItem,
+  RowActionMenu,
+  RowActionSeparator,
+  TableAction,
+} from '@/components/data-table/row-actions'
 import { TableToolbar } from '@/components/data-table/table-toolbar'
 import { Page, PageHeader, PageSection } from '@/components/layout'
 import { StatusBadge } from '@/components/ui/badge'
@@ -71,51 +77,44 @@ export function UsersPage() {
         cell: ({ row }) =>
           row.original.role === 'member' && row.original.status !== 'deleted' ? (
             <div className="row-actions row-actions--center">
-              <Button
-                size="sm"
-                variant="quiet"
-                icon={<Pencil size={14} />}
+              <TableAction
+                label="编辑"
+                icon={<Pencil size={16} />}
                 onClick={() => setEditing(row.original)}
-              >
-                编辑
-              </Button>
-              <Button
-                size="sm"
-                variant="quiet"
-                icon={<KeyRound size={14} />}
-                onClick={() => setPasswordMember(row.original)}
-              >
-                重置密码
-              </Button>
+              />
               {row.original.status === 'active' ? (
-                <Button
-                  size="sm"
-                  variant="quiet"
-                  icon={<Power size={14} />}
+                <TableAction
+                  label="停用"
+                  tone="warning"
+                  icon={<Power size={16} />}
                   onClick={() =>
                     statusMutation.mutate({ member: row.original, status: 'disabled' })
                   }
-                >
-                  停用
-                </Button>
+                />
               ) : (
-                <Button
-                  size="sm"
-                  variant="quiet"
-                  icon={<Play size={14} />}
+                <TableAction
+                  label="启用"
+                  tone="positive"
+                  icon={<Play size={16} />}
                   onClick={() => statusMutation.mutate({ member: row.original, status: 'active' })}
-                >
-                  启用
-                </Button>
+                />
               )}
-              <Button
-                size="sm"
-                variant="quiet"
-                icon={<Trash2 size={14} />}
-                onClick={() => setDeleting(row.original)}
-              >
-                删除
-              </Button>
+              <RowActionMenu>
+                <RowActionItem
+                  icon={<KeyRound size={15} />}
+                  onSelect={() => setPasswordMember(row.original)}
+                >
+                  重置密码
+                </RowActionItem>
+                <RowActionSeparator />
+                <RowActionItem
+                  icon={<Trash2 size={15} />}
+                  danger
+                  onSelect={() => setDeleting(row.original)}
+                >
+                  删除成员
+                </RowActionItem>
+              </RowActionMenu>
             </div>
           ) : null,
       },

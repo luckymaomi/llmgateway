@@ -37,18 +37,22 @@ const statusLabels: Record<string, string> = {
   dispatching: '发送中',
   streaming: '流式返回',
   completed: '已完成',
+  succeeded: '成功',
+  running: '进行中',
   failed: '失败',
   canceled: '已取消',
   uncertain: '待确认',
 }
 
 function statusTone(status: string): BadgeTone {
-  if (['active', 'enabled', 'healthy', 'published', 'completed'].includes(status)) return 'positive'
+  if (['active', 'enabled', 'healthy', 'published', 'completed', 'succeeded'].includes(status)) {
+    return 'positive'
+  }
   if (['cooling', 'pending', 'validating', 'queued', 'uncertain'].includes(status)) {
     return 'warning'
   }
   if (['failed', 'invalid', 'unavailable', 'suspended'].includes(status)) return 'danger'
-  if (['streaming', 'dispatching', 'admitted'].includes(status)) return 'info'
+  if (['streaming', 'dispatching', 'admitted', 'running'].includes(status)) return 'info'
   return 'neutral'
 }
 

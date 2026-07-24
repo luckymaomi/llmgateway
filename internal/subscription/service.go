@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
-	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -12,8 +11,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/luckymaomi/llmgateway/internal/identity"
 )
-
-var planSlugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$`)
 
 type Service struct {
 	repository Repository
@@ -31,12 +28,14 @@ func (s *Service) PublishPlan(ctx context.Context, actor identity.Principal, dra
 	if !administrator(actor) {
 		return ServicePlan{}, ErrForbidden
 	}
-	draft.Slug, draft.Name, draft.Description = strings.TrimSpace(draft.Slug), strings.TrimSpace(draft.Name), strings.TrimSpace(draft.Description)
-	if draft.ID == uuid.Nil && !planSlugPattern.MatchString(draft.Slug) || utf8.RuneCountInString(draft.Name) < 2 || utf8.RuneCountInString(draft.Name) > 100 || utf8.RuneCountInString(draft.Description) > 500 || draft.Kind != PlanToken && draft.Kind != PlanCoding || draft.TokenQuota < 1 || draft.ValidityDays < 1 || draft.ValidityDays > 3650 || draft.ConcurrencyLimit < 1 || !validOptionalLimits(draft.RPMLimit, draft.TPMLimit) || !validRoutes(draft.Routes) {
+	draft.Name, draft.Description = strings.TrimSpace(draft.Name), strings.TrimSpace(draft.Description)
+	if request.IdempotencyKey == uuid.Nil || utf8.RuneCountInString(draft.Name) < 1 || utf8.RuneCountInString(draft.Name) > 100 || utf8.RuneCountInString(draft.Description) > 500 || draft.Kind != PlanToken && draft.Kind != PlanCoding || draft.TokenQuota < 1 || draft.ValidityDays < 1 || draft.ValidityDays > 3650 || draft.ConcurrencyLimit < 1 || !validOptionalLimits(draft.RPMLimit, draft.TPMLimit) || !validRoutes(draft.Routes) {
 		return ServicePlan{}, ErrInvalidInput
 	}
 	action := "service_plan.create"
-	if draft.ID != uuid.Nil {
+	if draft.ID == uuid.Nil {
+		draft.Slug = "plan-" + strings.ReplaceAll(request.IdempotencyKey.String(), "-", "")
+	} else {
 		action = "service_plan.publish"
 	}
 	mutation, err := makeMutation(request, action, draft)

@@ -5,6 +5,7 @@ import { useMemo, useState } from 'react'
 import { subscriptionsApi, type Subscription, type SubscriptionStatus } from '@/api'
 import { useSession } from '@/app/session'
 import { DataTable, type ColumnDef } from '@/components/data-table/data-table'
+import { RowActionItem, RowActionMenu, TableAction } from '@/components/data-table/row-actions'
 import { TableToolbar } from '@/components/data-table/table-toolbar'
 import { Page, PageHeader, PageSection } from '@/components/layout'
 import { StatusBadge } from '@/components/ui/badge'
@@ -69,20 +70,20 @@ export function SubscriptionsPage() {
             <strong>{row.original.servicePlanName}</strong>
             <small className="table-subline">
               v{row.original.planVersion} ·{' '}
-              {row.original.planKind === 'coding' ? 'Coding Plan' : 'Token Plan'}
+              {row.original.planKind === 'coding' ? '编程套餐' : '通用 Token 套餐'}
             </small>
           </div>
         ),
       },
       {
         accessorKey: 'grantedTokens',
-        header: '发放额度',
+        header: '发放额度（Token）',
         cell: ({ row }) => formatNumber(row.original.grantedTokens),
         meta: { align: 'right' },
       },
       {
         accessorKey: 'balanceTokens',
-        header: '当前余额',
+        header: '当前余额（Token）',
         cell: ({ row }) => formatNumber(row.original.balanceTokens),
         meta: { align: 'right' },
       },
@@ -111,47 +112,41 @@ export function SubscriptionsPage() {
               cell: ({ row }) =>
                 !['canceled', 'expired'].includes(row.original.status) ? (
                   <div className="row-actions row-actions--center">
-                    <Button
-                      size="sm"
-                      variant="quiet"
-                      icon={<Pencil size={14} />}
+                    <TableAction
+                      label="调整"
+                      icon={<Pencil size={16} />}
                       onClick={() => setEditing(row.original)}
-                    >
-                      调整
-                    </Button>
+                    />
                     {row.original.status === 'suspended' ? (
-                      <Button
-                        size="sm"
-                        variant="quiet"
-                        icon={<Play size={14} />}
+                      <TableAction
+                        label="恢复"
+                        tone="positive"
+                        icon={<Play size={16} />}
                         onClick={() =>
                           setStatusTarget({ subscription: row.original, status: 'active' })
                         }
-                      >
-                        恢复
-                      </Button>
+                      />
                     ) : (
-                      <Button
-                        size="sm"
-                        variant="quiet"
-                        icon={<Power size={14} />}
+                      <TableAction
+                        label="暂停"
+                        tone="warning"
+                        icon={<Power size={16} />}
                         onClick={() =>
                           setStatusTarget({ subscription: row.original, status: 'suspended' })
                         }
-                      >
-                        暂停
-                      </Button>
+                      />
                     )}
-                    <Button
-                      size="sm"
-                      variant="quiet"
-                      icon={<Ban size={14} />}
-                      onClick={() =>
-                        setStatusTarget({ subscription: row.original, status: 'canceled' })
-                      }
-                    >
-                      取消
-                    </Button>
+                    <RowActionMenu>
+                      <RowActionItem
+                        icon={<Ban size={15} />}
+                        danger
+                        onSelect={() =>
+                          setStatusTarget({ subscription: row.original, status: 'canceled' })
+                        }
+                      >
+                        取消订阅
+                      </RowActionItem>
+                    </RowActionMenu>
                   </div>
                 ) : null,
             } as ColumnDef<Subscription, unknown>,

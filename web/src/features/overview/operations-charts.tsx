@@ -130,7 +130,7 @@ export function CredentialStatusChart({
   return (
     <DistributionChart
       total={resources.credentialCount}
-      totalLabel="上游 Key"
+      totalLabel="上游 API Key"
       emptyLabel="尚未添加上游 API Key"
       ariaLabel="上游 API Key 状态分布"
       data={[

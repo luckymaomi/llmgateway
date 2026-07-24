@@ -161,7 +161,7 @@ try {
   if ($null -eq $provider -or $null -eq $model) { throw "Capacity code-owned Provider catalog was not available." }
   $resourcePool = Invoke-CapacityControl -Method Post -Uri "$($gatewayURLs[0])/api/control/resource-pools" -Session $adminSession -CSRF $csrf `
     -IdempotencyKey ([guid]::NewGuid().ToString()) -Body @{
-      providerId = $provider.id; slug = "capacity-pool"; name = "Capacity Pool"; modelIds = @($model.id)
+      providerId = $provider.id; name = "Capacity Pool"; modelIds = @($model.id)
     }
   $null = Invoke-CapacityControl -Method Post -Uri "$($gatewayURLs[0])/api/control/model-prices" -Session $adminSession -CSRF $csrf `
     -IdempotencyKey ([guid]::NewGuid().ToString()) -Body @{
@@ -169,17 +169,17 @@ try {
       effectiveAt = (Get-Date).ToUniversalTime().AddMinutes(-1).ToString("o")
     }
   foreach ($credentialIndex in 1..6) {
-    $credential = Invoke-CapacityControl -Method Post -Uri "$($gatewayURLs[0])/api/control/credentials" -Session $adminSession -CSRF $csrf `
+    $credential = Invoke-CapacityControl -Method Post -Uri "$($gatewayURLs[0])/api/control/credentials/batch" -Session $adminSession -CSRF $csrf `
       -IdempotencyKey ([guid]::NewGuid().ToString()) -Body @{
-        resourcePoolId = $resourcePool.data.id; name = "Capacity fixture credential $credentialIndex"; secret = "core-upstream-secret"
+        resourcePoolId = $resourcePool.data.id; items = @(@{ name = "Capacity fixture credential $credentialIndex"; secret = "core-upstream-secret" })
         modelBindings = @(@{ model_id = $model.id; priority = 10; weight = 100 })
         rpmLimit = 100000; tpmLimit = 100000000; concurrencyLimit = 128
       }
-    if (-not $credential.data.id) { throw "Capacity credential $credentialIndex was not created." }
+    if (@($credential.data).Count -ne 1 -or $credential.data[0].status -ne "created") { throw "Capacity credential $credentialIndex was not created." }
   }
   $plan = Invoke-CapacityControl -Method Post -Uri "$($gatewayURLs[0])/api/control/plans" -Session $adminSession -CSRF $csrf `
     -IdempotencyKey ([guid]::NewGuid().ToString()) -Body @{
-      slug = "capacity-plan"; name = "Capacity Plan"; description = ""; kind = "token"
+      name = "Capacity Plan"; description = ""; kind = "token"
       tokenQuota = 100000000; validityDays = 1; concurrencyLimit = 16; rpmLimit = 600; tpmLimit = 1000000
       routes = @(@{ modelId = $model.id; resourcePoolId = $resourcePool.data.id })
     }

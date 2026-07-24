@@ -1,6 +1,6 @@
 .auth-panel {
-  width: min(100%, 430px);
-  padding: 22px;
+  width: min(100%, 460px);
+  padding: 28px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
@@ -8,7 +8,7 @@
 }
 
 .auth-panel > header {
-  margin-bottom: 18px;
+  margin-bottom: 22px;
 }
 
 .auth-panel > header p {
@@ -38,12 +38,109 @@
   color: var(--text-soft);
 }
 
+.probe-note {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.probe-pending,
+.probe-result__header,
+.probe-result__request {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.probe-pending {
+  min-height: 64px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-subtle);
+}
+
+.probe-pending > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.probe-pending span,
+.probe-result p,
+.probe-result__error span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.probe-result {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-subtle);
+}
+
+.probe-result[data-status='succeeded'] {
+  border-color: #b7ddc3;
+  background: #f2faf5;
+}
+
+.probe-result[data-status='failed'] {
+  border-color: #efc0ba;
+  background: #fff7f6;
+}
+
+.probe-result__facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 20px;
+}
+
+.probe-result__facts dt,
+.probe-result__request span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.probe-result__facts dd {
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+
+.probe-result__error {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--danger);
+}
+
+.probe-result__request {
+  min-width: 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.probe-result__request code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
 .auth-marker {
-  margin-bottom: 14px;
-  padding: 9px 10px;
+  margin-bottom: 16px;
+  padding: 11px 12px;
+  border: 1px solid #b8d8cf;
   border-radius: var(--radius);
   background: var(--accent-soft);
   font-size: 12px;
+}
+
+.auth-panel__primary {
+  width: 100%;
+  margin-top: 18px;
 }
 
 .summary-grid {

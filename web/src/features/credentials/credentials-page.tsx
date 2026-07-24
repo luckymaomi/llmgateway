@@ -1,9 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Archive, FlaskConical, Pencil, Play, Power, Rows3, Plus } from 'lucide-react'
+import { Archive, FlaskConical, Pencil, Play, Plus, Power } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
 import { catalogApi, type Credential, type CredentialStatus } from '@/api'
 import { DataTable, type ColumnDef } from '@/components/data-table/data-table'
+import {
+  RowActionItem,
+  RowActionMenu,
+  RowActionSeparator,
+  TableAction,
+} from '@/components/data-table/row-actions'
 import { Page, PageHeader, PageSection } from '@/components/layout'
 import { StatusBadge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -13,12 +19,12 @@ import { formatDateTime, formatNumber } from '@/lib/format'
 
 import { CredentialBatchForm } from './credential-batch-form'
 import { CredentialForm } from './credential-form'
+import { probeErrorLabel } from './credential-probe-copy'
 import { CredentialProbeDialog } from './credential-probe-dialog'
 
 export function CredentialsPage() {
   const queryClient = useQueryClient()
-  const [creating, setCreating] = useState(false)
-  const [batchOpen, setBatchOpen] = useState(false)
+  const [adding, setAdding] = useState(false)
   const [editing, setEditing] = useState<Credential | null>(null)
   const [probing, setProbing] = useState<Credential | null>(null)
   const [statusTarget, setStatusTarget] = useState<{
@@ -80,15 +86,18 @@ export function CredentialsPage() {
       {
         id: 'probe',
         header: '最近探测',
+        meta: { align: 'center' },
         cell: ({ row }) =>
           row.original.lastProbeAt ? (
-            <div>
-              {formatDateTime(row.original.lastProbeAt)}
+            <div className="table-status-cell">
+              <StatusBadge status={row.original.lastProbeStatus ?? 'unknown'} />
               <small className="table-subline">
-                {row.original.lastProbeLatencyMs
+                {row.original.lastProbeStatus === 'succeeded' &&
+                row.original.lastProbeLatencyMs !== undefined
                   ? `${formatNumber(row.original.lastProbeLatencyMs)} ms`
-                  : (row.original.lastProbeErrorKind ?? '—')}
+                  : probeErrorLabel(row.original.lastProbeErrorKind)}
               </small>
+              <small className="table-subline">{formatDateTime(row.original.lastProbeAt)}</small>
             </div>
           ) : (
             '未探测'
@@ -107,51 +116,47 @@ export function CredentialsPage() {
         cell: ({ row }) =>
           row.original.status !== 'retired' ? (
             <div className="row-actions row-actions--center">
-              <Button
-                size="sm"
-                variant="quiet"
-                icon={<FlaskConical size={14} />}
+              <TableAction
+                label="测试"
+                icon={<FlaskConical size={16} />}
                 onClick={() => setProbing(row.original)}
-              >
-                测试
-              </Button>
-              <Button
-                size="sm"
-                variant="quiet"
-                icon={<Pencil size={14} />}
+              />
+              <TableAction
+                label="编辑"
+                icon={<Pencil size={16} />}
                 onClick={() => setEditing(row.original)}
-              >
-                编辑
-              </Button>
-              {row.original.status === 'disabled' ? (
-                <>
-                  <Button
-                    size="sm"
-                    variant="quiet"
-                    icon={<Play size={14} />}
-                    onClick={() => setStatusTarget({ credential: row.original, status: 'active' })}
+              />
+              <RowActionMenu>
+                {row.original.status === 'disabled' ? (
+                  <RowActionItem
+                    icon={<Play size={15} />}
+                    onSelect={() => setStatusTarget({ credential: row.original, status: 'active' })}
                   >
-                    启用
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="quiet"
-                    icon={<Archive size={14} />}
-                    onClick={() => setRetiring(row.original)}
+                    启用 Key
+                  </RowActionItem>
+                ) : (
+                  <RowActionItem
+                    icon={<Power size={15} />}
+                    onSelect={() =>
+                      setStatusTarget({ credential: row.original, status: 'disabled' })
+                    }
                   >
-                    退役
-                  </Button>
-                </>
-              ) : (
-                <Button
-                  size="sm"
-                  variant="quiet"
-                  icon={<Power size={14} />}
-                  onClick={() => setStatusTarget({ credential: row.original, status: 'disabled' })}
-                >
-                  停用
-                </Button>
-              )}
+                    停用 Key
+                  </RowActionItem>
+                )}
+                {row.original.status === 'disabled' ? (
+                  <>
+                    <RowActionSeparator />
+                    <RowActionItem
+                      icon={<Archive size={15} />}
+                      danger
+                      onSelect={() => setRetiring(row.original)}
+                    >
+                      退役 Key
+                    </RowActionItem>
+                  </>
+                ) : null}
+              </RowActionMenu>
             </div>
           ) : null,
       },
@@ -164,22 +169,13 @@ export function CredentialsPage() {
       <PageHeader
         title="上游 API Key"
         actions={
-          <>
-            <Button
-              variant="secondary"
-              icon={<Rows3 size={16} />}
-              onClick={() => setBatchOpen(true)}
-            >
-              批量导入
-            </Button>
-            <Button
-              icon={<Plus size={16} />}
-              data-onboarding="create-provider-key"
-              onClick={() => setCreating(true)}
-            >
-              添加上游 API Key
-            </Button>
-          </>
+          <Button
+            icon={<Plus size={16} />}
+            data-onboarding="create-provider-key"
+            onClick={() => setAdding(true)}
+          >
+            添加上游 API Key
+          </Button>
         }
       />
       <PageSection>
@@ -200,7 +196,6 @@ export function CredentialsPage() {
           onPageChange={() => undefined}
         />
       </PageSection>
-      {creating ? <CredentialForm credential={null} open onOpenChange={setCreating} /> : null}
       {editing ? (
         <CredentialForm
           credential={editing}
@@ -208,7 +203,7 @@ export function CredentialsPage() {
           onOpenChange={(open) => !open && setEditing(null)}
         />
       ) : null}
-      <CredentialBatchForm open={batchOpen} onOpenChange={setBatchOpen} />
+      <CredentialBatchForm open={adding} onOpenChange={setAdding} />
       {probing ? (
         <CredentialProbeDialog
           credential={probing}

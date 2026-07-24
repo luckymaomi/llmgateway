@@ -128,7 +128,7 @@ CREATE TABLE resource_pools (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     provider_id uuid NOT NULL REFERENCES providers(id),
     slug text NOT NULL UNIQUE CHECK (slug ~ '^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$'),
-    name text NOT NULL CHECK (char_length(name) BETWEEN 2 AND 80),
+    name text NOT NULL CHECK (char_length(name) BETWEEN 1 AND 80),
     status resource_pool_status NOT NULL DEFAULT 'active',
     retired_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT now(),
@@ -247,7 +247,7 @@ CREATE TABLE gateway_key_models (
 CREATE TABLE service_plans (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     slug text NOT NULL UNIQUE CHECK (slug ~ '^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$'),
-    name text NOT NULL CHECK (char_length(name) BETWEEN 2 AND 100),
+    name text NOT NULL CHECK (char_length(name) BETWEEN 1 AND 100),
     description text NOT NULL DEFAULT '' CHECK (char_length(description) <= 500),
     kind plan_kind NOT NULL,
     status service_plan_status NOT NULL DEFAULT 'active',

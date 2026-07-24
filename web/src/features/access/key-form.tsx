@@ -147,6 +147,7 @@ export function KeyForm({
               <NativeSelect
                 id="key-owner"
                 autoFocus
+                required
                 value={ownerId}
                 disabled={mutation.isPending}
                 onChange={(event) => {
@@ -172,6 +173,7 @@ export function KeyForm({
           <Field label="名称" htmlFor="key-name">
             <Input
               id="key-name"
+              required
               value={name}
               readOnly={mutation.isPending}
               onChange={(event) => setName(event.target.value)}
@@ -204,6 +206,9 @@ export function KeyForm({
               <p className="choice-field__empty">正在读取活动订阅模型</p>
             ) : authorizedModels.length === 0 ? (
               <p className="choice-field__empty">该成员当前没有可用于新 API 密钥的活动订阅模型</p>
+            ) : null}
+            {effectiveOwnerId && authorizedModels.length > 0 && modelIds.length === 0 ? (
+              <span className="field__error">至少选择一个授权模型</span>
             ) : null}
           </fieldset>
           <Field label="到期时间" htmlFor="key-expiry" hint="留空表示跟随成员服务治理">

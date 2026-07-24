@@ -9,7 +9,7 @@ export async function verifyGatewayKeyRequest(page: Page, keyName: string): Prom
     .getByRole('table', { name: 'API 密钥列表' })
     .getByRole('row')
     .filter({ hasText: keyName })
-  await keyRow.getByRole('button', { name: '测试请求' }).click()
+  await keyRow.getByRole('button', { name: '测试', exact: true }).click()
   const dialog = page.getByRole('dialog', { name: '测试 API 密钥' })
 
   const completedResponse = page.waitForResponse((response) => isGatewayKeyTest(response.request()))

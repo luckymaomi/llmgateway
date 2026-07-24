@@ -131,11 +131,12 @@ export function SubscriptionForm({
           <NativeSelect
             id="subscription-member"
             autoFocus
+            required
             value={userId}
             disabled={locked || subscription !== null}
             onChange={(event) => setUserId(event.target.value)}
           >
-            <option value="">请选择</option>
+            <option value="">选择成员</option>
             {(members.data?.items ?? [])
               .filter((member) => member.role === 'member')
               .map((member) => (
@@ -153,11 +154,12 @@ export function SubscriptionForm({
         <Field label="套餐" htmlFor="subscription-plan">
           <NativeSelect
             id="subscription-plan"
+            required
             value={servicePlanId}
             disabled={locked || subscription !== null}
             onChange={(event) => selectPlan(event.target.value)}
           >
-            <option value="">请选择</option>
+            <option value="">选择套餐</option>
             {(plans.data ?? [])
               .filter((plan) => plan.status === 'active' && plan.currentVersion)
               .map((plan) => (
@@ -167,17 +169,22 @@ export function SubscriptionForm({
               ))}
           </NativeSelect>
         </Field>
-        <Field label="发放 Token" htmlFor="subscription-tokens">
+        <Field
+          label="实际发放额度（Token）"
+          htmlFor="subscription-tokens"
+          hint="默认使用套餐额度，也可以为该成员单独调整"
+        >
           <Input
             id="subscription-tokens"
             type="number"
+            required
             min={1}
             value={grantedTokens}
             readOnly={locked}
             onChange={(event) => setGrantedTokens(Number(event.target.value))}
           />
         </Field>
-        <Field label="版本额度" htmlFor="subscription-plan-quota">
+        <Field label="套餐默认额度（Token）" htmlFor="subscription-plan-quota">
           <Input
             id="subscription-plan-quota"
             value={selectedPlan?.currentVersion?.tokenQuota ?? subscription?.grantedTokens ?? ''}
@@ -188,6 +195,7 @@ export function SubscriptionForm({
           <Input
             id="subscription-start"
             type="datetime-local"
+            required
             value={startsAt}
             readOnly={locked}
             onChange={(event) => setStartsAt(event.target.value)}
@@ -197,12 +205,18 @@ export function SubscriptionForm({
           <Input
             id="subscription-expiry"
             type="datetime-local"
+            required
             value={expiresAt}
             readOnly={locked}
             onChange={(event) => setExpiresAt(event.target.value)}
           />
         </Field>
-        <Field label="运营备注" htmlFor="subscription-notes" className="field--full">
+        <Field
+          label="内部备注"
+          htmlFor="subscription-notes"
+          className="field--full"
+          hint="仅管理员可见"
+        >
           <Textarea
             id="subscription-notes"
             rows={3}

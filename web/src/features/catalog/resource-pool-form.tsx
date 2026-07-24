@@ -18,7 +18,6 @@ export function ResourcePoolForm({
 }) {
   const queryClient = useQueryClient()
   const [providerId, setProviderId] = useState(pool?.providerId ?? '')
-  const [slug, setSlug] = useState(pool?.slug ?? '')
   const [name, setName] = useState(pool?.name ?? '')
   const [modelIds, setModelIds] = useState<string[]>(pool?.models.map((model) => model.id) ?? [])
   const providers = useQuery({
@@ -45,7 +44,7 @@ export function ResourcePoolForm({
             crypto.randomUUID(),
           )
         : catalogApi.createResourcePool(
-            { providerId, slug: slug.trim(), name: name.trim(), modelIds },
+            { providerId, name: name.trim(), modelIds },
             crypto.randomUUID(),
           ),
     async onSuccess() {
@@ -56,7 +55,7 @@ export function ResourcePoolForm({
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!name.trim() || (!pool && (!providerId || !slug.trim() || modelIds.length === 0))) return
+    if (!name.trim() || (!pool && (!providerId || modelIds.length === 0))) return
     mutation.mutate()
   }
 
@@ -85,10 +84,11 @@ export function ResourcePoolForm({
       }
     >
       <form id="resource-pool-form" className="form-grid" onSubmit={submit}>
-        <Field label="Provider" htmlFor="pool-provider">
+        <Field label="上游平台" htmlFor="pool-provider">
           <NativeSelect
             id="pool-provider"
             autoFocus
+            required
             value={providerId}
             disabled={locked || pool !== null}
             onChange={(event) => {
@@ -96,7 +96,7 @@ export function ResourcePoolForm({
               setModelIds([])
             }}
           >
-            <option value="">请选择</option>
+            <option value="">选择平台</option>
             {(providers.data ?? []).map((provider) => (
               <option key={provider.id} value={provider.id}>
                 {provider.name}
@@ -107,17 +107,10 @@ export function ResourcePoolForm({
         <Field label="资源池名称" htmlFor="pool-name">
           <Input
             id="pool-name"
+            required
             value={name}
             readOnly={locked}
             onChange={(event) => setName(event.target.value)}
-          />
-        </Field>
-        <Field label="标识" htmlFor="pool-slug" hint="创建后保持稳定">
-          <Input
-            id="pool-slug"
-            value={slug}
-            readOnly={locked || pool !== null}
-            onChange={(event) => setSlug(event.target.value.toLowerCase())}
           />
         </Field>
         {pool ? (
@@ -130,7 +123,8 @@ export function ResourcePoolForm({
           </Field>
         ) : (
           <fieldset className="choice-field field--full">
-            <legend>池内模型</legend>
+            <legend>提供的模型</legend>
+            <p className="choice-field__hint">勾选这个资源池实际能够提供的模型</p>
             <div className="choice-grid">
               {selectableModels.map((model) => (
                 <label key={model.id}>
@@ -146,16 +140,22 @@ export function ResourcePoolForm({
                       )
                     }
                   />
-                  <span>{model.publicName}</span>
+                  <span>
+                    {model.displayName}
+                    <small className="table-subline">{model.publicName}</small>
+                  </span>
                 </label>
               ))}
             </div>
             {providerId === '' ? (
-              <p className="choice-field__empty">选择 Provider 后显示可用模型</p>
+              <p className="choice-field__empty">选择上游平台后显示可用模型</p>
             ) : providers.isLoading || models.isLoading ? (
               <p className="choice-field__empty">正在读取可用模型</p>
             ) : selectableModels.length === 0 ? (
-              <p className="choice-field__empty">该 Provider 当前没有可用模型</p>
+              <p className="choice-field__empty">该上游平台当前没有可用模型</p>
+            ) : null}
+            {providerId && selectableModels.length > 0 && modelIds.length === 0 ? (
+              <span className="field__error">至少选择一个模型</span>
             ) : null}
           </fieldset>
         )}

@@ -9,6 +9,8 @@ import { Field, NativeSelect } from '@/components/ui/field'
 import { FormProblem } from '@/features/auth/form-problem'
 import { formatNumber } from '@/lib/format'
 
+import { probeErrorLabel } from './credential-probe-copy'
+
 export function CredentialProbeDialog({
   credential,
   onOpenChange,
@@ -55,6 +57,7 @@ export function CredentialProbeDialog({
         if (!probe.isPending || open) onOpenChange(open)
       }}
       title="测试上游 API Key"
+      description={`${credential.name} · ${credential.resourcePoolName}`}
       dismissible={!probe.isPending}
       width="sm"
       footer={
@@ -74,8 +77,8 @@ export function CredentialProbeDialog({
         )
       }
     >
-      <div className="form-grid">
-        <Field label="测试模型" htmlFor="credential-probe-model">
+      <div className="form-stack">
+        <Field label="选择测试模型" htmlFor="credential-probe-model">
           <NativeSelect
             id="credential-probe-model"
             autoFocus
@@ -93,21 +96,24 @@ export function CredentialProbeDialog({
             ))}
           </NativeSelect>
         </Field>
-        <span>将向该模型发送一次 hi，消耗少量上游 Token。</span>
+        <p className="probe-note">会向上游发送一条最小消息并等待完整响应，可能消耗少量 Token。</p>
         {probe.isPending ? (
-          <div className="operation-panel__heading" aria-live="polite">
-            <strong>正在等待上游响应</strong>
+          <div className="probe-pending" aria-live="polite">
+            <div>
+              <strong>正在连接上游</strong>
+              <span>请等待模型返回，超时前不会提前判定失败</span>
+            </div>
             <StatusBadge status="running" />
           </div>
         ) : null}
         {result ? <ProbeResult result={result} /> : null}
         {stopped ? (
-          <div className="operation-panel__facts" aria-live="polite">
-            <div className="operation-panel__heading">
+          <div className="probe-result" aria-live="polite">
+            <div className="probe-result__header">
               <strong>已停止等待</strong>
               <StatusBadge status="uncertain" />
             </div>
-            <span>请求可能已到达上游并消耗 Token，不会自动重试。</span>
+            <p>请求可能已经到达上游并消耗 Token，系统不会自动重试。</p>
           </div>
         ) : null}
         {!stopped ? <FormProblem error={probe.error} /> : null}
@@ -118,25 +124,42 @@ export function CredentialProbeDialog({
 
 function ProbeResult({ result }: { result: CredentialProbeResult }) {
   return (
-    <div className="operation-panel__facts" aria-live="polite">
-      <div className="operation-panel__heading">
+    <section className="probe-result" data-status={result.status} aria-live="polite">
+      <div className="probe-result__header">
         <strong>{probeResultTitle(result.status)}</strong>
         <StatusBadge status={result.status} />
       </div>
-      <span>模型：{result.modelName}</span>
-      <span>耗时：{formatNumber(result.latencyMillis)} ms</span>
-      <span>
-        Token：{formatTokenCount(result.inputTokens)} 输入 / {formatTokenCount(result.outputTokens)}{' '}
-        输出
-      </span>
+      <dl className="probe-result__facts">
+        <div>
+          <dt>模型</dt>
+          <dd>{result.modelName}</dd>
+        </div>
+        <div>
+          <dt>耗时</dt>
+          <dd>{formatNumber(result.latencyMillis)} ms</dd>
+        </div>
+        <div>
+          <dt>输入 Token</dt>
+          <dd>{formatTokenCount(result.inputTokens)}</dd>
+        </div>
+        <div>
+          <dt>输出 Token</dt>
+          <dd>{formatTokenCount(result.outputTokens)}</dd>
+        </div>
+      </dl>
       {result.errorKind ? (
-        <span>
-          错误：{result.errorKind}
-          {result.retryable ? '，可以重试' : ''}
-        </span>
-      ) : null}
-      <span>Request ID：{result.requestId}</span>
-    </div>
+        <div className="probe-result__error">
+          <strong>{probeErrorLabel(result.errorKind)}</strong>
+          <span>{result.retryable ? '可以直接重新测试' : '请先检查 Key、模型或网络设置'}</span>
+        </div>
+      ) : (
+        <p className="probe-result__message">已收到并解析上游模型响应。</p>
+      )}
+      <div className="probe-result__request">
+        <span>Request ID</span>
+        <code>{result.requestId}</code>
+      </div>
+    </section>
   )
 }
 

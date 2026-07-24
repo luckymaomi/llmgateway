@@ -21,13 +21,12 @@ function Invoke-ControlJSON {
 function New-ResourcePool {
   param(
     [Parameter(Mandatory = $true)][string] $ProviderID,
-    [Parameter(Mandatory = $true)][string] $Slug,
     [Parameter(Mandatory = $true)][string] $Name,
     [Parameter(Mandatory = $true)][string] $ModelID
   )
 
   return (Invoke-ControlJSON -Method Post -Path "/api/control/resource-pools" -Idempotent -Body @{
-      providerId = $ProviderID; slug = $Slug; name = $Name; modelIds = @($ModelID)
+      providerId = $ProviderID; name = $Name; modelIds = @($ModelID)
     }).data
 }
 
@@ -58,15 +57,18 @@ function New-Credential {
     [Parameter(Mandatory = $true)][int] $Weight
   )
 
-  return (Invoke-ControlJSON -Method Post -Path "/api/control/credentials" -Idempotent -Body @{
+  $result = (Invoke-ControlJSON -Method Post -Path "/api/control/credentials/batch" -Idempotent -Body @{
       resourcePoolId = $ResourcePoolID
-      name = $Name
-      secret = $Secret
+      items = @(@{ name = $Name; secret = $Secret })
       modelBindings = @(@{ model_id = $ModelID; priority = $Priority; weight = $Weight })
       rpmLimit = 60
       tpmLimit = 1000000
       concurrencyLimit = 4
-    }).data
+    }).data | Select-Object -First 1
+  if ($result.status -ne "created" -or -not $result.credential.id) {
+    throw "A real Provider upstream API Key was not created."
+  }
+  return $result.credential
 }
 
 function Invoke-SDKClient {
@@ -351,10 +353,10 @@ try {
     throw "The code-owned Provider and model catalog did not expose the four verified real entry points."
   }
 
-  $agnesPool = New-ResourcePool -ProviderID $agnes.id -Slug "real-agnes" -Name "Real Agnes" -ModelID $agnesModel.id
-  $zhipuPool = New-ResourcePool -ProviderID $zhipu.id -Slug "real-zhipu" -Name "Real Zhipu" -ModelID $zhipuModel.id
-  $geminiPool = New-ResourcePool -ProviderID $gemini.id -Slug "real-gemini" -Name "Real Google Gemini" -ModelID $geminiModel.id
-  $siliconPool = New-ResourcePool -ProviderID $silicon.id -Slug "real-siliconflow" -Name "Real SiliconFlow" -ModelID $siliconModel.id
+  $agnesPool = New-ResourcePool -ProviderID $agnes.id -Name "Real Agnes" -ModelID $agnesModel.id
+  $zhipuPool = New-ResourcePool -ProviderID $zhipu.id -Name "Real Zhipu" -ModelID $zhipuModel.id
+  $geminiPool = New-ResourcePool -ProviderID $gemini.id -Name "Real Google Gemini" -ModelID $geminiModel.id
+  $siliconPool = New-ResourcePool -ProviderID $silicon.id -Name "Real SiliconFlow" -ModelID $siliconModel.id
   if (@(@($agnesPool, $zhipuPool, $geminiPool, $siliconPool) | Where-Object { $_.status -ne "active" }).Count -gt 0) {
     throw "A real Provider resource pool did not become active."
   }
@@ -375,7 +377,6 @@ try {
   New-Credential -ResourcePoolID $siliconPool.id -Name "SiliconFlow dedicated 1" -Secret $siliconKeys[0] -ModelID $siliconModel.id -Priority 10 -Weight 100 | Out-Null
 
   $plan = Invoke-ControlJSON -Method Post -Path "/api/control/plans" -Idempotent -Body @{
-    slug = "real-provider-plan"
     name = "Real Provider Plan"
     description = "Isolated real Provider acceptance"
     kind = "token"

@@ -3,7 +3,6 @@ import type {
   Credential,
   CredentialBatchInput,
   CredentialBatchResult,
-  CredentialInput,
   CredentialProbeResult,
   CredentialStatus,
   CredentialUpdateInput,
@@ -73,14 +72,6 @@ export const catalogApi = {
         ...(signal ? { signal } : {}),
       })
       .then((items) => items.map(mapCredential)),
-  createCredential: (input: CredentialInput, idempotencyKey: string) =>
-    apiClient
-      .request<CredentialWire>(`${base}/credentials`, {
-        method: 'POST',
-        body: credentialBody(input),
-        headers: mutationHeaders(idempotencyKey),
-      })
-      .then(mapCredential),
   updateCredential: (id: string, input: CredentialUpdateInput, idempotencyKey: string) =>
     apiClient
       .request<CredentialWire>(`${base}/credentials/${encodeURIComponent(id)}`, {
@@ -374,7 +365,7 @@ function bindingBody(binding: Omit<Credential['modelBindings'][number], 'modelNa
   return { model_id: binding.modelId, priority: binding.priority, weight: binding.weight }
 }
 
-function credentialBody(input: CredentialInput | CredentialUpdateInput) {
+function credentialBody(input: CredentialUpdateInput) {
   return { ...input, modelBindings: input.modelBindings.map(bindingBody) }
 }
 

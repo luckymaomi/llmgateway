@@ -134,13 +134,19 @@ func TestURLValidatorAllowsOnlyConfiguredPrivateNetwork(t *testing.T) {
 
 func TestURLValidatorSupportsExplicitFakeIPNetwork(t *testing.T) {
 	validator, err := NewURLValidator(SSRFPolicy{
-		AllowedResolvedPrefixes: []netip.Prefix{netip.MustParsePrefix("198.18.0.0/15")},
+		AllowedResolvedPrefixes: []netip.Prefix{
+			netip.MustParsePrefix("198.18.0.0/15"),
+			netip.MustParsePrefix("fdfe:dcba:9876::/64"),
+		},
 	})
 	if err != nil {
 		t.Fatalf("NewURLValidator() error = %v", err)
 	}
 	validator.resolver = staticResolver{
-		"api.provider.example": {netip.MustParseAddr("198.18.2.88")},
+		"api.provider.example": {
+			netip.MustParseAddr("198.18.2.88"),
+			netip.MustParseAddr("fdfe:dcba:9876::88"),
+		},
 	}
 	if _, err := validator.ValidateString(context.Background(), "https://api.provider.example/v1"); err != nil {
 		t.Fatalf("configured Fake-IP address rejected: %v", err)

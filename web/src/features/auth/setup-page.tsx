@@ -72,6 +72,7 @@ export function SetupPage() {
         ) : null}
         <Button
           type="button"
+          className="auth-panel__primary"
           onClick={() => void navigate({ to: '/getting-started', replace: true })}
         >
           我已保存，开始配置

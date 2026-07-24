@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -14,8 +13,6 @@ import (
 	"github.com/luckymaomi/llmgateway/internal/providers"
 	"github.com/luckymaomi/llmgateway/internal/security"
 )
-
-var slugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$`)
 
 const credentialProbePersistenceTimeout = 3 * time.Second
 
@@ -132,10 +129,11 @@ func (s *Service) CreateResourcePool(ctx context.Context, actor identity.Princip
 	if !activeAdministrator(actor) {
 		return ResourcePool{}, ErrForbidden
 	}
-	input.Slug, input.Name = strings.TrimSpace(input.Slug), strings.TrimSpace(input.Name)
-	if input.ProviderID == uuid.Nil || !slugPattern.MatchString(input.Slug) || utf8.RuneCountInString(input.Name) < 2 || utf8.RuneCountInString(input.Name) > 80 || !validModelIDs(input.ModelIDs) {
+	input.Name = strings.TrimSpace(input.Name)
+	if input.ProviderID == uuid.Nil || request.IdempotencyKey == uuid.Nil || utf8.RuneCountInString(input.Name) < 1 || utf8.RuneCountInString(input.Name) > 80 || !validModelIDs(input.ModelIDs) {
 		return ResourcePool{}, ErrInvalidInput
 	}
+	input.Slug = "pool-" + strings.ReplaceAll(request.IdempotencyKey.String(), "-", "")
 	models, err := s.repository.ListModels(ctx)
 	if err != nil {
 		return ResourcePool{}, err
@@ -162,7 +160,7 @@ func (s *Service) UpdateResourcePool(ctx context.Context, actor identity.Princip
 	}
 	input.Name = strings.TrimSpace(input.Name)
 	input.ExpectedUpdatedAt = input.ExpectedUpdatedAt.UTC()
-	if input.ID == uuid.Nil || input.ExpectedUpdatedAt.IsZero() || utf8.RuneCountInString(input.Name) < 2 || utf8.RuneCountInString(input.Name) > 80 {
+	if input.ID == uuid.Nil || input.ExpectedUpdatedAt.IsZero() || utf8.RuneCountInString(input.Name) < 1 || utf8.RuneCountInString(input.Name) > 80 {
 		return ResourcePool{}, ErrInvalidInput
 	}
 	mutation, err := resourcePoolMutation(request, "resource_pool.update", input)
@@ -226,8 +224,11 @@ func (s *Service) CreateCredential(ctx context.Context, actor identity.Principal
 }
 
 func (s *Service) ImportCredentials(ctx context.Context, actor identity.Principal, resourcePoolID uuid.UUID, items []CredentialBatchItem, bindings []CredentialModelBinding, rpmLimit *int32, tpmLimit *int64, concurrencyLimit *int32, request MutationRequest) ([]CredentialBatchResult, error) {
-	if !activeAdministrator(actor) || resourcePoolID == uuid.Nil || len(items) == 0 || len(items) > 500 {
+	if !activeAdministrator(actor) {
 		return nil, ErrForbidden
+	}
+	if resourcePoolID == uuid.Nil || len(items) == 0 || len(items) > 500 {
+		return nil, ErrInvalidInput
 	}
 	results := make([]CredentialBatchResult, 0, len(items))
 	seen := make(map[string]struct{}, len(items))

@@ -54,7 +54,7 @@ def main() -> int:
 
     print("LLMGateway 环境检查")
     print("需要：Git、Docker Desktop、Go 1.26.5+、Node.js 22.12+、pnpm 10.33.0。")
-    print("正常启动会保留已有账号、Provider、配置、Key 和账本，不会调用真实 Provider。\n")
+    print("正常启动会保留已有成员、资源池、套餐、订阅、Key 和账本，不会调用真实 Provider。\n")
     try:
         status = run_script("verify-environment.ps1", "-SkipServices")
     except RuntimeError as error:

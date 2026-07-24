@@ -28,7 +28,7 @@ export function DetailDrawer({
               {subtitle ? <Dialog.Description>{subtitle}</Dialog.Description> : null}
             </div>
             <Dialog.Close asChild>
-              <IconButton label="关闭详情">
+              <IconButton label="关闭详情" showTooltip={false}>
                 <X size={18} />
               </IconButton>
             </Dialog.Close>

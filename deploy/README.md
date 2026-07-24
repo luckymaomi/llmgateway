@@ -12,6 +12,8 @@
 
 `Caddyfile.internal` 和 `compose.acceptance.yaml` 只用于隔离验收的 internal CA，不用于公网。生产 `Caddyfile` 使用 Caddy 自动 HTTPS；80/443 之外的公开监听必须单独审查防火墙和可信代理地址。
 
+生产配置不得复制 Windows 开发入口为透明代理添加的 Fake-IP 网段。Provider 公网地址允许按权威 DNS 正常变化，但每次解析和重定向仍由 Gateway 的 SSRF-safe transport 校验；生产私网访问只有经过单独威胁建模和明确配置后才能放行。
+
 ## 升级与回滚
 
 ```bash

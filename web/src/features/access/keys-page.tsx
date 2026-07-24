@@ -5,6 +5,7 @@ import { useMemo, useState } from 'react'
 import { accessApi, type GatewayKey } from '@/api'
 import { hasCapability, useSession } from '@/app/session'
 import { DataTable, type ColumnDef } from '@/components/data-table/data-table'
+import { RowActionItem, RowActionMenu, TableAction } from '@/components/data-table/row-actions'
 import { TableToolbar } from '@/components/data-table/table-toolbar'
 import { Page, PageHeader, PageSection } from '@/components/layout'
 import { StatusBadge } from '@/components/ui/badge'
@@ -45,7 +46,7 @@ export function KeysPage() {
     () => [
       {
         accessorKey: 'name',
-        header: 'Key',
+        header: 'API 密钥',
         cell: ({ row }) => (
           <div>
             <strong>{row.original.name}</strong>
@@ -57,16 +58,17 @@ export function KeysPage() {
       },
       ...(session.role === 'member'
         ? []
-        : [{ accessorKey: 'ownerName', header: '所属用户' } as ColumnDef<GatewayKey, unknown>]),
+        : [{ accessorKey: 'ownerName', header: '所属成员' } as ColumnDef<GatewayKey, unknown>]),
       {
         accessorKey: 'authorizedModels',
         header: '模型授权',
-        cell: ({ row }) => `${row.original.authorizedModels.length} 个`,
+        cell: ({ row }) => row.original.authorizedModels.join('、'),
       },
       {
         accessorKey: 'status',
         header: '状态',
         cell: ({ row }) => <StatusBadge status={row.original.status} />,
+        meta: { align: 'center' },
       },
       {
         accessorKey: 'expiresAt',
@@ -81,41 +83,37 @@ export function KeysPage() {
       {
         id: 'actions',
         header: '操作',
+        meta: { align: 'center' },
         cell: ({ row }) =>
           row.original.status === 'active' && (canRevoke || canTest) ? (
-            <div className="row-actions">
+            <div className="row-actions row-actions--center">
               {canTest ? (
-                <Button
-                  size="sm"
-                  variant="quiet"
-                  icon={<CirclePlay size={15} />}
+                <TableAction
+                  label="测试"
+                  icon={<CirclePlay size={16} />}
                   data-onboarding="test-api-key"
                   disabled={revoke.isPending}
                   onClick={() => setTestKey(row.original)}
-                >
-                  测试请求
-                </Button>
+                />
               ) : null}
               {canRevoke ? (
                 <>
-                  <Button
-                    size="sm"
-                    variant="quiet"
-                    icon={<RotateCw size={15} />}
+                  <TableAction
+                    label="更换"
+                    icon={<RotateCw size={16} />}
                     disabled={revoke.isPending}
                     onClick={() => setReplacementKey(row.original)}
-                  >
-                    更换
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="quiet"
-                    icon={<XCircle size={15} />}
-                    disabled={revoke.isPending}
-                    onClick={() => setRevokeKey(row.original)}
-                  >
-                    撤销
-                  </Button>
+                  />
+                  <RowActionMenu>
+                    <RowActionItem
+                      icon={<XCircle size={15} />}
+                      danger
+                      disabled={revoke.isPending}
+                      onSelect={() => setRevokeKey(row.original)}
+                    >
+                      撤销 API 密钥
+                    </RowActionItem>
+                  </RowActionMenu>
                 </>
               ) : null}
             </div>
@@ -145,7 +143,7 @@ export function KeysPage() {
         <TableToolbar
           search={state.search}
           onSearchChange={setSearch}
-          searchLabel="搜索 Key"
+          searchLabel="搜索 API 密钥"
           status={state.status}
           onStatusChange={setStatus}
           statusOptions={[

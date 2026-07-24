@@ -76,7 +76,7 @@ function AdministratorView({
         />
         <SummaryMetric
           icon={<KeyRound size={16} />}
-          label="活动上游 Key"
+          label="可用上游 API Key"
           value={`${overview.resources.activeCredentialCount} / ${overview.resources.credentialCount}`}
         />
         <SummaryMetric
@@ -102,7 +102,7 @@ function AdministratorView({
       <PageSection title="运行事实">
         <dl className="fact-grid">
           <Fact
-            label="连接 Provider"
+            label="已接入平台"
             value={formatNumber(overview.resources.connectedProviderCount)}
           />
           <Fact label="模型" value={formatNumber(overview.resources.modelCount)} />

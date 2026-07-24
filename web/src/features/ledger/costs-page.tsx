@@ -34,15 +34,23 @@ export function CostsPage() {
         cell: ({ row }) => formatDateTime(row.original.effectiveAt),
       },
       { accessorKey: 'modelAlias', header: '模型' },
-      { accessorKey: 'currency', header: '币种' },
-      { accessorKey: 'inputPricePerMillionTokens', header: '输入 / 百万 Token' },
-      { accessorKey: 'outputPricePerMillionTokens', header: '输出 / 百万 Token' },
+      { accessorKey: 'currency', header: '币种', meta: { align: 'center' } },
+      {
+        accessorKey: 'inputPricePerMillionTokens',
+        header: '输入 / 百万 Token',
+        meta: { align: 'right' },
+      },
+      {
+        accessorKey: 'outputPricePerMillionTokens',
+        header: '输出 / 百万 Token',
+        meta: { align: 'right' },
+      },
     ],
     [],
   )
   const summaryColumns = useMemo<ColumnDef<CostSummary, unknown>[]>(
     () => [
-      { accessorKey: 'userName', header: '用户' },
+      { accessorKey: 'userName', header: '成员' },
       {
         accessorKey: 'servicePlanName',
         header: '套餐',
@@ -56,7 +64,7 @@ export function CostsPage() {
         ),
       },
       { accessorKey: 'modelAlias', header: '模型' },
-      { accessorKey: 'providerName', header: 'Provider' },
+      { accessorKey: 'providerName', header: '上游平台' },
       { accessorKey: 'resourcePoolName', header: '资源池' },
       {
         accessorKey: 'requestCount',
@@ -120,7 +128,7 @@ export function CostsPage() {
         <TableToolbar
           search={state.search}
           onSearchChange={setSearch}
-          searchLabel="搜索用户、模型、Provider 或币种"
+          searchLabel="搜索成员、模型、上游平台或币种"
         />
         {summaries.data?.items.length ? <CostBreakdownChart items={summaries.data.items} /> : null}
         <DataTable

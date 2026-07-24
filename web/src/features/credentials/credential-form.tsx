@@ -14,19 +14,19 @@ export function CredentialForm({
   open,
   onOpenChange,
 }: {
-  credential: Credential | null
+  credential: Credential
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
   const queryClient = useQueryClient()
-  const [resourcePoolId, setResourcePoolId] = useState(credential?.resourcePoolId ?? '')
-  const [name, setName] = useState(credential?.name ?? '')
+  const [resourcePoolId] = useState(credential.resourcePoolId)
+  const [name, setName] = useState(credential.name)
   const [secret, setSecret] = useState('')
-  const [rpmLimit, setRpmLimit] = useState(credential?.rpmLimit ?? 0)
-  const [tpmLimit, setTpmLimit] = useState(credential?.tpmLimit ?? 0)
-  const [concurrencyLimit, setConcurrencyLimit] = useState(credential?.concurrencyLimit ?? 0)
+  const [rpmLimit, setRpmLimit] = useState(credential.rpmLimit ?? 0)
+  const [tpmLimit, setTpmLimit] = useState(credential.tpmLimit ?? 0)
+  const [concurrencyLimit, setConcurrencyLimit] = useState(credential.concurrencyLimit ?? 0)
   const [bindings, setBindings] = useState<EditableBinding[]>(
-    credential?.modelBindings.map(({ modelId, priority, weight }) => ({
+    credential.modelBindings.map(({ modelId, priority, weight }) => ({
       modelId,
       priority,
       weight,
@@ -49,28 +49,17 @@ export function CredentialForm({
         ...(tpmLimit > 0 ? { tpmLimit } : {}),
         ...(concurrencyLimit > 0 ? { concurrencyLimit } : {}),
       }
-      return credential
-        ? catalogApi.updateCredential(
-            credential.id,
-            {
-              name: name.trim(),
-              secret,
-              modelBindings: bindings,
-              expectedUpdatedAt: credential.updatedAt,
-              ...limits,
-            },
-            crypto.randomUUID(),
-          )
-        : catalogApi.createCredential(
-            {
-              resourcePoolId,
-              name: name.trim(),
-              secret,
-              modelBindings: bindings,
-              ...limits,
-            },
-            crypto.randomUUID(),
-          )
+      return catalogApi.updateCredential(
+        credential.id,
+        {
+          name: name.trim(),
+          secret,
+          modelBindings: bindings,
+          expectedUpdatedAt: credential.updatedAt,
+          ...limits,
+        },
+        crypto.randomUUID(),
+      )
     },
     async onSuccess() {
       setSecret('')
@@ -82,7 +71,7 @@ export function CredentialForm({
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!resourcePoolId || !name.trim() || (!credential && !secret) || bindings.length === 0) return
+    if (!resourcePoolId || !name.trim() || bindings.length === 0) return
     mutation.mutate()
   }
 
@@ -91,7 +80,7 @@ export function CredentialForm({
     <DialogFrame
       open={open}
       onOpenChange={(next) => !locked && onOpenChange(next)}
-      title={credential ? '编辑上游 API Key' : '添加上游 API Key'}
+      title="编辑上游 API Key"
       width="lg"
       dismissible={!locked}
       footer={
@@ -112,36 +101,30 @@ export function CredentialForm({
     >
       <form id="credential-form" className="form-grid" onSubmit={submit}>
         <Field label="资源池" htmlFor="credential-pool">
-          <NativeSelect
-            id="credential-pool"
-            autoFocus
-            value={resourcePoolId}
-            disabled={locked || credential !== null}
-            onChange={(event) => {
-              setResourcePoolId(event.target.value)
-              setBindings([])
-            }}
-          >
-            <option value="">请选择</option>
+          <NativeSelect id="credential-pool" required value={resourcePoolId} disabled>
+            <option value="">选择资源池</option>
             {(pools.data ?? []).map((pool) => (
               <option key={pool.id} value={pool.id}>
-                {pool.providerName} · {pool.name}
+                {pool.name}
               </option>
             ))}
           </NativeSelect>
         </Field>
-        <Field label="名称" htmlFor="credential-name">
+        <Field label="Key 名称" htmlFor="credential-name" hint="用于区分不同的上游 Key">
           <Input
             id="credential-name"
+            autoFocus
+            required
             value={name}
             readOnly={locked}
             onChange={(event) => setName(event.target.value)}
           />
         </Field>
         <Field
-          label={credential ? '替换上游 API Key' : '上游 API Key'}
+          label="上游 API Key"
           htmlFor="credential-secret"
-          hint={credential ? '留空表示继续使用当前 secret' : undefined}
+          className="field--full"
+          hint="不填写则保留当前 Key；填写后立即替换"
         >
           <Input
             id="credential-secret"
@@ -152,15 +135,11 @@ export function CredentialForm({
             onChange={(event) => setSecret(event.target.value)}
           />
         </Field>
-        <Field label="Provider" htmlFor="credential-provider">
-          <Input
-            id="credential-provider"
-            value={selectedPool?.providerName ?? credential?.providerName ?? ''}
-            readOnly
-          />
-        </Field>
         <fieldset className="choice-field field--full">
-          <legend>模型路由</legend>
+          <legend>可用模型与调度</legend>
+          <p className="choice-field__hint">
+            勾选这个 Key 可以调用的模型；数字越小越优先，优先级相同时按权重分配
+          </p>
           <div className="binding-grid">
             {(selectedPool?.models ?? []).map((model) => {
               const binding = bindings.find((item) => item.modelId === model.id)
@@ -179,7 +158,10 @@ export function CredentialForm({
                         )
                       }
                     />
-                    <span>{model.publicName}</span>
+                    <span>
+                      {model.displayName}
+                      <small className="table-subline">{model.publicName}</small>
+                    </span>
                   </label>
                   <label className="binding-row__value">
                     <span>优先级</span>
@@ -218,8 +200,15 @@ export function CredentialForm({
           ) : (selectedPool?.models.length ?? 0) === 0 ? (
             <p className="choice-field__empty">该资源池当前没有可用模型</p>
           ) : null}
+          {resourcePoolId && (selectedPool?.models.length ?? 0) > 0 && bindings.length === 0 ? (
+            <span className="field__error">至少选择一个可用模型</span>
+          ) : null}
         </fieldset>
-        <Field label="RPM" htmlFor="credential-rpm" hint="0 表示不额外限制">
+        <Field
+          label="每分钟请求上限（RPM）"
+          htmlFor="credential-rpm"
+          hint="0 表示跟随上游本身的限制"
+        >
           <Input
             id="credential-rpm"
             type="number"
@@ -229,7 +218,11 @@ export function CredentialForm({
             onChange={(event) => setRpmLimit(Number(event.target.value))}
           />
         </Field>
-        <Field label="TPM" htmlFor="credential-tpm" hint="0 表示不额外限制">
+        <Field
+          label="每分钟 Token 上限（TPM）"
+          htmlFor="credential-tpm"
+          hint="0 表示跟随上游本身的限制"
+        >
           <Input
             id="credential-tpm"
             type="number"
@@ -239,7 +232,11 @@ export function CredentialForm({
             onChange={(event) => setTpmLimit(Number(event.target.value))}
           />
         </Field>
-        <Field label="并发上限" htmlFor="credential-concurrency" hint="0 表示不额外限制">
+        <Field
+          label="同时请求上限"
+          htmlFor="credential-concurrency"
+          hint="0 表示跟随上游本身的限制"
+        >
           <Input
             id="credential-concurrency"
             type="number"
