@@ -87,11 +87,11 @@
 - [x] 更新人工清单与事实文档；前端、真实 Provider、管理员/成员浏览器主旅程、定向 Go 与 sqlc 漂移检查已通过。
 - [x] 完整通读 `full` 编排、浏览器主旅程、核心链、迁移、恢复、观测、Windows 服务及其 SQL/HTTP 引用，未发现旧领域链路；`python .\start_test.py full` 已一次通过。
 - [x] 修复 owner 人工复测发现的资源池/套餐内部标识泄漏与通用英文错误，更新控制 API 消费者、稳定业务测试和事实文档；把上游 API Key 创建收敛为一个逐行粘贴入口。
-- [ ] 完成最终敏感信息、差异、文档链接、`full`、commit 与 push 收口。
+- [x] 完成最终敏感信息、差异、文档链接、`full`、commit 与 push 收口。
 
 ## 收口
 
 - 完成事实：真实上游双栈代理根因、稳定探测错误、开发进程生命周期、桌面管理员/成员任务、人工清单与事实文档已闭环；Provider 仍只作为代码内置 catalog 能力出现在资源池表单，没有独立页面或导航。
 - 实际命令与结果：前端 format/lint/typecheck/test/build、定向 Go、sqlc 漂移、`stop_dev.py`、有头 Chromium 主旅程均通过；`python .\start_test.py full` 于 2026-07-23 一次通过，用时 `0:09:30.586946`，日志 `.build\test-logs\20260723T142001324440Z-full.log`。full 后无隔离测试容器或 SCM 服务残留，开发环境随后以 `--no-browser` 启动并通过 5173/8080 就绪检查。
 - 未验证外部事实与剩余风险：本轮没有运行会读取现场凭据的完整 `provider` 档；只通过产品自身探测链路验证 Agnes 当次真实连接。正式域名、主机、证书、外部监控、异地备份和其他 Provider 当日合同仍需目标环境验证；视觉审美最终由 owner 人工验收。
-- commit/push/部署状态：owner 已明确授权本次 commit 与 push，最终差异检查后执行；不部署或发布。
+- commit/push/部署状态：最终差异与新增行敏感信息检查通过；当前任务已提交并推送到 `origin/master`；不部署或发布。
